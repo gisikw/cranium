@@ -21,23 +21,37 @@ just build
 
 Requires Go 1.25+ and the `goolm` build tag (pure-Go OLM, no C dependencies).
 
-## Running
-
-Cranium expects the following environment variables:
-
-```bash
-MATRIX_PASSWORD=...      # Matrix account password
-CRANIUM_SESSION_ID=...   # Optional: session ID for self-awareness
-```
-
-See `.env.example` for the full list.
-
 ## Configuration
 
-Cranium is parameterized by the directory it runs from. It reads:
+Cranium uses two YAML config files:
 
-- `IDENTITY.md` (or equivalent identity file) for `--append-system-prompt` injection
-- `handoffs/<room-slug>/` for session continuity
-- `summaries/<room-slug>.json` for cross-room awareness
+**`cranium.yaml`** — Infrastructure config (Matrix connection, socket, room exclusions). Lives in the cranium repo directory, `.gitignored`. Set `CRANIUM_CONFIG` env var to override the path.
 
-These paths are relative to a configurable base directory, not baked into the binary.
+**`identity.yaml`** — Identity/personality config (system prompt file, data directory, display name, attachments). Lives outside the cranium repo, pointed to by `identity_file` in `cranium.yaml`.
+
+```bash
+cp cranium.example.yaml cranium.yaml
+# Edit cranium.yaml with your Matrix homeserver, credentials, and identity file path
+```
+
+See `cranium.example.yaml` for the full schema with defaults.
+
+### What identity.yaml controls
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `system_prompt_file` | *(required)* | Path to the file injected via `--append-system-prompt` |
+| `data_dir` | *(required)* | Base directory for handoffs, summaries, sessions |
+| `display_name` | `Agent` | Name shown in working indicators |
+| `attachments_dir` | `<data_dir>/notes/attachments` | Where Matrix images are saved |
+| `projects_dir` | `~/Projects` | Base dir for room-name-to-project matching |
+| `summary_turn_threshold` | `10` | Turns before triggering cross-room summary |
+
+### Data directory structure
+
+Relative to `data_dir`:
+
+- `handoffs/<room-slug>/` — session continuity documents
+- `summaries/<room-slug>.json` — cross-room awareness cache
+- `.cranium-sessions.json` — session state
+- `.cranium-crypto.db` — E2EE key store

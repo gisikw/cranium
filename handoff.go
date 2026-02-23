@@ -59,8 +59,8 @@ Be concise but complete. Write in markdown. Do not use any tools — just respon
 	// Use the project directory if the room matches one, since the session
 	// was created there and --resume needs the same cwd.
 	workDir := b.dataDir
-	if roomName != "" {
-		candidate := filepath.Join(os.Getenv("HOME"), "Projects", slugify(roomName))
+	if roomName != "" && b.projectsDir != "" {
+		candidate := filepath.Join(b.projectsDir, slugify(roomName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			workDir = candidate
 		}

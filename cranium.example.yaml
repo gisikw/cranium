@@ -1,0 +1,10 @@
+matrix:
+  homeserver: https://matrix.example.com
+  username: agent
+  password_file: /path/to/password-file
+
+socket_path: /tmp/cranium.sock
+identity_file: /path/to/identity.yaml
+ops_room: ops
+exclude_rooms:
+  - project-

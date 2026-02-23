@@ -108,8 +108,8 @@ func (b *Bridge) saveMatrixImage(ctx context.Context, content *event.MessageEven
 		}
 	}
 
-	// Save to notes/attachments/ with timestamp prefix
-	attachDir := filepath.Join(b.dataDir, "notes", "attachments")
+	// Save to attachments directory
+	attachDir := b.attachmentsDir
 	os.MkdirAll(attachDir, 0755)
 
 	filename := fmt.Sprintf("%s_%s%s",

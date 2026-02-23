@@ -71,24 +71,15 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		log.Printf("Loaded interrupted context for room %s (%d chars)", roomID, len(interruptedContext))
 	}
 
-	// Check if room name matches a project directory under ~/Projects/
+	// Check if room name matches a project directory
 	var projectDir string
-	if roomName != "" {
+	if roomName != "" && b.projectsDir != "" {
 		slug := slugify(roomName)
-		candidate := filepath.Join(os.Getenv("HOME"), "Projects", slug)
+		candidate := filepath.Join(b.projectsDir, slug)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			projectDir = candidate
 			log.Printf("Matched room %q to project directory: %s", roomName, projectDir)
 		}
-	}
-
-	// Read identity file content — always injected via --append-system-prompt
-	var systemPromptContent string
-	systemPromptPath := filepath.Join(b.dataDir, "IDENTITY.md")
-	if data, err := os.ReadFile(systemPromptPath); err == nil && len(data) > 0 {
-		systemPromptContent = string(data)
-	} else if err != nil {
-		log.Printf("Warning: could not read identity file at %s: %v", systemPromptPath, err)
 	}
 
 	// Build pure invocation plan
@@ -105,7 +96,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		InterruptedContext: interruptedContext,
 		Now:                b.now(),
 		ProjectDir:         projectDir,
-		SystemPromptContent: systemPromptContent,
+		SystemPromptContent: b.systemPromptContent,
 	})
 
 	// Apply side effects from the plan
@@ -177,7 +168,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 			"warming up the thinking apparatus",
 		}
 		msg := messages[rng.Intn(len(messages))]
-		return "\n\n---\n*[Agent is " + msg + "...]*"
+		return "\n\n---\n*[" + b.displayName + " is " + msg + "...]*"
 	}
 
 	// Proactive message splitting: Synapse's default max event size is ~64KB.

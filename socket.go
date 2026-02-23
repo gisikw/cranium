@@ -35,22 +35,22 @@ type SocketRequest struct {
 // startSocketListener starts the unix socket for hook requests
 func (b *Bridge) startSocketListener(ctx context.Context) error {
 	// Remove existing socket
-	os.Remove(socketPath)
+	os.Remove(b.socketPath)
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen("unix", b.socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
 
 	// Make socket world-writable so hook can connect
-	os.Chmod(socketPath, 0666)
+	os.Chmod(b.socketPath, 0666)
 
-	log.Printf("Listening on %s", socketPath)
+	log.Printf("Listening on %s", b.socketPath)
 
 	go func() {
 		<-ctx.Done()
 		listener.Close()
-		os.Remove(socketPath)
+		os.Remove(b.socketPath)
 	}()
 
 	go func() {

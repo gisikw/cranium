@@ -26,8 +26,6 @@ type RoomSummary struct {
 	TurnsSinceSummary int    `json:"turns_since_summary"`
 }
 
-const summaryThreshold = 10
-
 func (b *Bridge) loadRoomSummary(slug string) (*RoomSummary, error) {
 	path := filepath.Join(b.dataDir, "summaries", slug+".json")
 	data, err := os.ReadFile(path)
@@ -152,8 +150,8 @@ Write a 2-4 sentence summary of what this room's conversation has been about. Th
 	// Use the project directory if the room matches one, since the session
 	// was created there and --resume needs the same cwd.
 	workDir := b.dataDir
-	if roomName != "" {
-		candidate := filepath.Join(os.Getenv("HOME"), "Projects", slugify(roomName))
+	if roomName != "" && b.projectsDir != "" {
+		candidate := filepath.Join(b.projectsDir, slugify(roomName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			workDir = candidate
 		}

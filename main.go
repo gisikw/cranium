@@ -19,47 +19,46 @@ import (
 // Set via ldflags at build time
 var version = "dev"
 
-const (
-	homeserver = "https://matrix.example.com"
-	username   = "agent"
-	socketPath = "/tmp/cranium.sock"
-)
-
 func main() {
-	// Find data directory (parent of cmd/)
-	exePath, err := os.Executable()
+	// Load cranium config
+	configPath := os.Getenv("CRANIUM_CONFIG")
+	if configPath == "" {
+		configPath = "cranium.yaml"
+	}
+	craniumCfg, err := LoadCraniumConfig(configPath)
 	if err != nil {
-		exePath, _ = os.Getwd()
+		log.Fatalf("Failed to load cranium config: %v", err)
 	}
 
-	// Walk up to find data root (looks for IDENTITY.md as sentinel)
-	dataDir := filepath.Dir(filepath.Dir(filepath.Dir(exePath)))
-	if _, err := os.Stat(filepath.Join(dataDir, "IDENTITY.md")); err != nil {
-		// Fallback: try current directory
-		cwd, _ := os.Getwd()
-		for dir := cwd; dir != "/"; dir = filepath.Dir(dir) {
-			if _, err := os.Stat(filepath.Join(dir, "IDENTITY.md")); err == nil {
-				dataDir = dir
-				break
-			}
-		}
+	// Load identity config
+	identityCfg, err := LoadIdentityConfig(craniumCfg.IdentityFile)
+	if err != nil {
+		log.Fatalf("Failed to load identity config: %v", err)
 	}
-	log.Printf("Using data directory: %s", dataDir)
+
+	log.Printf("Using data directory: %s", identityCfg.DataDir)
 
 	// Load password
-	passwordPath := filepath.Join(dataDir, ".cranium-matrix-password")
-	passwordBytes, err := os.ReadFile(passwordPath)
+	passwordBytes, err := os.ReadFile(craniumCfg.Matrix.PasswordFile)
 	if err != nil {
 		log.Fatalf("Failed to read password file: %v", err)
 	}
 	password := strings.TrimSpace(string(passwordBytes))
 
+	// Load system prompt content
+	var systemPromptContent string
+	if data, err := os.ReadFile(identityCfg.SystemPromptFile); err == nil && len(data) > 0 {
+		systemPromptContent = string(data)
+	} else if err != nil {
+		log.Printf("Warning: could not read system prompt file at %s: %v", identityCfg.SystemPromptFile, err)
+	}
+
 	// Initialize session store
-	sessionsPath := filepath.Join(dataDir, ".cranium-sessions.json")
+	sessionsPath := filepath.Join(identityCfg.DataDir, ".cranium-sessions.json")
 	sessions := NewSessionStore(sessionsPath, time.Now)
 
 	// Create Matrix client
-	client, err := mautrix.NewClient(homeserver, "", "")
+	client, err := mautrix.NewClient(craniumCfg.Matrix.Homeserver, "", "")
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -68,9 +67,9 @@ func main() {
 	defer cancel()
 
 	// Set up crypto helper (handles login and E2EE)
-	log.Printf("Logging in as %s...", username)
+	log.Printf("Logging in as %s...", craniumCfg.Matrix.Username)
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte(password),
-		filepath.Join(dataDir, ".cranium-crypto.db"))
+		filepath.Join(identityCfg.DataDir, ".cranium-crypto.db"))
 	if err != nil {
 		log.Fatalf("Failed to create crypto helper: %v", err)
 	}
@@ -78,7 +77,7 @@ func main() {
 		Type: mautrix.AuthTypePassword,
 		Identifier: mautrix.UserIdentifier{
 			Type: mautrix.IdentifierTypeUser,
-			User: username,
+			User: craniumCfg.Matrix.Username,
 		},
 		Password: password,
 	}
@@ -88,12 +87,23 @@ func main() {
 	client.Crypto = cryptoHelper
 	log.Printf("Logged in as %s (device %s, E2EE enabled)", client.UserID, client.DeviceID)
 
+	// Build exclude list: ops room + configured exclude patterns
+	excludeRooms := append([]string{craniumCfg.OpsRoom}, craniumCfg.ExcludeRooms...)
+
 	// Create bridge
-	bridge := NewBridge(client, sessions, dataDir)
+	bridge := NewBridge(client, sessions, identityCfg.DataDir, BridgeConfig{
+		DisplayName:      identityCfg.DisplayName,
+		AttachmentsDir:   identityCfg.AttachmentsDir,
+		ProjectsDir:      identityCfg.ProjectsDir,
+		SummaryThreshold: identityCfg.SummaryTurnThreshold,
+		ExcludeRooms:     excludeRooms,
+		SocketPath:       craniumCfg.SocketPath,
+	})
 	bridge.userID = client.UserID
+	bridge.systemPromptContent = systemPromptContent
 
 	// Find ops room for announcements
-	bridge.opsRoomID = bridge.findRoomByName(ctx, "ops")
+	bridge.opsRoomID = bridge.findRoomByName(ctx, craniumCfg.OpsRoom)
 	if bridge.opsRoomID != "" {
 		log.Printf("Found ops room: %s", bridge.opsRoomID)
 	} else {

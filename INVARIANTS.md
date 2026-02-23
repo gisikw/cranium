@@ -85,11 +85,15 @@ with rationale. Don't just ignore it.
 
 ## Parameterization
 
+- **Two-config system.** `cranium.yaml` (infrastructure — Matrix connection,
+  socket path, room exclusions) and `identity.yaml` (personality — system
+  prompt, data dir, display name, attachments). Cranium points to identity;
+  identity belongs to the "brain" repo, not cranium.
 - **Cranium does not own identity.** Identity (system prompts, persona
   configuration) is injected by the caller via configuration paths. Cranium
   reads identity files; it does not define them.
 - **Storage paths are configurable.** Handoffs, summaries, and session state
-  are relative to a base directory passed at startup, not hardcoded.
+  are relative to a base directory from identity config, not hardcoded.
 - **Agent dispatch is pluggable.** The `ClaudeInvoker` interface abstracts
   agent invocation. New agent backends (Crane, local models) implement the
   same interface.
@@ -97,8 +101,8 @@ with rationale. Don't just ignore it.
 ## Secrets
 
 - No hardcoded secrets, tokens, PII, or infrastructure-specific details.
-- Environment-specific values come from `.env` (gitignored).
-- `.env.example` documents required vars with placeholders.
+- `cranium.yaml` is `.gitignored`; `cranium.example.yaml` is checked in.
+- The only env var is `CRANIUM_CONFIG` (optional, defaults to `cranium.yaml`).
 
 ## Policy
 

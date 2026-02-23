@@ -43,6 +43,7 @@ func TestSlugify(t *testing.T) {
 //   "Messages in rooms without a name are not excluded"
 
 func TestIsExcludedRoomName(t *testing.T) {
+	defaultExcludes := []string{"ops", "project-"}
 	tests := []struct {
 		name     string
 		excluded bool
@@ -59,7 +60,7 @@ func TestIsExcludedRoomName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isExcludedRoomName(tt.name)
+			got := isExcludedRoomName(tt.name, defaultExcludes)
 			if got != tt.excluded {
 				t.Errorf("isExcludedRoomName(%q) = %v, want %v", tt.name, got, tt.excluded)
 			}

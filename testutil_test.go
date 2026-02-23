@@ -374,7 +374,13 @@ func newTestBridge(t *testing.T) (*Bridge, *mockMatrixClient, *mockClaudeInvoker
 
 	sessions.syncSave = true
 
-	b := NewBridge(mc, sessions, tmp)
+	b := NewBridge(mc, sessions, tmp, BridgeConfig{
+		DisplayName:      "Agent",
+		AttachmentsDir:   filepath.Join(tmp, "notes", "attachments"),
+		ProjectsDir:      filepath.Join(tmp, "Projects"),
+		SummaryThreshold: 10,
+		ExcludeRooms:     []string{"ops", "project-"},
+	})
 	b.claude = mci
 	b.userID = "@agent:example.com"
 	b.startTime = time.Date(2026, 2, 12, 10, 0, 0, 0, time.UTC)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,7 +108,7 @@ type Bridge struct {
 	client           MatrixClient
 	claude           ClaudeInvoker
 	sessions         *SessionStore
-	dataDir     string
+	dataDir          string
 	autoApprovePath  string
 	userID           id.UserID
 	startTime        time.Time
@@ -117,6 +118,15 @@ type Bridge struct {
 	seenEvents           sync.Map // map[id.EventID]time.Time — dedup against duplicate event delivery
 	summaryLocks         sync.Map // map[id.RoomID]*atomic.Bool — per-room summary generation lock
 	pinPermissionAlerted sync.Map // map[id.RoomID]bool — rooms where we've alerted about missing pin permissions
+
+	// Identity-derived configuration
+	displayName        string // for working indicator text (default: "Agent")
+	attachmentsDir     string // where to save Matrix images (default: dataDir/notes/attachments)
+	projectsDir        string // base dir for room→project matching (default: ~/Projects)
+	summaryThreshold   int    // turns before triggering cross-room summary (default: 10)
+	excludeRooms       []string // room name prefixes to exclude from Claude sessions
+	systemPromptContent string // contents of identity file, injected via --append-system-prompt
+	socketPath          string // unix socket path for hook requests
 
 	// Typing indicator delays (configurable for testing)
 	typingReadDelay  time.Duration // delay before sending read receipt (default 800ms)
@@ -150,15 +160,51 @@ type pendingApproval struct {
 	response chan ApprovalResponse
 }
 
-func NewBridge(client MatrixClient, sessions *SessionStore, dataDir string) *Bridge {
+// BridgeConfig holds the configurable parameters for constructing a Bridge.
+type BridgeConfig struct {
+	DisplayName      string
+	AttachmentsDir   string
+	ProjectsDir      string
+	SummaryThreshold int
+	ExcludeRooms     []string
+	SocketPath       string
+}
+
+func NewBridge(client MatrixClient, sessions *SessionStore, dataDir string, cfg BridgeConfig) *Bridge {
+	// Apply defaults for zero values
+	if cfg.DisplayName == "" {
+		cfg.DisplayName = "Agent"
+	}
+	if cfg.AttachmentsDir == "" {
+		cfg.AttachmentsDir = filepath.Join(dataDir, "notes", "attachments")
+	}
+	if cfg.ProjectsDir == "" {
+		cfg.ProjectsDir = filepath.Join(os.Getenv("HOME"), "Projects")
+	}
+	if cfg.SummaryThreshold == 0 {
+		cfg.SummaryThreshold = 10
+	}
+	if cfg.ExcludeRooms == nil {
+		cfg.ExcludeRooms = []string{"project-"}
+	}
+	if cfg.SocketPath == "" {
+		cfg.SocketPath = "/tmp/cranium.sock"
+	}
+
 	return &Bridge{
 		client:           client,
 		claude:           &execClaudeInvoker{},
 		sessions:         sessions,
-		dataDir:     dataDir,
+		dataDir:          dataDir,
 		autoApprovePath:  filepath.Join(dataDir, ".cranium-approvals.json"),
 		startTime:        time.Now(),
 		clock:            time.Now,
+		displayName:      cfg.DisplayName,
+		attachmentsDir:   cfg.AttachmentsDir,
+		projectsDir:      cfg.ProjectsDir,
+		summaryThreshold: cfg.SummaryThreshold,
+		excludeRooms:     cfg.ExcludeRooms,
+		socketPath:       cfg.SocketPath,
 		typingReadDelay:  800 * time.Millisecond,
 		typingStartDelay: 200 * time.Millisecond,
 	}
@@ -195,21 +241,24 @@ func (b *Bridge) getRoomName(ctx context.Context, roomID id.RoomID) string {
 }
 
 // isExcludedRoomName returns true if a room name indicates it should not trigger
-// Claude sessions. Pure decision function — no I/O.
-func isExcludedRoomName(name string) bool {
+// Claude sessions. Pure decision function — no I/O. Matches exact names or
+// prefix patterns from the exclude list.
+func isExcludedRoomName(name string, excludeRooms []string) bool {
 	if name == "" {
 		return false
 	}
-	if name == "ops" {
-		return true
+	for _, pattern := range excludeRooms {
+		if name == pattern || strings.HasPrefix(name, pattern) {
+			return true
+		}
 	}
-	return strings.HasPrefix(name, "project-")
+	return false
 }
 
 // isExcludedRoom returns true if this room should not trigger Claude sessions
 func (b *Bridge) isExcludedRoom(ctx context.Context, roomID id.RoomID) bool {
 	name := b.getRoomName(ctx, roomID)
-	return isExcludedRoomName(name)
+	return isExcludedRoomName(name, b.excludeRooms)
 }
 
 // activeRoomCount returns the number of rooms with active Claude invocations

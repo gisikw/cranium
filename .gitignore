@@ -11,6 +11,7 @@
 # Secrets
 .env
 .env.local
+cranium.yaml
 
 # Ko build artifacts
 .ko/builds/

@@ -225,7 +225,7 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 
 	// Track turns for summary generation (cross-room awareness)
 	turns := b.sessions.IncrementTurns(roomID)
-	if shouldGenerateSummary(turns, summaryThreshold) {
+	if shouldGenerateSummary(turns, b.summaryThreshold) {
 		log.Printf("Room %s reached %d turns — triggering summary generation", roomID, turns)
 		go b.generateSummary(ctx, roomID)
 	}
