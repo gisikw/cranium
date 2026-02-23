@@ -1,6 +1,6 @@
 # Invariants
 
-Architectural contracts for the callosum codebase. Violations are bugs, not
+Architectural contracts for the cranium codebase. Violations are bugs, not
 style issues. If an invariant no longer serves the project, remove it explicitly
 with rationale. Don't just ignore it.
 

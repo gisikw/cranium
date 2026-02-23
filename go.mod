@@ -1,4 +1,4 @@
-module github.com/gisikw/callosum
+module github.com/gisikw/cranium
 
 go 1.25.4
 

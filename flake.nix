@@ -1,5 +1,5 @@
 {
-  description = "callosum — Matrix-to-agent dispatcher";
+  description = "cranium — Matrix-to-agent dispatcher";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,7 +13,7 @@
       in
       {
         packages.default = pkgs.buildGoModule {
-          pname = "callosum";
+          pname = "cranium";
           version = "0.1.0";
           src = ./.;
           tags = [ "goolm" ];
@@ -24,7 +24,7 @@
           packages = with pkgs; [ go gopls just ];
 
           shellHook = ''
-            echo "callosum dev shell"
+            echo "cranium dev shell"
             echo "  just test    — run tests"
             echo "  just build   — build binary"
             echo "  just deploy  — build + upgrade"

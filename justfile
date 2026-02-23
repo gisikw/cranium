@@ -1,4 +1,4 @@
-# Callosum — Matrix-to-agent dispatcher
+# Cranium — Matrix-to-agent dispatcher
 
 # List available recipes
 default:
@@ -10,7 +10,7 @@ test:
 
 # Build the binary with version from git
 build:
-    go build -tags goolm -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o callosum .
+    go build -tags goolm -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o cranium .
 
 # Build + upgrade: drain, swap binary, restart
 deploy:

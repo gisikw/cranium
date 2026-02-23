@@ -1,4 +1,4 @@
-# Callosum
+# Cranium
 
 A Matrix-to-agent dispatcher. Receives messages from a Matrix homeserver and routes them to Claude Code sessions (and other agent runtimes), managing session lifecycle, cross-room awareness, and context continuity.
 
@@ -23,7 +23,7 @@ Requires Go 1.25+ and the `goolm` build tag (pure-Go OLM, no C dependencies).
 
 ## Running
 
-Callosum expects the following environment variables:
+Cranium expects the following environment variables:
 
 ```bash
 MATRIX_PASSWORD=...      # Matrix account password
@@ -34,7 +34,7 @@ See `.env.example` for the full list.
 
 ## Configuration
 
-Callosum is parameterized by the directory it runs from. It reads:
+Cranium is parameterized by the directory it runs from. It reads:
 
 - `EXO.md` (or equivalent identity file) for `--append-system-prompt` injection
 - `handoffs/<room-slug>/` for session continuity
