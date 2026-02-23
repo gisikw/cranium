@@ -3,7 +3,7 @@ Feature: Context Window Saturation Awareness
   provides escalating guidance as it fills up.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
     And room "general" has an active session
 
   # --- Threshold-based reminders ---
@@ -57,7 +57,7 @@ Feature: Context Window Saturation Awareness
   # --- Permission handling ---
 
   Scenario: Pin failure due to missing permissions triggers alert
-    Given @exo does not have Moderator permissions in "general"
+    Given @agent does not have Moderator permissions in "general"
     When saturation reaches 60% and pin attempt fails
     Then a notice is sent explaining the Moderator requirement
     And the notice is only sent once per room

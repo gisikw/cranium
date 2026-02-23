@@ -153,7 +153,7 @@ func TestGenerateSummary_WritesSummaryFile(t *testing.T) {
 	b.generateSummary(ctx, roomID)
 
 	// Check summary file was written
-	summaryPath := filepath.Join(b.exocortexDir, "summaries", "test-room.json")
+	summaryPath := filepath.Join(b.dataDir, "summaries", "test-room.json")
 	data, err := os.ReadFile(summaryPath)
 	if err != nil {
 		t.Fatalf("summary file not created: %v", err)
@@ -230,7 +230,7 @@ func TestGenerateSummary_NoSessionSkips(t *testing.T) {
 	b.generateSummary(ctx, roomID)
 
 	// No summary file should exist
-	summaryPath := filepath.Join(b.exocortexDir, "summaries", "test-room.json")
+	summaryPath := filepath.Join(b.dataDir, "summaries", "test-room.json")
 	if _, err := os.Stat(summaryPath); err == nil {
 		t.Error("summary file should not exist when no session is set")
 	}

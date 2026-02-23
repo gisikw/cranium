@@ -195,7 +195,7 @@ func TestCheckResumeBreadcrumb_EmptyFile(t *testing.T) {
 	ctx := context.Background()
 
 	// Write an empty breadcrumb
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(""), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -223,7 +223,7 @@ func TestCheckResumeBreadcrumb_RoomIDOnly(t *testing.T) {
 	)
 
 	// Write breadcrumb with just room ID
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(roomID+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -243,7 +243,7 @@ func TestCheckResumeBreadcrumb_RoomIDOnly(t *testing.T) {
 
 	// Should use the default resume message
 	args := strings.Join(invocations[0].Args, " ")
-	if !contains(args, "exo-bridge was restarted") {
+	if !contains(args, "cranium bridge was restarted") {
 		t.Errorf("expected default resume message in args, got: %v", invocations[0].Args)
 	}
 }
@@ -260,7 +260,7 @@ func TestCheckResumeBreadcrumb_WithCustomMessage(t *testing.T) {
 	)
 
 	// Write breadcrumb with room ID and custom message
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(roomID+"\n"+customMsg+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -288,7 +288,7 @@ func TestCheckResumeBreadcrumb_SetsSessionID(t *testing.T) {
 		claudeResultMsg("sess-new-resume", "Ready!", 200000),
 	)
 
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(string(roomID)+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -310,7 +310,7 @@ func TestCheckResumeBreadcrumb_SendsResponse(t *testing.T) {
 		claudeResultMsg("sess-resp", "I'm back and ready!", 200000),
 	)
 
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(string(roomID)+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -336,14 +336,14 @@ func TestCheckResumeBreadcrumb_CleansUpStaleIndicator(t *testing.T) {
 	roomID := id.RoomID("!infra:matrix.example.com")
 
 	// Simulate a stale last message from the interrupted session
-	b.sessions.SetLastMessage(roomID, "$stale-evt-123", "Previous response\n\n[Exo is still working...]")
+	b.sessions.SetLastMessage(roomID, "$stale-evt-123", "Previous response\n\n[Agent is still working...]")
 
 	mci.QueueResponse(
 		claudeAssistantMsg("sess-cleanup", "Resumed!"),
 		claudeResultMsg("sess-cleanup", "Resumed!", 200000),
 	)
 
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(string(roomID)+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -381,7 +381,7 @@ func TestCheckResumeBreadcrumb_SkipsWhenRoomActive(t *testing.T) {
 		claudeResultMsg("sess-skip", "Should not happen", 200000),
 	)
 
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	os.WriteFile(resumePath, []byte(string(roomID)+"\n"), 0644)
 
 	b.checkResumeBreadcrumb(ctx)
@@ -427,7 +427,7 @@ func TestBridge_PostImage_Success(t *testing.T) {
 	mc.roomNames[roomID] = "nerve"
 
 	// Write a test image file
-	imgPath := filepath.Join(b.exocortexDir, "test-image.png")
+	imgPath := filepath.Join(b.dataDir, "test-image.png")
 	os.WriteFile(imgPath, []byte("fake-png-data"), 0644)
 
 	hookConn, bridgeConn := net.Pipe()
@@ -569,7 +569,7 @@ func TestBridge_PostAudio_Success(t *testing.T) {
 	mc.joinedRooms = []id.RoomID{roomID}
 	mc.roomNames[roomID] = "nerve"
 
-	audioPath := filepath.Join(b.exocortexDir, "test-audio.mp3")
+	audioPath := filepath.Join(b.dataDir, "test-audio.mp3")
 	os.WriteFile(audioPath, []byte("fake-mp3-data"), 0644)
 
 	hookConn, bridgeConn := net.Pipe()

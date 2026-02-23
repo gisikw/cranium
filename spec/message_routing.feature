@@ -3,7 +3,7 @@ Feature: Message Routing
   The bridge manages per-room sessions, deduplication, and exclusion rules.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
     And the bridge is not draining
 
   # --- Basic routing ---
@@ -25,7 +25,7 @@ Feature: Message Routing
     Then no Claude invocation occurs
 
   Scenario: Messages from the bot itself are ignored
-    When @exo sends "hello" in "general"
+    When @agent sends "hello" in "general"
     Then no Claude invocation occurs
 
   # --- Session continuity ---

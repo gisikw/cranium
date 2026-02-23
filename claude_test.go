@@ -115,7 +115,7 @@ func TestInvokeClaude_MultiSectionEditInPlace(t *testing.T) {
 
 	// The final edit should not contain the working indicator
 	lastEdit := msgs[len(msgs)-1]
-	if contains(lastEdit.Body, "[Exo is ") && contains(lastEdit.Body, "...]*") {
+	if contains(lastEdit.Body, "[Agent is ") && contains(lastEdit.Body, "...]*") {
 		t.Error("final edit should not contain working indicator")
 	}
 }
@@ -142,7 +142,7 @@ func TestInvokeClaude_WorkingIndicatorOnIntermediateEdits(t *testing.T) {
 	// Look for intermediate edits that contain the working indicator
 	var hasTrailer bool
 	for i, m := range msgs {
-		if m.IsEdit && contains(m.Body, "[Exo is ") && contains(m.Body, "...]*") {
+		if m.IsEdit && contains(m.Body, "[Agent is ") && contains(m.Body, "...]*") {
 			hasTrailer = true
 			// Ensure it's not the last message
 			if i == len(msgs)-1 {
@@ -295,18 +295,18 @@ func TestInvokeClaude_EnvVarsSet(t *testing.T) {
 	hasRoomID := false
 	hasSessionID := false
 	for _, e := range inv.Env {
-		if e == "EXO_ROOM_ID=!test:example.com" {
+		if e == "CRANIUM_ROOM_ID=!test:example.com" {
 			hasRoomID = true
 		}
-		if strings.HasPrefix(e, "EXO_SESSION_ID=") {
+		if strings.HasPrefix(e, "CRANIUM_SESSION_ID=") {
 			hasSessionID = true
 		}
 	}
 	if !hasRoomID {
-		t.Errorf("expected EXO_ROOM_ID in env, got %v", inv.Env)
+		t.Errorf("expected CRANIUM_ROOM_ID in env, got %v", inv.Env)
 	}
 	if !hasSessionID {
-		t.Errorf("expected EXO_SESSION_ID in env, got %v", inv.Env)
+		t.Errorf("expected CRANIUM_SESSION_ID in env, got %v", inv.Env)
 	}
 }
 
@@ -317,7 +317,7 @@ func TestInvokeClaude_HandoffLoadedOnFreshSession(t *testing.T) {
 	mc.roomNames[roomID] = "test-room"
 
 	// Create a handoff file
-	handoffDir := filepath.Join(b.exocortexDir, "handoffs", "test-room")
+	handoffDir := filepath.Join(b.dataDir, "handoffs", "test-room")
 	os.MkdirAll(handoffDir, 0755)
 	os.WriteFile(filepath.Join(handoffDir, "2026-02-12_10-00-00.md"), []byte("Previous handoff content"), 0644)
 
@@ -393,7 +393,7 @@ func TestInvokeClaude_ProactiveSplitOnLargeMessage(t *testing.T) {
 
 	// The final message should not contain the working indicator
 	lastMsg := msgs[len(msgs)-1]
-	if contains(lastMsg.Body, "[Exo is ") && contains(lastMsg.Body, "...]*") {
+	if contains(lastMsg.Body, "[Agent is ") && contains(lastMsg.Body, "...]*") {
 		t.Error("final message should not contain working indicator")
 	}
 }

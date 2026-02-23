@@ -32,10 +32,10 @@ Feature: Graceful Upgrade and Drain
   Scenario: Upgrade script writes a resume breadcrumb
     Given a Claude session triggered the upgrade from room "infra"
     When the upgrade script runs
-    Then .exo-bridge-resume is written with the room ID and a resume message
+    Then .cranium-resume is written with the room ID and a resume message
 
   Scenario: New bridge reads and deletes the resume breadcrumb
-    Given .exo-bridge-resume exists with room "infra" and a message
+    Given .cranium-resume exists with room "infra" and a message
     When the bridge starts up
     Then it reads the breadcrumb file
     And deletes the breadcrumb file immediately
@@ -43,7 +43,7 @@ Feature: Graceful Upgrade and Drain
     And the response is sent to "infra"
 
   Scenario: Stale working indicator is cleaned up on resume
-    Given the previous bridge left a message with "[Exo is still working...]"
+    Given the previous bridge left a message with "[Agent is still working...]"
     When the new bridge resumes the session
     Then the stale working indicator is edited out of the previous message
 
@@ -51,4 +51,4 @@ Feature: Graceful Upgrade and Drain
 
   Scenario: Bridge announces startup in ops
     When the bridge starts and connects to Matrix
-    Then it posts "exo-bridge online: <version>" to #ops
+    Then it posts "cranium online: <version>" to #ops

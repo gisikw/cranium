@@ -70,12 +70,12 @@ func TestFormatRecentMessages_TextMessages(t *testing.T) {
 	}
 
 	// Check that sender names are extracted
-	if !strings.Contains(lines[0], "kevin:") {
-		t.Errorf("Expected 'kevin:' in first line: %q", lines[0])
+	if !strings.Contains(lines[0], "alice:") {
+		t.Errorf("Expected 'alice:' in first line: %q", lines[0])
 	}
 
-	if !strings.Contains(lines[1], "exo:") {
-		t.Errorf("Expected 'exo:' in second line: %q", lines[1])
+	if !strings.Contains(lines[1], "agent:") {
+		t.Errorf("Expected 'agent:' in second line: %q", lines[1])
 	}
 
 	// Check that message bodies are present
@@ -146,8 +146,8 @@ func TestExtractLocalpart(t *testing.T) {
 		input    id.UserID
 		expected string
 	}{
-		{id.UserID("@alice:example.com"), "kevin"},
-		{id.UserID("@agent:example.com"), "exo"},
+		{id.UserID("@alice:example.com"), "alice"},
+		{id.UserID("@agent:example.com"), "agent"},
 		{id.UserID("@user:example.com"), "user"},
 		{id.UserID("invalid"), "invalid"},
 	}
@@ -161,7 +161,7 @@ func TestExtractLocalpart(t *testing.T) {
 }
 
 func TestBuildResumeMessage_WithMessages(t *testing.T) {
-	recentMessages := "[12:34] kevin: deploy the bridge\n[12:33] exo: Starting..."
+	recentMessages := "[12:34] alice: deploy the bridge\n[12:33] agent: Starting..."
 
 	result := buildResumeMessage(recentMessages)
 

@@ -4,13 +4,13 @@ Feature: Edit-in-Place Streaming
   experience in Matrix.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
     And room "general" has an active session
 
   Scenario: First content section sends a new message
     When Claude's response stream emits the first text section
     Then a new message is sent to "general" with that text
-    And the message includes a "[Exo is still working...]" trailer
+    And the message includes a "[Agent is still working...]" trailer
 
   Scenario: Subsequent content edits the existing message
     Given the initial message has been sent with event ID "evt-001"
@@ -29,7 +29,7 @@ Feature: Edit-in-Place Streaming
   Scenario: Working trailer is removed on final edit
     When Claude's response stream ends
     Then the message is edited one final time
-    And the "[Exo is still working...]" trailer is removed
+    And the "[Agent is still working...]" trailer is removed
 
   Scenario: Thinking text is formatted as blockquoted italics
     Given Claude has just executed a tool call

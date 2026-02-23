@@ -4,7 +4,7 @@ Feature: Time-Gap Awareness
   what time it is.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
     And room "general" has an active session "sess-123"
 
   Scenario: Message after a 45-minute gap gets a time reminder

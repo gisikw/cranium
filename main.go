@@ -21,33 +21,33 @@ var version = "dev"
 
 const (
 	homeserver = "https://matrix.example.com"
-	username   = "exo"
-	socketPath = "/tmp/exo-bridge.sock"
+	username   = "agent"
+	socketPath = "/tmp/cranium.sock"
 )
 
 func main() {
-	// Find exocortex directory (parent of cmd/)
+	// Find data directory (parent of cmd/)
 	exePath, err := os.Executable()
 	if err != nil {
 		exePath, _ = os.Getwd()
 	}
 
-	// Walk up to find exocortex root
-	exocortexDir := filepath.Dir(filepath.Dir(filepath.Dir(exePath)))
-	if _, err := os.Stat(filepath.Join(exocortexDir, "CLAUDE.md")); err != nil {
+	// Walk up to find data root (looks for IDENTITY.md as sentinel)
+	dataDir := filepath.Dir(filepath.Dir(filepath.Dir(exePath)))
+	if _, err := os.Stat(filepath.Join(dataDir, "IDENTITY.md")); err != nil {
 		// Fallback: try current directory
 		cwd, _ := os.Getwd()
 		for dir := cwd; dir != "/"; dir = filepath.Dir(dir) {
-			if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
-				exocortexDir = dir
+			if _, err := os.Stat(filepath.Join(dir, "IDENTITY.md")); err == nil {
+				dataDir = dir
 				break
 			}
 		}
 	}
-	log.Printf("Using exocortex directory: %s", exocortexDir)
+	log.Printf("Using data directory: %s", dataDir)
 
 	// Load password
-	passwordPath := filepath.Join(exocortexDir, ".exo-matrix-password")
+	passwordPath := filepath.Join(dataDir, ".cranium-matrix-password")
 	passwordBytes, err := os.ReadFile(passwordPath)
 	if err != nil {
 		log.Fatalf("Failed to read password file: %v", err)
@@ -55,7 +55,7 @@ func main() {
 	password := strings.TrimSpace(string(passwordBytes))
 
 	// Initialize session store
-	sessionsPath := filepath.Join(exocortexDir, ".exo-bridge-sessions.json")
+	sessionsPath := filepath.Join(dataDir, ".cranium-sessions.json")
 	sessions := NewSessionStore(sessionsPath, time.Now)
 
 	// Create Matrix client
@@ -70,7 +70,7 @@ func main() {
 	// Set up crypto helper (handles login and E2EE)
 	log.Printf("Logging in as %s...", username)
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte(password),
-		filepath.Join(exocortexDir, ".exo-bridge-crypto.db"))
+		filepath.Join(dataDir, ".cranium-crypto.db"))
 	if err != nil {
 		log.Fatalf("Failed to create crypto helper: %v", err)
 	}
@@ -89,7 +89,7 @@ func main() {
 	log.Printf("Logged in as %s (device %s, E2EE enabled)", client.UserID, client.DeviceID)
 
 	// Create bridge
-	bridge := NewBridge(client, sessions, exocortexDir)
+	bridge := NewBridge(client, sessions, dataDir)
 	bridge.userID = client.UserID
 
 	// Find ops room for announcements

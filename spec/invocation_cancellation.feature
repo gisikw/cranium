@@ -3,7 +3,7 @@ Feature: Invocation Cancellation
   The cancellation is room-scoped and terminates the top-level Claude process.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
 
   # --- Stop emoji cancellation ---
 
@@ -39,7 +39,7 @@ Feature: Invocation Cancellation
     Given room "general" has no active invocation
     And an approval prompt is pending for event "$approval-evt"
     When @alice reacts with 🛑 to event "$approval-evt"
-    Then the bridge responds to exo-hook with "deny" and message "STOP"
+    Then the bridge responds to cranium-hook with "deny" and message "STOP"
     And no cancellation occurs
 
   Scenario: Stop emoji with no active invocation and no pending approval is ignored

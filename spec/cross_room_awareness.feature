@@ -3,7 +3,7 @@ Feature: Cross-Room Awareness
   one room have awareness of activity in other rooms.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
 
   # --- Summary generation ---
 

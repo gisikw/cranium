@@ -107,7 +107,7 @@ type Bridge struct {
 	client           MatrixClient
 	claude           ClaudeInvoker
 	sessions         *SessionStore
-	exocortexDir     string
+	dataDir     string
 	autoApprovePath  string
 	userID           id.UserID
 	startTime        time.Time
@@ -150,13 +150,13 @@ type pendingApproval struct {
 	response chan ApprovalResponse
 }
 
-func NewBridge(client MatrixClient, sessions *SessionStore, exocortexDir string) *Bridge {
+func NewBridge(client MatrixClient, sessions *SessionStore, dataDir string) *Bridge {
 	return &Bridge{
 		client:           client,
 		claude:           &execClaudeInvoker{},
 		sessions:         sessions,
-		exocortexDir:     exocortexDir,
-		autoApprovePath:  filepath.Join(exocortexDir, ".exo-bridge-approvals.json"),
+		dataDir:     dataDir,
+		autoApprovePath:  filepath.Join(dataDir, ".cranium-approvals.json"),
 		startTime:        time.Now(),
 		clock:            time.Now,
 		typingReadDelay:  800 * time.Millisecond,
@@ -227,7 +227,7 @@ func (b *Bridge) announceStartup(ctx context.Context) {
 	if b.opsRoomID == "" {
 		return
 	}
-	msg := fmt.Sprintf("exo-bridge online: `%s`", version)
+	msg := fmt.Sprintf("cranium online: `%s`", version)
 	b.sendMessage(ctx, b.opsRoomID, msg)
 	log.Printf("Posted startup announcement to ops: %s", version)
 }
@@ -237,7 +237,7 @@ func (b *Bridge) announceDrain(ctx context.Context) {
 	if b.opsRoomID == "" {
 		return
 	}
-	b.sendMessage(ctx, b.opsRoomID, "exo-bridge upgrading...")
+	b.sendMessage(ctx, b.opsRoomID, "cranium upgrading...")
 	log.Printf("Posted drain announcement to ops")
 }
 

@@ -4,7 +4,7 @@ Feature: Image Handling
   referencing the saved image path.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
     And room "general" has an active session
 
   # --- Encrypted vs Unencrypted ---

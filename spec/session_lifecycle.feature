@@ -3,7 +3,7 @@ Feature: Session Lifecycle
   and new rooms can be created.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
 
   # --- !clear ---
 
@@ -79,5 +79,5 @@ Feature: Session Lifecycle
     When @alice sends "!new my-project" in "general"
     Then a new Matrix room is created with name "my-project"
     And @alice is invited to the new room
-    And both @exo and @alice have admin power level (100)
+    And both @agent and @alice have admin power level (100)
     And a confirmation is sent in "general" with the new room name

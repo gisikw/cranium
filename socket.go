@@ -82,7 +82,7 @@ func (b *Bridge) handleSocketConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Default type is "approval" for backwards compatibility with exo-hook
+	// Default type is "approval" for backwards compatibility with older hook clients
 	if req.Type == "" || req.Type == "approval" {
 		approvalReq := ApprovalRequest{
 			SessionID: req.SessionID,
@@ -179,10 +179,10 @@ func (b *Bridge) handleBreadcrumbRequest(ctx context.Context, conn net.Conn, req
 	}
 }
 
-// checkResumeBreadcrumb looks for a .exo-bridge-resume file left by the upgrade
+// checkResumeBreadcrumb looks for a .cranium-resume file left by the upgrade
 // script and, if found, triggers a resume invocation for the specified room.
 func (b *Bridge) checkResumeBreadcrumb(ctx context.Context) {
-	resumePath := filepath.Join(b.exocortexDir, ".exo-bridge-resume")
+	resumePath := filepath.Join(b.dataDir, ".cranium-resume")
 	data, err := os.ReadFile(resumePath)
 	if err != nil {
 		return // no breadcrumb, nothing to do

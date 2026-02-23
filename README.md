@@ -27,7 +27,7 @@ Cranium expects the following environment variables:
 
 ```bash
 MATRIX_PASSWORD=...      # Matrix account password
-EXO_SESSION_ID=...       # Optional: session ID for self-awareness
+CRANIUM_SESSION_ID=...   # Optional: session ID for self-awareness
 ```
 
 See `.env.example` for the full list.
@@ -36,7 +36,7 @@ See `.env.example` for the full list.
 
 Cranium is parameterized by the directory it runs from. It reads:
 
-- `EXO.md` (or equivalent identity file) for `--append-system-prompt` injection
+- `IDENTITY.md` (or equivalent identity file) for `--append-system-prompt` injection
 - `handoffs/<room-slug>/` for session continuity
 - `summaries/<room-slug>.json` for cross-room awareness
 

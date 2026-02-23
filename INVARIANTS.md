@@ -64,7 +64,7 @@ with rationale. Don't just ignore it.
 
 ## Error Handling
 
-- **Log and continue, don't crash.** Callosum is a long-running daemon.
+- **Log and continue, don't crash.** Cranium is a long-running daemon.
   Failures in side effects (typing indicators, pins, summaries) are logged
   and swallowed.
 - **The critical path is message -> agent -> response.** That path must
@@ -85,8 +85,8 @@ with rationale. Don't just ignore it.
 
 ## Parameterization
 
-- **Callosum does not own identity.** Identity (system prompts, persona
-  configuration) is injected by the caller via configuration paths. Callosum
+- **Cranium does not own identity.** Identity (system prompts, persona
+  configuration) is injected by the caller via configuration paths. Cranium
   reads identity files; it does not define them.
 - **Storage paths are configurable.** Handoffs, summaries, and session state
   are relative to a base directory passed at startup, not hardcoded.

@@ -26,7 +26,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 	var handoffContent string
 	if isFreshSession && roomName != "" {
 		slug := slugify(roomName)
-		handoffDir := filepath.Join(b.exocortexDir, "handoffs", slug)
+		handoffDir := filepath.Join(b.dataDir, "handoffs", slug)
 		if entries, err := os.ReadDir(handoffDir); err == nil {
 			var latest string
 			for _, e := range entries {
@@ -82,13 +82,13 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		}
 	}
 
-	// Read EXO.md content — always injected via --append-system-prompt
-	var exoMdContent string
-	exoMdPath := filepath.Join(b.exocortexDir, "EXO.md")
-	if data, err := os.ReadFile(exoMdPath); err == nil && len(data) > 0 {
-		exoMdContent = string(data)
+	// Read identity file content — always injected via --append-system-prompt
+	var systemPromptContent string
+	systemPromptPath := filepath.Join(b.dataDir, "IDENTITY.md")
+	if data, err := os.ReadFile(systemPromptPath); err == nil && len(data) > 0 {
+		systemPromptContent = string(data)
 	} else if err != nil {
-		log.Printf("Warning: could not read EXO.md at %s: %v", exoMdPath, err)
+		log.Printf("Warning: could not read identity file at %s: %v", systemPromptPath, err)
 	}
 
 	// Build pure invocation plan
@@ -105,7 +105,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		InterruptedContext: interruptedContext,
 		Now:                b.now(),
 		ProjectDir:         projectDir,
-		ExoMdContent:       exoMdContent,
+		SystemPromptContent: systemPromptContent,
 	})
 
 	// Apply side effects from the plan
@@ -128,11 +128,11 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 	eventLogPath := filepath.Join(os.TempDir(), "ko-events-"+eventLogSlug+".jsonl")
 
 	env := []string{
-		"EXO_ROOM_ID=" + string(roomID),
-		"EXO_SESSION_ID=" + sessionID,
+		"CRANIUM_ROOM_ID=" + string(roomID),
+		"CRANIUM_SESSION_ID=" + sessionID,
 		"KO_EVENT_LOG=" + eventLogPath,
 	}
-	workDir := b.exocortexDir
+	workDir := b.dataDir
 	if plan.WorkDir != "" {
 		workDir = plan.WorkDir
 	}
@@ -177,7 +177,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 			"warming up the thinking apparatus",
 		}
 		msg := messages[rng.Intn(len(messages))]
-		return "\n\n---\n*[Exo is " + msg + "...]*"
+		return "\n\n---\n*[Agent is " + msg + "...]*"
 	}
 
 	// Proactive message splitting: Synapse's default max event size is ~64KB.

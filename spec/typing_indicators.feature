@@ -3,7 +3,7 @@ Feature: Typing Indicators
   including read receipts and typing indicators.
 
   Background:
-    Given the bridge is connected to Matrix as @exo
+    Given the bridge is connected to Matrix as @agent
 
   Scenario: Read receipt is sent before typing begins
     When @alice sends a message in "general"

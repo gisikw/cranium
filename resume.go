@@ -74,7 +74,7 @@ func formatRecentMessages(events []*event.Event, limit int) string {
 }
 
 // extractLocalpart extracts the localpart from a Matrix user ID.
-// Example: @alice:example.com -> kevin
+// Example: @alice:example.com -> alice
 func extractLocalpart(userID id.UserID) string {
 	s := string(userID)
 	s = strings.TrimPrefix(s, "@")
@@ -88,7 +88,7 @@ func extractLocalpart(userID id.UserID) string {
 // If recent messages are available, they're included in the system reminder.
 // Falls back to a default message if fetching messages fails or room is empty.
 func buildResumeMessage(recentMessages string) string {
-	baseMessage := "IMPORTANT: The exo-bridge was restarted. The world may have changed while you were away — tasks you initiated (including ko build pipelines) may have completed. Before continuing, reorient: check whether your in-flight work already landed. Do not assume the state is the same as when you last acted."
+	baseMessage := "IMPORTANT: The cranium bridge was restarted. The world may have changed while you were away — tasks you initiated (including ko build pipelines) may have completed. Before continuing, reorient: check whether your in-flight work already landed. Do not assume the state is the same as when you last acted."
 
 	if recentMessages == "" {
 		return fmt.Sprintf("<system-reminder>%s</system-reminder>", baseMessage)

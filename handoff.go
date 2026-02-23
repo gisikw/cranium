@@ -58,7 +58,7 @@ Be concise but complete. Write in markdown. Do not use any tools — just respon
 
 	// Use the project directory if the room matches one, since the session
 	// was created there and --resume needs the same cwd.
-	workDir := b.exocortexDir
+	workDir := b.dataDir
 	if roomName != "" {
 		candidate := filepath.Join(os.Getenv("HOME"), "Projects", slugify(roomName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
@@ -104,7 +104,7 @@ Be concise but complete. Write in markdown. Do not use any tools — just respon
 		return fmt.Errorf("handoff: empty result from Claude")
 	}
 
-	handoffDir := filepath.Join(b.exocortexDir, "handoffs", slug)
+	handoffDir := filepath.Join(b.dataDir, "handoffs", slug)
 	if err := os.MkdirAll(handoffDir, 0755); err != nil {
 		return fmt.Errorf("handoff: mkdir: %w", err)
 	}

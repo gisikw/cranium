@@ -120,7 +120,7 @@ type InvocationPlan struct {
 	ShouldMarkInvoked        bool
 	ShouldUpdateReminderAt   bool
 	ReminderBucket           int
-	WorkDir                  string // project dir if matched, otherwise empty (caller defaults to exocortexDir)
+	WorkDir                  string // project dir if matched, otherwise empty (caller defaults to dataDir)
 }
 
 // SessionContext holds all input data needed to plan a Claude invocation.
@@ -137,7 +137,7 @@ type SessionContext struct {
 	InterruptedContext string
 	Now                time.Time
 	ProjectDir         string // ~/Projects/<slug> if it exists as a directory
-	ExoMdContent       string // contents of EXO.md, always injected via --append-system-prompt
+	SystemPromptContent string // contents of identity file, always injected via --append-system-prompt
 }
 
 // buildInvocationPlan is a pure function that makes all invocation decisions.
@@ -176,11 +176,11 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 		reminderBucket = saturationBucket(ctx.LastSaturation)
 	}
 
-	// Build append-system-prompt: always includes EXO.md content,
+	// Build append-system-prompt: always includes identity content,
 	// plus handoff/landscape for fresh sessions
 	var appendParts []string
-	if ctx.ExoMdContent != "" {
-		appendParts = append(appendParts, ctx.ExoMdContent)
+	if ctx.SystemPromptContent != "" {
+		appendParts = append(appendParts, ctx.SystemPromptContent)
 	}
 	if isFreshSession {
 		if extra := buildAppendSystemPrompt(ctx.HandoffContent, ctx.Landscape); extra != "" {

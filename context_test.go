@@ -546,7 +546,7 @@ func TestBuildInvocationPlan_ProjectDir(t *testing.T) {
 		RoomName:     "knockout",
 		Message:      "hello",
 		ProjectDir:   "/home/dev/Projects/knockout",
-		ExoMdContent: "# Exocortex\nBoot context here.",
+		SystemPromptContent: "# System Prompt\nBoot context here.",
 	}
 
 	plan := buildInvocationPlan(ctx)
@@ -556,9 +556,9 @@ func TestBuildInvocationPlan_ProjectDir(t *testing.T) {
 		t.Errorf("plan.WorkDir = %q, want %q", plan.WorkDir, "/home/dev/Projects/knockout")
 	}
 
-	// Should include EXO.md content in append-system-prompt
-	if !contains(plan.AppendSystemPrompt, "# Exocortex") {
-		t.Errorf("append-system-prompt missing EXO.md content: %q", plan.AppendSystemPrompt)
+	// Should include IDENTITY.md content in append-system-prompt
+	if !contains(plan.AppendSystemPrompt, "# System Prompt") {
+		t.Errorf("append-system-prompt missing IDENTITY.md content: %q", plan.AppendSystemPrompt)
 	}
 }
 
@@ -569,45 +569,45 @@ func TestBuildInvocationPlan_NoProjectDir(t *testing.T) {
 		RoomName:     "general",
 		Message:      "hello",
 		ProjectDir:   "", // no matching project
-		ExoMdContent: "# Exocortex\nBoot context here.",
+		SystemPromptContent: "# System Prompt\nBoot context here.",
 	}
 
 	plan := buildInvocationPlan(ctx)
 
-	// WorkDir should be empty (caller defaults to exocortexDir)
+	// WorkDir should be empty (caller defaults to dataDir)
 	if plan.WorkDir != "" {
 		t.Errorf("plan.WorkDir should be empty when no project dir, got %q", plan.WorkDir)
 	}
 
-	// Should still include EXO.md content in append-system-prompt
-	if !contains(plan.AppendSystemPrompt, "# Exocortex") {
-		t.Errorf("append-system-prompt missing EXO.md content without project dir: %q", plan.AppendSystemPrompt)
+	// Should still include IDENTITY.md content in append-system-prompt
+	if !contains(plan.AppendSystemPrompt, "# System Prompt") {
+		t.Errorf("append-system-prompt missing IDENTITY.md content without project dir: %q", plan.AppendSystemPrompt)
 	}
 }
 
-func TestBuildInvocationPlan_ExoMdAlwaysInjected(t *testing.T) {
-	// Even on resumed sessions, EXO.md content should be in append-system-prompt
+func TestBuildInvocationPlan_SystemPromptAlwaysInjected(t *testing.T) {
+	// Even on resumed sessions, IDENTITY.md content should be in append-system-prompt
 	ctx := SessionContext{
 		SessionID:    "sess-123",
 		HasSession:   true,
 		RoomName:     "general",
 		Message:      "hello",
-		ExoMdContent: "# Exocortex\nBoot context.",
+		SystemPromptContent: "# System Prompt\nBoot context.",
 	}
 
 	plan := buildInvocationPlan(ctx)
 
-	// Should have --append-system-prompt with EXO.md content
+	// Should have --append-system-prompt with IDENTITY.md content
 	found := false
 	for i, arg := range plan.CLIArgs {
 		if arg == "--append-system-prompt" && i+1 < len(plan.CLIArgs) {
-			if contains(plan.CLIArgs[i+1], "# Exocortex") {
+			if contains(plan.CLIArgs[i+1], "# System Prompt") {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Errorf("resumed session should still inject EXO.md via --append-system-prompt: %v", plan.CLIArgs)
+		t.Errorf("resumed session should still inject IDENTITY.md via --append-system-prompt: %v", plan.CLIArgs)
 	}
 }
 

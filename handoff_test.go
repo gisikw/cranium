@@ -28,7 +28,7 @@ func TestGenerateHandoff_WritesFile(t *testing.T) {
 	}
 
 	// Check that a handoff file was written
-	handoffDir := filepath.Join(b.exocortexDir, "handoffs", "test-room")
+	handoffDir := filepath.Join(b.dataDir, "handoffs", "test-room")
 	entries, err := os.ReadDir(handoffDir)
 	if err != nil {
 		t.Fatalf("handoff dir not created: %v", err)

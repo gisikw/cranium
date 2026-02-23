@@ -29,7 +29,7 @@ type RoomSummary struct {
 const summaryThreshold = 10
 
 func (b *Bridge) loadRoomSummary(slug string) (*RoomSummary, error) {
-	path := filepath.Join(b.exocortexDir, "summaries", slug+".json")
+	path := filepath.Join(b.dataDir, "summaries", slug+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -42,7 +42,7 @@ func (b *Bridge) loadRoomSummary(slug string) (*RoomSummary, error) {
 }
 
 func (b *Bridge) saveRoomSummary(slug string, s *RoomSummary) error {
-	dir := filepath.Join(b.exocortexDir, "summaries")
+	dir := filepath.Join(b.dataDir, "summaries")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("summaries mkdir: %w", err)
 	}
@@ -54,7 +54,7 @@ func (b *Bridge) saveRoomSummary(slug string, s *RoomSummary) error {
 }
 
 func (b *Bridge) loadAllSummaries() []RoomSummary {
-	dir := filepath.Join(b.exocortexDir, "summaries")
+	dir := filepath.Join(b.dataDir, "summaries")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -151,7 +151,7 @@ Write a 2-4 sentence summary of what this room's conversation has been about. Th
 
 	// Use the project directory if the room matches one, since the session
 	// was created there and --resume needs the same cwd.
-	workDir := b.exocortexDir
+	workDir := b.dataDir
 	if roomName != "" {
 		candidate := filepath.Join(os.Getenv("HOME"), "Projects", slugify(roomName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
