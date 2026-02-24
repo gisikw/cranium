@@ -16,6 +16,10 @@ cranium.yaml
 # Ko build artifacts
 .ko/builds/
 
-# Go
+# Go binaries
 /cranium
+/cranium.old
 /result
+cmd/crn-post-image/crn-post-image
+cmd/crn-post-audio/crn-post-audio
+cmd/crn-breadcrumb/crn-breadcrumb
