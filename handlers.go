@@ -65,7 +65,33 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 		message = formatImagePrompt(imagePath, content.GetCaption())
 	}
 
-	// Only handle text and image messages
+	// Handle audio messages: download, transcribe via STT, forward text
+	if content.MsgType == event.MsgAudio {
+		if b.sttURL == "" {
+			log.Printf("Audio message received but no stt_url configured — ignoring")
+			b.sendMessage(ctx, roomID, "Audio messages aren't supported yet (no STT service configured).")
+			return
+		}
+		audioPath, err := b.saveMatrixAudio(ctx, content)
+		if err != nil {
+			log.Printf("Failed to save audio: %v", err)
+			b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to download audio: %v", err))
+			return
+		}
+		log.Printf("Transcribing audio from %s via %s", audioPath, b.sttURL)
+		transcription, err := transcribeAudio(b.sttURL, audioPath)
+		if err != nil {
+			log.Printf("Failed to transcribe audio: %v", err)
+			b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to transcribe audio: %v", err))
+			return
+		}
+		if transcription != "" {
+			b.sendMessage(ctx, roomID, formatTranscriptEcho(transcription))
+		}
+		message = formatAudioPrompt(transcription, content.GetCaption())
+	}
+
+	// Only handle text, image, and audio messages
 	if !isSupportedMessageType(content.MsgType) {
 		log.Printf("Ignoring unsupported message type: %s", content.MsgType)
 		return

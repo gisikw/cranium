@@ -98,6 +98,7 @@ func main() {
 		SummaryThreshold: identityCfg.SummaryTurnThreshold,
 		ExcludeRooms:     excludeRooms,
 		SocketPath:       craniumCfg.SocketPath,
+		STTURL:           craniumCfg.STTURL,
 	})
 	bridge.userID = client.UserID
 	bridge.systemPromptContent = systemPromptContent

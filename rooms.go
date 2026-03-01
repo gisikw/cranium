@@ -127,6 +127,83 @@ func (b *Bridge) saveMatrixImage(ctx context.Context, content *event.MessageEven
 	return savePath, nil
 }
 
+// saveMatrixAudio downloads an audio file from Matrix and saves it to notes/attachments/
+func (b *Bridge) saveMatrixAudio(ctx context.Context, content *event.MessageEventContent) (string, error) {
+	var audioBytes []byte
+
+	if content.File != nil {
+		mxcURL, err := content.File.URL.Parse()
+		if err != nil {
+			return "", fmt.Errorf("failed to parse encrypted MXC URL: %w", err)
+		}
+		audioBytes, err = b.client.DownloadBytes(ctx, mxcURL)
+		if err != nil {
+			return "", fmt.Errorf("failed to download encrypted audio: %w", err)
+		}
+		if err := content.File.DecryptInPlace(audioBytes); err != nil {
+			return "", fmt.Errorf("failed to decrypt audio: %w", err)
+		}
+	} else {
+		mxcURL, err := content.URL.Parse()
+		if err != nil {
+			return "", fmt.Errorf("failed to parse MXC URL: %w", err)
+		}
+		audioBytes, err = b.client.DownloadBytes(ctx, mxcURL)
+		if err != nil {
+			return "", fmt.Errorf("failed to download audio: %w", err)
+		}
+	}
+
+	// Determine file extension from MIME type or original filename
+	origName := content.GetFileName()
+	ext := filepath.Ext(origName)
+	if ext == "" && content.Info != nil {
+		ext = audioExtFromMime(content.Info.MimeType)
+	}
+	if ext == "" {
+		ext = ".ogg" // Element voice messages default to ogg/opus
+	}
+
+	attachDir := b.attachmentsDir
+	os.MkdirAll(attachDir, 0755)
+
+	filename := fmt.Sprintf("%s_%s%s",
+		b.now().Format("2006-01-02_15-04-05"),
+		strings.TrimSuffix(origName, filepath.Ext(origName)),
+		ext,
+	)
+	savePath := filepath.Join(attachDir, filename)
+
+	if err := os.WriteFile(savePath, audioBytes, 0644); err != nil {
+		return "", fmt.Errorf("failed to write audio: %w", err)
+	}
+
+	log.Printf("Saved audio to %s (%d bytes)", savePath, len(audioBytes))
+	return savePath, nil
+}
+
+// audioExtFromMime returns a file extension for a given audio MIME type.
+func audioExtFromMime(mime string) string {
+	switch mime {
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/flac":
+		return ".flac"
+	case "audio/mp4", "audio/aac":
+		return ".m4a"
+	case "audio/opus":
+		return ".opus"
+	case "audio/webm":
+		return ".webm"
+	default:
+		return ""
+	}
+}
+
 // updateContextPin creates or updates the pinned context saturation indicator.
 // First pin at 60%; subsequent turns edit the pinned message silently.
 func (b *Bridge) updateContextPin(ctx context.Context, roomID id.RoomID, saturation, usedK, totalK int) {

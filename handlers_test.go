@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -471,5 +475,57 @@ func TestBridge_StopEmoji_NoActiveInvocation_FallsThrough(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out — stop emoji should have fallen through to approval handler")
+	}
+}
+
+// --- Integration tests: audio transcript echo ---
+// Spec: message_routing.feature - "An audio transcription is echoed as a blockquote before agent dispatch"
+
+func TestBridge_HandleMessage_AudioEchoesTranscript(t *testing.T) {
+	// Spin up a mock STT server returning a fixed transcription
+	sttServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"text": "Hello from voice"}`)
+	}))
+	defer sttServer.Close()
+
+	b, mc, mci := newTestBridge(t)
+	b.sttURL = sttServer.URL
+
+	mci.QueueResponse(
+		claudeAssistantMsg("sess-stt", "Got it!"),
+		claudeResultMsg("sess-stt", "Got it!", 200000),
+	)
+
+	ctx := context.Background()
+	roomID := id.RoomID("!test:example.com")
+
+	content := event.MessageEventContent{
+		MsgType: event.MsgAudio,
+		Body:    "voice.ogg",
+		URL:     "mxc://matrix.example.com/fake-audio",
+	}
+	evt := &event.Event{
+		Sender:    "@alice:example.com",
+		RoomID:    roomID,
+		ID:        "$audio-echo-test",
+		Timestamp: b.startTime.Add(1 * time.Minute).UnixMilli(),
+		Type:      event.EventMessage,
+	}
+	evt.Content.Parsed = &content
+
+	b.handleMessage(ctx, evt)
+
+	msgs := mc.getMessages()
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages (echo + Claude response), got %d", len(msgs))
+	}
+
+	// First message should be the transcript echo blockquote
+	if !strings.HasPrefix(msgs[0].Body, "> ") {
+		t.Errorf("first message should be transcript echo starting with '> ', got: %q", msgs[0].Body)
+	}
+	if !contains(msgs[0].Body, "Hello from voice") {
+		t.Errorf("echo should contain transcription text, got: %q", msgs[0].Body)
 	}
 }

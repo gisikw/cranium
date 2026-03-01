@@ -20,8 +20,22 @@ Feature: Message Routing
     Then the image is saved to notes/attachments/ with a timestamped filename
     And Claude is invoked with a prompt referencing the saved image path and caption
 
-  Scenario: Non-text, non-image message types are dropped
+  Scenario: An audio message is transcribed and forwarded to Claude
+    Given the room "general" has no active invocation
+    And the STT service returns "Hello from voice" for the audio
     When @alice sends an audio message in "general"
+    Then the transcription "Hello from voice" is echoed as a blockquote before agent dispatch
+    And Claude is invoked with a prompt containing the transcription
+
+  Scenario: An empty audio transcription is not echoed
+    Given the room "general" has no active invocation
+    And the STT service returns "" for the audio
+    When @alice sends an audio message in "general"
+    Then no transcript echo is sent to the room
+    And Claude is still invoked with the (empty) transcription prompt
+
+  Scenario: Non-text, non-image, non-audio message types are dropped
+    When @alice sends a video message in "general"
     Then no Claude invocation occurs
 
   Scenario: Messages from the bot itself are ignored

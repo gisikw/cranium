@@ -4,14 +4,15 @@ cranium dev shell
   just deploy  — build + upgrade
 Looking at this ticket:
 
-**Title**: "Echo transcription as quote block before agent dispatch"
+**Title:** "Echo transcription as quote block before agent dispatch"
 
-**Description**: Specifies what cranium should do when a voice message transcription completes—post the transcript as a Markdown quote block back to the room before forwarding to the agent. Includes the purpose (make failures visible).
+**Key indicators:**
+- Describes a specific feature to implement: post transcription as a Markdown quote block
+- Provides clear expected behavior and rationale
+- Includes a decision note about edge case handling (empty transcriptions)
+- Expected output is code changes to add this functionality
 
-This describes **what to build**, not what's broken:
-- Clear feature request with defined behavior
-- Specific implementation details (Markdown quote block, timing relative to agent dispatch)
-- Expected output is code changes
+This is a **task**. The ticket prescriptively describes what to build, not investigating whether something is possible or diagnosing broken behavior.
 
 ```json
 {"disposition": "route", "workflow": "task"}

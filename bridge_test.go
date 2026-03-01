@@ -136,8 +136,77 @@ func TestFormatImagePrompt(t *testing.T) {
 	}
 }
 
+// --- formatAudioPrompt ---
+// Spec: message_routing.feature - "An audio message is transcribed and forwarded to Claude"
+
+func TestFormatAudioPrompt(t *testing.T) {
+	tests := []struct {
+		name          string
+		transcription string
+		caption       string
+		expected      string
+	}{
+		{
+			"transcription only",
+			"Hello, this is a voice message",
+			"",
+			"[Transcribed from audio]\n\nHello, this is a voice message",
+		},
+		{
+			"with caption",
+			"Hello, this is a voice message",
+			"important note",
+			"[Transcribed from audio]\n\nHello, this is a voice message\n\nimportant note",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatAudioPrompt(tt.transcription, tt.caption)
+			if got != tt.expected {
+				t.Errorf("formatAudioPrompt(%q, %q) = %q, want %q", tt.transcription, tt.caption, got, tt.expected)
+			}
+		})
+	}
+}
+
+// --- formatTranscriptEcho ---
+// Spec: message_routing.feature - "An audio transcription is echoed as a blockquote before agent dispatch"
+
+func TestFormatTranscriptEcho(t *testing.T) {
+	tests := []struct {
+		name          string
+		transcription string
+		expected      string
+	}{
+		{
+			"single line",
+			"Hello from voice",
+			"> Hello from voice",
+		},
+		{
+			"multi line",
+			"First line\nSecond line\nThird line",
+			"> First line\n> Second line\n> Third line",
+		},
+		{
+			// Caller guards against empty input; function returns "> " for empty string
+			"empty string",
+			"",
+			"> ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatTranscriptEcho(tt.transcription)
+			if got != tt.expected {
+				t.Errorf("formatTranscriptEcho(%q) = %q, want %q", tt.transcription, got, tt.expected)
+			}
+		})
+	}
+}
+
 // --- isSupportedMessageType ---
-// Spec: message_routing.feature - "Non-text, non-image message types are dropped"
+// Spec: message_routing.feature - "Non-text, non-image, non-audio message types are dropped"
 
 func TestIsSupportedMessageType(t *testing.T) {
 	tests := []struct {
@@ -146,7 +215,7 @@ func TestIsSupportedMessageType(t *testing.T) {
 	}{
 		{event.MsgText, true},
 		{event.MsgImage, true},
-		{event.MsgAudio, false},
+		{event.MsgAudio, true},
 		{event.MsgVideo, false},
 		{event.MsgFile, false},
 		{event.MsgNotice, false},

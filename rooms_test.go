@@ -8,6 +8,35 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
+// --- audioExtFromMime ---
+// Spec: message_routing.feature - audio MIME type to extension mapping
+
+func TestAudioExtFromMime(t *testing.T) {
+	tests := []struct {
+		mime string
+		ext  string
+	}{
+		{"audio/mpeg", ".mp3"},
+		{"audio/wav", ".wav"},
+		{"audio/ogg", ".ogg"},
+		{"audio/flac", ".flac"},
+		{"audio/mp4", ".m4a"},
+		{"audio/aac", ".m4a"},
+		{"audio/opus", ".opus"},
+		{"audio/webm", ".webm"},
+		{"audio/unknown", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mime, func(t *testing.T) {
+			got := audioExtFromMime(tt.mime)
+			if got != tt.ext {
+				t.Errorf("audioExtFromMime(%q) = %q, want %q", tt.mime, got, tt.ext)
+			}
+		})
+	}
+}
+
 // --- Integration tests: sendMessage/editMessage ---
 // Spec: edit_in_place.feature — message sending and editing through the Bridge
 

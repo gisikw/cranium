@@ -2,16 +2,14 @@ cranium dev shell
   just test    — run tests
   just build   — build binary
   just deploy  — build + upgrade
-Plan written to `.ko/tickets/crn-68b8.artifacts/plan.md`. Here's the summary:
+The plan is updated. Both open questions are now resolved:
 
-**Goal**: Echo the transcription as a Markdown blockquote to the room immediately after STT succeeds, before forwarding to Claude.
+- **Empty transcriptions**: skip the echo (confirmed by ticket author)
+- **MsgType**: `sendMessage` (required by the Markdown blockquote requirement)
 
-**Key files**:
-- `bridge.go` — add `formatTranscriptEcho(transcription string) string` (prefixes each line with `> `)
-- `handlers.go:88` — call `b.sendMessage(ctx, roomID, formatTranscriptEcho(transcription))` after transcription succeeds
-- `bridge_test.go` — unit test for the formatter
-- `handlers_test.go` — integration test using `httptest.Server` to mock the STT endpoint
+The plan is ready to implement. The 4 tasks are:
 
-**Assumptions captured**:
-- Empty transcriptions skip the echo (avoid emitting a lone `> `)
-- Uses `sendMessage` (MsgText + HTML rendering) so the `> ` renders as a proper `<blockquote>` in Matrix clients — consistent with the ticket's "Markdown quote block" wording
+1. **`bridge.go`** — Add `formatTranscriptEcho(transcription string) string` after `formatAudioPrompt`
+2. **`handlers.go:88`** — Call `b.sendMessage(ctx, roomID, formatTranscriptEcho(transcription))` after STT succeeds (guarded by `if transcription != ""`)
+3. **`bridge_test.go`** — Unit test `TestFormatTranscriptEcho` (single-line, multi-line, empty)
+4. **`handlers_test.go`** — Integration test `TestBridge_HandleMessage_AudioEchoesTranscript` with `httptest.Server` mocking STT

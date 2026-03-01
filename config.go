@@ -19,6 +19,7 @@ type CraniumConfig struct {
 	IdentityFile string   `yaml:"identity_file"`
 	OpsRoom      string   `yaml:"ops_room"`
 	ExcludeRooms []string `yaml:"exclude_rooms"`
+	STTURL       string   `yaml:"stt_url"`
 }
 
 // IdentityConfig holds personality/identity configuration.

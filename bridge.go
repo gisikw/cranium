@@ -127,6 +127,7 @@ type Bridge struct {
 	excludeRooms       []string // room name prefixes to exclude from Claude sessions
 	systemPromptContent string // contents of identity file, injected via --append-system-prompt
 	socketPath          string // unix socket path for hook requests
+	sttURL              string // speech-to-text service URL (e.g. https://stt.gisi.network/transcribe)
 
 	// Typing indicator delays (configurable for testing)
 	typingReadDelay  time.Duration // delay before sending read receipt (default 800ms)
@@ -168,6 +169,7 @@ type BridgeConfig struct {
 	SummaryThreshold int
 	ExcludeRooms     []string
 	SocketPath       string
+	STTURL           string
 }
 
 func NewBridge(client MatrixClient, sessions *SessionStore, dataDir string, cfg BridgeConfig) *Bridge {
@@ -205,6 +207,7 @@ func NewBridge(client MatrixClient, sessions *SessionStore, dataDir string, cfg 
 		summaryThreshold: cfg.SummaryThreshold,
 		excludeRooms:     cfg.ExcludeRooms,
 		socketPath:       cfg.SocketPath,
+		sttURL:           cfg.STTURL,
 		typingReadDelay:  800 * time.Millisecond,
 		typingStartDelay: 200 * time.Millisecond,
 	}
@@ -315,9 +318,28 @@ func formatImagePrompt(imagePath, caption string) string {
 	return fmt.Sprintf("[Image attached: %s]", imagePath)
 }
 
+// formatTranscriptEcho wraps a transcription in a Markdown blockquote for in-room echo.
+// Each line is prefixed with "> " so sendMessage renders it as <blockquote>.
+// Callers should skip the echo when transcription is empty.
+func formatTranscriptEcho(transcription string) string {
+	lines := strings.Split(transcription, "\n")
+	for i, line := range lines {
+		lines[i] = "> " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 // isSupportedMessageType returns true if the message type is one the bridge handles.
 func isSupportedMessageType(msgType event.MessageType) bool {
-	return msgType == event.MsgText || msgType == event.MsgImage
+	return msgType == event.MsgText || msgType == event.MsgImage || msgType == event.MsgAudio
+}
+
+// formatAudioPrompt constructs the Claude prompt for a transcribed audio message.
+func formatAudioPrompt(transcription, caption string) string {
+	if caption != "" {
+		return fmt.Sprintf("[Transcribed from audio]\n\n%s\n\n%s", transcription, caption)
+	}
+	return fmt.Sprintf("[Transcribed from audio]\n\n%s", transcription)
 }
 
 // isMessageAfterStartup returns true if the message timestamp is at or after the bridge start time.

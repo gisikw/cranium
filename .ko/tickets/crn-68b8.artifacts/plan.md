@@ -33,6 +33,8 @@ Add a pure `formatTranscriptEcho(transcription string) string` function that pre
    Verify: new test passes, existing tests unbroken.
 
 ## Open Questions
-1. **Empty transcription**: if STT returns `{"text": ""}`, should `formatTranscriptEcho` emit `> ` (an empty blockquote) or should `handleMessage` skip the echo? Emitting `> ` is visually odd; skipping it is more defensive. Assuming: skip the echo when transcription is empty (guard with `if transcription != ""`).
+None. Both decisions have been resolved:
 
-2. **MsgType for the echo**: `sendMessage` sends `MsgText` (with HTML rendering). `sendNotice` sends `MsgNotice` (no Markdown rendering, no notification). Since the ticket explicitly calls for a "Markdown quote block", `sendMessage` is the right call — the `>` will render as a visual blockquote. Assuming `sendMessage`.
+1. **Empty transcription**: skip the echo when `transcription == ""`. Confirmed by ticket author: "Only echo transcriptions with non-empty text content."
+
+2. **MsgType for the echo**: use `sendMessage` (MsgText + HTML rendering). Required by the ticket's "Markdown quote block" wording so the `> ` renders as a visual `<blockquote>` in Matrix clients.

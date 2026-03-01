@@ -1,0 +1,7 @@
+loop: triaging crn-68b8 — When voice messages transcriptions come back, cranium should the transcript as a quote block message prior to dispatching to the underlying agent for a reply. That way we can debug any transcription failures
+loop: building crn-68b8 — Echo transcription as quote block before agent dispatch
+loop: crn-68b8 FAIL
+loop complete: 1 processed (0 succeeded, 1 failed, 0 blocked, 0 decomposed)
+stopped: empty
+{"blocked":0,"decomposed":0,"failed":1,"runtime_seconds":174.078730292,"stop_reason":"empty","succeeded":0,"tickets_processed":1,"ts":"2026-03-01T05:36:11Z"}
+loop: building crn-68b8 — Echo transcription as quote block before agent dispatch
