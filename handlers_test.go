@@ -479,7 +479,7 @@ func TestBridge_StopEmoji_NoActiveInvocation_FallsThrough(t *testing.T) {
 }
 
 // --- Integration tests: audio transcript echo ---
-// Spec: message_routing.feature - "An audio transcription is echoed as a blockquote before agent dispatch"
+// Spec: message_routing.feature - "An audio transcription is echoed as a threaded reply to the audio message before agent dispatch"
 
 func TestBridge_HandleMessage_AudioEchoesTranscript(t *testing.T) {
 	// Spin up a mock STT server returning a fixed transcription
@@ -521,11 +521,14 @@ func TestBridge_HandleMessage_AudioEchoesTranscript(t *testing.T) {
 		t.Fatalf("expected at least 2 messages (echo + Claude response), got %d", len(msgs))
 	}
 
-	// First message should be the transcript echo blockquote
+	// First message should be the transcript echo blockquote sent as a thread reply
 	if !strings.HasPrefix(msgs[0].Body, "> ") {
 		t.Errorf("first message should be transcript echo starting with '> ', got: %q", msgs[0].Body)
 	}
 	if !contains(msgs[0].Body, "Hello from voice") {
 		t.Errorf("echo should contain transcription text, got: %q", msgs[0].Body)
+	}
+	if msgs[0].ThreadParent != evt.ID {
+		t.Errorf("echo should be a threaded reply to the audio event %q, got ThreadParent=%q", evt.ID, msgs[0].ThreadParent)
 	}
 }

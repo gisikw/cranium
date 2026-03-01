@@ -60,6 +60,23 @@ func (b *Bridge) sendMessage(ctx context.Context, roomID id.RoomID, message stri
 	return resp.EventID
 }
 
+// sendThreadReply sends a markdown-rendered message as a threaded reply to parentEventID.
+func (b *Bridge) sendThreadReply(ctx context.Context, roomID id.RoomID, parentEventID id.EventID, message string) id.EventID {
+	content := event.MessageEventContent{
+		MsgType:       event.MsgText,
+		Body:          message,
+		Format:        event.FormatHTML,
+		FormattedBody: renderMarkdown(message),
+	}
+	content.GetRelatesTo().SetThread(parentEventID, parentEventID)
+	resp, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+	if err != nil {
+		log.Printf("Failed to send thread reply to %s: %v", roomID, err)
+		return ""
+	}
+	return resp.EventID
+}
+
 // editMessage edits an existing message with new content (markdown-rendered).
 // Returns an error if the edit fails (e.g. M_TOO_LARGE / HTTP 413).
 func (b *Bridge) editMessage(ctx context.Context, roomID id.RoomID, eventID id.EventID, message string) error {

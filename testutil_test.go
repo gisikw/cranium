@@ -46,12 +46,13 @@ func containsStr(ss []string, target string) bool {
 
 // sentMessage records a message sent or edited via the mock client
 type sentMessage struct {
-	RoomID  id.RoomID
-	EventID id.EventID      // non-empty for edits
-	Body    string          // plain text body
-	MsgType event.MessageType // MsgText, MsgNotice, etc.
-	IsEdit  bool
-	IsState bool
+	RoomID       id.RoomID
+	EventID      id.EventID        // non-empty for edits
+	Body         string            // plain text body
+	MsgType      event.MessageType // MsgText, MsgNotice, etc.
+	IsEdit       bool
+	IsState      bool
+	ThreadParent id.EventID // non-empty for threaded replies
 }
 
 // typingCall records a UserTyping invocation
@@ -153,12 +154,18 @@ func (m *mockMatrixClient) SendMessageEvent(_ context.Context, roomID id.RoomID,
 			msg.IsEdit = true
 			msg.EventID = c.RelatesTo.EventID
 		}
+		if c.RelatesTo != nil && c.RelatesTo.Type == event.RelThread {
+			msg.ThreadParent = c.RelatesTo.EventID
+		}
 	case *event.MessageEventContent:
 		msg.Body = c.Body
 		msg.MsgType = c.MsgType
 		if c.RelatesTo != nil && c.RelatesTo.Type == event.RelReplace {
 			msg.IsEdit = true
 			msg.EventID = c.RelatesTo.EventID
+		}
+		if c.RelatesTo != nil && c.RelatesTo.Type == event.RelThread {
+			msg.ThreadParent = c.RelatesTo.EventID
 		}
 	}
 

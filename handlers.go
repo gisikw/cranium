@@ -86,7 +86,7 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 			return
 		}
 		if transcription != "" {
-			b.sendMessage(ctx, roomID, formatTranscriptEcho(transcription))
+			b.sendThreadReply(ctx, roomID, evt.ID, formatTranscriptEcho(transcription))
 		}
 		message = formatAudioPrompt(transcription, content.GetCaption())
 	}

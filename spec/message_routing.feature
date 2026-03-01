@@ -24,7 +24,7 @@ Feature: Message Routing
     Given the room "general" has no active invocation
     And the STT service returns "Hello from voice" for the audio
     When @alice sends an audio message in "general"
-    Then the transcription "Hello from voice" is echoed as a blockquote before agent dispatch
+    Then the transcription "Hello from voice" is echoed as a threaded reply to the audio message before agent dispatch
     And Claude is invoked with a prompt containing the transcription
 
   Scenario: An empty audio transcription is not echoed
