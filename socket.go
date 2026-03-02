@@ -36,7 +36,7 @@ type SocketRequest struct {
 
 	// TTS fields
 	Text  string `json:"text,omitempty"`
-	Voice string `json:"voice,omitempty"`  // default: "af_bella"
+	Voice string `json:"voice,omitempty"`  // default: "af_nicole"
 	Format string `json:"format,omitempty"` // default: "mp3"
 }
 
@@ -417,7 +417,7 @@ var ttsEndpoint = "https://tts.gisi.network/synthesize"
 // Returns the event ID of the posted audio message, or an error.
 func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, text, voice, format string) (id.EventID, error) {
 	if voice == "" {
-		voice = "af_bella"
+		voice = "af_nicole"
 	}
 	if format == "" {
 		format = "mp3"
