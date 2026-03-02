@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -530,5 +531,108 @@ func TestBridge_HandleMessage_AudioEchoesTranscript(t *testing.T) {
 	}
 	if msgs[0].ThreadParent != evt.ID {
 		t.Errorf("echo should be a threaded reply to the audio event %q, got ThreadParent=%q", evt.ID, msgs[0].ThreadParent)
+	}
+}
+
+// --- Auto-TTS tests ---
+
+func TestBridge_HandleMessage_AutoTTS_AudioPrefixRoom(t *testing.T) {
+	// When the room name starts with "audio-", the agent's text reply
+	// should be followed by a synthesized audio message.
+	var ttsCalled bool
+	var ttsText string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ttsCalled = true
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			ttsText = body["text"]
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-tts-audio"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	b, mc, mci := newTestBridge(t)
+	b.typingReadDelay = 0
+	b.typingStartDelay = 0
+	ctx := context.Background()
+	roomID := id.RoomID("!audio:matrix.example.com")
+
+	// Set up room name with audio- prefix
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "audio-hearth"
+
+	mci.QueueResponse(
+		claudeAssistantMsg("sess-tts", "Hello from the agent!"),
+		claudeResultMsg("sess-tts", "Hello from the agent!", 200000),
+	)
+
+	evt := makeEvent("@alice:example.com", roomID, "hi there", b.startTime.Add(1*time.Minute))
+	b.handleMessage(ctx, evt)
+
+	// Wait for TTS goroutine to complete
+	time.Sleep(200 * time.Millisecond)
+
+	if !ttsCalled {
+		t.Fatal("expected TTS endpoint to be called for audio-prefixed room")
+	}
+	if ttsText != "Hello from the agent!" {
+		t.Errorf("expected TTS text 'Hello from the agent!', got %q", ttsText)
+	}
+
+	// Should have at least 2 messages: the text reply and the audio
+	msgs := mc.getMessages()
+	foundAudio := false
+	for _, msg := range msgs {
+		if msg.RoomID == roomID && msg.Body == "" {
+			// Audio messages are sent via SendMessageEvent with raw content maps,
+			// which don't populate sentMessage.Body in the mock.
+			foundAudio = true
+		}
+	}
+	if !foundAudio {
+		t.Error("expected an audio message to be posted to the room")
+	}
+}
+
+func TestBridge_HandleMessage_NoAutoTTS_NonAudioRoom(t *testing.T) {
+	// Rooms without the "audio-" prefix should NOT trigger TTS.
+	var ttsCalled bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ttsCalled = true
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-tts-audio"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	b, mc, mci := newTestBridge(t)
+	b.typingReadDelay = 0
+	b.typingStartDelay = 0
+	ctx := context.Background()
+	roomID := id.RoomID("!regular:matrix.example.com")
+
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "cranium"
+
+	mci.QueueResponse(
+		claudeAssistantMsg("sess-no-tts", "Just text"),
+		claudeResultMsg("sess-no-tts", "Just text", 200000),
+	)
+
+	evt := makeEvent("@alice:example.com", roomID, "hello", b.startTime.Add(1*time.Minute))
+	b.handleMessage(ctx, evt)
+
+	time.Sleep(200 * time.Millisecond)
+
+	if ttsCalled {
+		t.Error("TTS endpoint should NOT be called for non-audio-prefixed room")
 	}
 }

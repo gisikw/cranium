@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -699,5 +701,208 @@ func TestBridge_PostAudio_FileNotFound(t *testing.T) {
 
 	if !strings.Contains(resp["error"], "failed to read file") {
 		t.Errorf("expected file read error, got %+v", resp)
+	}
+}
+
+// --- TTS tests ---
+
+func TestBridge_TTS_Success(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	// Set up a mock TTS server
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected application/json content-type, got %s", r.Header.Get("Content-Type"))
+		}
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["text"] != "Hello world" {
+			t.Errorf("expected text 'Hello world', got %q", body["text"])
+		}
+		if body["voice"] != "af_heart" {
+			t.Errorf("expected voice 'af_heart', got %q", body["voice"])
+		}
+		if body["format"] != "mp3" {
+			t.Errorf("expected format 'mp3', got %q", body["format"])
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-audio-bytes"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: "Hello world"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %+v", resp)
+	}
+	if resp["event_id"] == "" {
+		t.Error("expected non-empty event_id")
+	}
+
+	msgs := mc.getMessages()
+	found := false
+	for _, msg := range msgs {
+		if msg.RoomID == roomID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a message sent to the nerve room")
+	}
+}
+
+func TestBridge_TTS_CustomVoiceAndFormat(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	var gotVoice, gotFormat string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		gotVoice = body["voice"]
+		gotFormat = body["format"]
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-wav-bytes"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: "Test", Voice: "bf_emma", Format: "wav"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %+v", resp)
+	}
+	if gotVoice != "bf_emma" {
+		t.Errorf("expected voice 'bf_emma', got %q", gotVoice)
+	}
+	if gotFormat != "wav" {
+		t.Errorf("expected format 'wav', got %q", gotFormat)
+	}
+}
+
+func TestBridge_TTS_MissingRoom(t *testing.T) {
+	b, _, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "", Text: "Hello"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["error"] != "missing room name" {
+		t.Errorf("expected 'missing room name', got %+v", resp)
+	}
+}
+
+func TestBridge_TTS_MissingText(t *testing.T) {
+	b, _, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: ""}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["error"] != "missing text" {
+		t.Errorf("expected 'missing text', got %+v", resp)
+	}
+}
+
+func TestBridge_TTS_RoomNotFound(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	mc.joinedRooms = []id.RoomID{}
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nonexistent", Text: "Hello"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if !strings.Contains(resp["error"], "room not found") {
+		t.Errorf("expected room not found error, got %+v", resp)
+	}
+}
+
+func TestBridge_TTS_EndpointError(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("model unavailable"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: "Hello"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if !strings.Contains(resp["error"], "synthesis returned 500") {
+		t.Errorf("expected synthesis error, got %+v", resp)
 	}
 }

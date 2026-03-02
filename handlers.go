@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"maunium.net/go/mautrix/event"
@@ -248,6 +249,32 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 	// Send response (if invokeClaude didn't already stream it)
 	if response != "" {
 		b.sendMessage(ctx, roomID, response)
+	}
+
+	// Auto-TTS for audio-prefixed rooms: synthesize the reply as audio
+	roomName := b.getRoomName(ctx, roomID)
+	if strings.HasPrefix(roomName, "audio-") {
+		// Determine the reply text: either the non-streamed response or
+		// the last non-tool section from the streamed output.
+		replyText := response
+		if replyText == "" && len(partialSections) > 0 {
+			for i := len(partialSections) - 1; i >= 0; i-- {
+				if !strings.HasPrefix(partialSections[i], "> **") {
+					replyText = partialSections[i]
+					break
+				}
+			}
+		}
+		if replyText != "" {
+			go func() {
+				eventID, err := b.synthesizeAndPostAudio(ctx, roomID, replyText, "", "")
+				if err != nil {
+					log.Printf("Auto-TTS for room %s failed: %v", roomID, err)
+					return
+				}
+				log.Printf("Auto-TTS: posted audio to room %s: event %s", roomID, eventID)
+			}()
+		}
 	}
 
 	// Track turns for summary generation (cross-room awareness)

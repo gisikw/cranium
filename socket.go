@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +19,7 @@ import (
 
 // SocketRequest is the envelope for all socket messages
 type SocketRequest struct {
-	Type string `json:"type"` // "approval", "resume", "breadcrumb", "post_image", or "post_audio"
+	Type string `json:"type"` // "approval", "resume", "breadcrumb", "post_image", "post_audio", or "tts"
 
 	// Approval fields
 	SessionID string                 `json:"session_id,omitempty"`
@@ -27,9 +30,14 @@ type SocketRequest struct {
 	RoomID  string `json:"room_id,omitempty"`
 	Message string `json:"message,omitempty"`
 
-	// Post image fields
+	// Post image / post audio fields
 	Room string `json:"room,omitempty"` // room name (not ID)
 	Path string `json:"path,omitempty"` // local file path
+
+	// TTS fields
+	Text  string `json:"text,omitempty"`
+	Voice string `json:"voice,omitempty"`  // default: "af_heart"
+	Format string `json:"format,omitempty"` // default: "mp3"
 }
 
 // startSocketListener starts the unix socket for hook requests
@@ -122,6 +130,11 @@ func (b *Bridge) handleSocketConnection(ctx context.Context, conn net.Conn) {
 
 	if req.Type == "post_audio" {
 		b.handlePostAudioRequest(ctx, conn, req)
+		return
+	}
+
+	if req.Type == "tts" {
+		b.handleTTSRequest(ctx, conn, req)
 		return
 	}
 
@@ -394,6 +407,123 @@ func (b *Bridge) handlePostAudioRequest(ctx context.Context, conn net.Conn, req 
 	json.NewEncoder(conn).Encode(map[string]string{
 		"status":   "ok",
 		"event_id": string(resp.EventID),
+	})
+}
+
+// ttsEndpoint is the URL for the TTS synthesis service. Exported as a var for testing.
+var ttsEndpoint = "https://tts.gisi.network/synthesize"
+
+// synthesizeAndPostAudio calls the TTS endpoint and sends the resulting audio to a Matrix room.
+// Returns the event ID of the posted audio message, or an error.
+func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, text, voice, format string) (id.EventID, error) {
+	if voice == "" {
+		voice = "af_heart"
+	}
+	if format == "" {
+		format = "mp3"
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"text":   text,
+		"voice":  voice,
+		"format": format,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ttsEndpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("synthesis failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1024))
+		return "", fmt.Errorf("synthesis returned %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	audioBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read audio: %w", err)
+	}
+
+	// Determine MIME type from format
+	contentType := "audio/mpeg"
+	ext := "mp3"
+	switch format {
+	case "wav":
+		contentType = "audio/wav"
+		ext = "wav"
+	case "ogg":
+		contentType = "audio/ogg"
+		ext = "ogg"
+	case "opus":
+		contentType = "audio/opus"
+		ext = "opus"
+	}
+	fileName := fmt.Sprintf("tts.%s", ext)
+
+	uploadResp, err := b.client.UploadBytesWithName(ctx, audioBytes, contentType, fileName)
+	if err != nil {
+		return "", fmt.Errorf("upload failed: %w", err)
+	}
+
+	content := map[string]interface{}{
+		"msgtype": "m.audio",
+		"body":    fileName,
+		"url":     uploadResp.ContentURI.CUString(),
+		"info": map[string]interface{}{
+			"mimetype": contentType,
+			"size":     len(audioBytes),
+		},
+	}
+
+	matrixResp, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+	if err != nil {
+		return "", fmt.Errorf("failed to send audio: %w", err)
+	}
+
+	return matrixResp.EventID, nil
+}
+
+// handleTTSRequest synthesizes speech via the TTS endpoint and sends it to a Matrix room.
+func (b *Bridge) handleTTSRequest(ctx context.Context, conn net.Conn, req SocketRequest) {
+	if req.Room == "" {
+		log.Printf("TTS request missing room name")
+		json.NewEncoder(conn).Encode(map[string]string{"error": "missing room name"})
+		return
+	}
+	if req.Text == "" {
+		log.Printf("TTS request missing text")
+		json.NewEncoder(conn).Encode(map[string]string{"error": "missing text"})
+		return
+	}
+
+	roomID := b.findRoomByName(ctx, req.Room)
+	if roomID == "" {
+		log.Printf("TTS: room %q not found", req.Room)
+		json.NewEncoder(conn).Encode(map[string]string{"error": fmt.Sprintf("room not found: %s", req.Room)})
+		return
+	}
+
+	eventID, err := b.synthesizeAndPostAudio(ctx, roomID, req.Text, req.Voice, req.Format)
+	if err != nil {
+		log.Printf("TTS: %v", err)
+		json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	log.Printf("TTS: synthesized and posted to room %s (%s): event %s", req.Room, roomID, eventID)
+	json.NewEncoder(conn).Encode(map[string]string{
+		"status":   "ok",
+		"event_id": string(eventID),
 	})
 }
 

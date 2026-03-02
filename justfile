@@ -16,6 +16,7 @@ build:
 build-tools:
     go build -o cmd/crn-post-image/crn-post-image ./cmd/crn-post-image/
     go build -o cmd/crn-post-audio/crn-post-audio ./cmd/crn-post-audio/
+    go build -o cmd/crn-tts/crn-tts ./cmd/crn-tts/
     go build -o cmd/crn-breadcrumb/crn-breadcrumb ./cmd/crn-breadcrumb/
 
 # Build everything
