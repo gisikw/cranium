@@ -22,6 +22,7 @@ type SessionStore struct {
 	lastReminderAt     map[id.RoomID]int    // room -> last threshold we injected a system-reminder at
 	turnsSinceSummary  map[id.RoomID]int    // room -> turns since last summary generation
 	interruptedContext map[id.RoomID]string // room -> partial output summary from stopped invocation
+	systemPromptFiles  map[id.RoomID]string // room -> path to system prompt file for --append-system-prompt-file
 	path               string
 	clock              func() time.Time // injectable clock; defaults to time.Now
 	syncSave           bool             // when true, save() runs synchronously (for tests)
@@ -41,6 +42,7 @@ func NewSessionStore(path string, clock func() time.Time) *SessionStore {
 		lastReminderAt:     make(map[id.RoomID]int),
 		turnsSinceSummary:  make(map[id.RoomID]int),
 		interruptedContext: make(map[id.RoomID]string),
+		systemPromptFiles:  make(map[id.RoomID]string),
 		path:               path,
 		clock:              clock,
 	}
@@ -56,6 +58,7 @@ type sessionData struct {
 	PinnedEventID      string `json:"pinned_event_id,omitempty"`
 	LastInvokedAt      int64  `json:"last_invoked_at,omitempty"`
 	InterruptedContext string `json:"interrupted_context,omitempty"`
+	SystemPromptFile   string `json:"system_prompt_file,omitempty"`
 }
 
 func (s *SessionStore) load() {
@@ -85,6 +88,9 @@ func (s *SessionStore) load() {
 				}
 				if sd.InterruptedContext != "" {
 					s.interruptedContext[id.RoomID(roomID)] = sd.InterruptedContext
+				}
+				if sd.SystemPromptFile != "" {
+					s.systemPromptFiles[id.RoomID(roomID)] = sd.SystemPromptFile
 				}
 			}
 		}
@@ -124,6 +130,9 @@ func (s *SessionStore) save() {
 		}
 		if ictx, ok := s.interruptedContext[roomID]; ok {
 			sd.InterruptedContext = ictx
+		}
+		if spf, ok := s.systemPromptFiles[roomID]; ok {
+			sd.SystemPromptFile = spf
 		}
 		store[string(roomID)] = sd
 	}
@@ -314,6 +323,27 @@ func (s *SessionStore) GetInterruptedContext(roomID id.RoomID) (string, bool) {
 func (s *SessionStore) ClearInterruptedContext(roomID id.RoomID) {
 	s.mu.Lock()
 	delete(s.interruptedContext, roomID)
+	s.mu.Unlock()
+	s.triggerSave()
+}
+
+func (s *SessionStore) SetSystemPromptFile(roomID id.RoomID, path string) {
+	s.mu.Lock()
+	s.systemPromptFiles[roomID] = path
+	s.mu.Unlock()
+	s.triggerSave()
+}
+
+func (s *SessionStore) GetSystemPromptFile(roomID id.RoomID) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	path, ok := s.systemPromptFiles[roomID]
+	return path, ok && path != ""
+}
+
+func (s *SessionStore) ClearSystemPromptFile(roomID id.RoomID) {
+	s.mu.Lock()
+	delete(s.systemPromptFiles, roomID)
 	s.mu.Unlock()
 	s.triggerSave()
 }

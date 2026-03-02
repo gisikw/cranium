@@ -190,10 +190,9 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 		reminderBucket = saturationBucket(ctx.LastSaturation)
 	}
 
-	// Build append-system-prompt: only for fresh sessions.
-	// Resumed sessions already have the system prompt baked in from creation;
-	// re-passing it would replace the original (which included handoff/landscape)
-	// with just the identity content, losing context.
+	// Build append-system-prompt content: only for fresh sessions.
+	// Resumed sessions reuse the file written at creation (handled in invokeClaude)
+	// rather than rebuilding content here, preserving the original handoff/landscape.
 	var appendSystemPrompt string
 	if isFreshSession {
 		var appendParts []string

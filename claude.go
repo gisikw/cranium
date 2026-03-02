@@ -107,7 +107,10 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		b.sessions.SetLastReminderAt(roomID, plan.ReminderBucket)
 	}
 
-	// Write system prompt to file for fresh sessions (auditable + avoids CLI arg size issues)
+	// Write system prompt to file for fresh sessions (auditable + avoids CLI arg size issues).
+	// For resumed sessions, reuse the file written at session creation — Claude Code's
+	// --append-system-prompt-file only applies to a single invocation, so we must
+	// re-pass it on every turn to keep the persona/identity injected.
 	var systemPromptFile string
 	if plan.AppendSystemPrompt != "" {
 		promptDir := filepath.Join(b.dataDir, "system-prompts")
@@ -121,6 +124,10 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 			return "", "", ContextInfo{}, nil, fmt.Errorf("failed to write system prompt file: %w", err)
 		}
 		log.Printf("Wrote system prompt to %s (%d bytes)", systemPromptFile, len(plan.AppendSystemPrompt))
+		b.sessions.SetSystemPromptFile(roomID, systemPromptFile)
+	} else if storedPath, ok := b.sessions.GetSystemPromptFile(roomID); ok {
+		systemPromptFile = storedPath
+		log.Printf("Reusing stored system prompt file for resumed session: %s", systemPromptFile)
 	}
 
 	args := buildCLIArgs(plan.Prompt, plan.SessionID, systemPromptFile)

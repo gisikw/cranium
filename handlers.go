@@ -129,6 +129,7 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 			// Clear session state
 			b.sessions.Set(roomID, "")
 			b.sessions.ClearLastMessage(roomID)
+			b.sessions.ClearSystemPromptFile(roomID)
 			b.sessions.ResetTurns(roomID)
 
 			// Remove the transient message

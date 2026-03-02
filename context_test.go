@@ -593,9 +593,8 @@ func TestBuildInvocationPlan_NoProjectDir(t *testing.T) {
 }
 
 func TestBuildInvocationPlan_ResumedSessionOmitsSystemPrompt(t *testing.T) {
-	// Resumed sessions must NOT pass --append-system-prompt.
-	// The session already has the system prompt baked in from creation;
-	// re-passing it replaces the original (which included handoff/landscape).
+	// Resumed sessions don't build new system prompt content in the plan.
+	// The caller (invokeClaude) reuses the file written at session creation.
 	ctx := SessionContext{
 		SessionID:           "sess-123",
 		HasSession:          true,

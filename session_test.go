@@ -286,3 +286,45 @@ func TestSessionStore_InterruptedContextPersistsAcrossReload(t *testing.T) {
 		t.Errorf("after reload: GetInterruptedContext() = %q, %v, want %q, true", ctx, ok, testContext)
 	}
 }
+
+func TestSessionStore_SystemPromptFile(t *testing.T) {
+	store := NewSessionStore(filepath.Join(t.TempDir(), "sessions.json"), time.Now)
+	store.syncSave = true
+	roomID := id.RoomID("!test:example.com")
+
+	// Initially empty
+	if _, ok := store.GetSystemPromptFile(roomID); ok {
+		t.Error("expected no system prompt file initially")
+	}
+
+	// Set and get
+	store.SetSystemPromptFile(roomID, "/data/system-prompts/test_2025-01-01.md")
+	path, ok := store.GetSystemPromptFile(roomID)
+	if !ok || path != "/data/system-prompts/test_2025-01-01.md" {
+		t.Errorf("GetSystemPromptFile() = %q, %v, want path and true", path, ok)
+	}
+
+	// Clear
+	store.ClearSystemPromptFile(roomID)
+	if _, ok := store.GetSystemPromptFile(roomID); ok {
+		t.Error("expected no system prompt file after clear")
+	}
+}
+
+func TestSessionStore_SystemPromptFilePersistsAcrossReload(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "sessions.json")
+	testPath := "/data/system-prompts/cranium_2025-01-01.md"
+
+	store := NewSessionStore(path, time.Now)
+	store.syncSave = true
+	roomID := id.RoomID("!test:example.com")
+	store.Set(roomID, "sess-123")
+	store.SetSystemPromptFile(roomID, testPath)
+
+	// Reload from disk
+	store2 := NewSessionStore(path, time.Now)
+	if got, ok := store2.GetSystemPromptFile(roomID); !ok || got != testPath {
+		t.Errorf("after reload: GetSystemPromptFile() = %q, %v, want %q, true", got, ok, testPath)
+	}
+}

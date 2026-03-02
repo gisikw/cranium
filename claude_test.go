@@ -161,9 +161,13 @@ func TestInvokeClaude_SessionResume(t *testing.T) {
 	roomID := id.RoomID("!test:example.com")
 	mc.roomNames[roomID] = "test-room"
 
-	// Set up existing session
+	// Set up existing session with a stored system prompt file
 	b.sessions.Set(roomID, "existing-sess")
 	b.sessions.MarkInvoked("existing-sess")
+	storedPromptFile := filepath.Join(b.dataDir, "system-prompts", "test-room_2025-01-01_00-00-00.md")
+	os.MkdirAll(filepath.Dir(storedPromptFile), 0755)
+	os.WriteFile(storedPromptFile, []byte("# Test System Prompt"), 0644)
+	b.sessions.SetSystemPromptFile(roomID, storedPromptFile)
 
 	mci.QueueResponse(
 		claudeAssistantMsg("existing-sess", "Resumed!"),
@@ -178,13 +182,20 @@ func TestInvokeClaude_SessionResume(t *testing.T) {
 	// Should have passed --resume with the existing session ID
 	inv := mci.getInvocations()[0]
 	foundResume := false
+	foundPromptFile := false
 	for i, arg := range inv.Args {
 		if arg == "--resume" && i+1 < len(inv.Args) && inv.Args[i+1] == "existing-sess" {
 			foundResume = true
 		}
+		if arg == "--append-system-prompt-file" && i+1 < len(inv.Args) && inv.Args[i+1] == storedPromptFile {
+			foundPromptFile = true
+		}
 	}
 	if !foundResume {
 		t.Errorf("expected --resume existing-sess in args: %v", inv.Args)
+	}
+	if !foundPromptFile {
+		t.Errorf("expected --append-system-prompt-file %s in args: %v", storedPromptFile, inv.Args)
 	}
 }
 
@@ -348,6 +359,64 @@ func TestInvokeClaude_HandoffLoadedOnFreshSession(t *testing.T) {
 	}
 	if !contains(string(promptContent), "Previous handoff content") {
 		t.Errorf("system prompt file missing handoff content: %s", string(promptContent))
+	}
+}
+
+func TestInvokeClaude_ResumedSessionReusesSystemPromptFile(t *testing.T) {
+	b, mc, mci := newTestBridge(t)
+	ctx := context.Background()
+	roomID := id.RoomID("!test:example.com")
+	mc.roomNames[roomID] = "test-room"
+
+	// Set system prompt content so a file is written on fresh session
+	b.systemPromptContent = "# Identity\nYou are EXO."
+
+	// Turn 1: fresh session — should write and store the system prompt file
+	mci.QueueResponse(
+		claudeAssistantMsg("sess-reuse", "Hello!"),
+		claudeResultMsg("sess-reuse", "Hello!", 200000),
+	)
+
+	_, newSID, _, _, err := b.invokeClaude(ctx, roomID, "Hi")
+	if err != nil {
+		t.Fatalf("turn 1: unexpected error: %v", err)
+	}
+	b.sessions.Set(roomID, newSID)
+
+	// Verify the file was stored
+	storedPath, ok := b.sessions.GetSystemPromptFile(roomID)
+	if !ok {
+		t.Fatal("expected system prompt file to be stored after fresh session")
+	}
+
+	// Turn 2: resumed session — should reuse the stored file
+	mci.QueueResponse(
+		claudeAssistantMsg("sess-reuse", "Resumed!"),
+		claudeResultMsg("sess-reuse", "Resumed!", 200000),
+	)
+
+	_, _, _, _, err = b.invokeClaude(ctx, roomID, "Continue")
+	if err != nil {
+		t.Fatalf("turn 2: unexpected error: %v", err)
+	}
+
+	// The second invocation should pass both --resume and --append-system-prompt-file
+	inv := mci.getInvocations()[1]
+	foundResume := false
+	foundPromptFile := false
+	for i, arg := range inv.Args {
+		if arg == "--resume" && i+1 < len(inv.Args) && inv.Args[i+1] == "sess-reuse" {
+			foundResume = true
+		}
+		if arg == "--append-system-prompt-file" && i+1 < len(inv.Args) && inv.Args[i+1] == storedPath {
+			foundPromptFile = true
+		}
+	}
+	if !foundResume {
+		t.Errorf("turn 2: expected --resume in args: %v", inv.Args)
+	}
+	if !foundPromptFile {
+		t.Errorf("turn 2: expected --append-system-prompt-file %s in args: %v", storedPath, inv.Args)
 	}
 }
 
