@@ -332,17 +332,22 @@ func TestInvokeClaude_HandoffLoadedOnFreshSession(t *testing.T) {
 	}
 
 	inv := mci.getInvocations()[0]
-	// Fresh session should have --append-system-prompt with handoff content
-	hasAppend := false
+	// Fresh session should use --append-system-prompt-file pointing to a file with handoff content
+	var promptFilePath string
 	for i, arg := range inv.Args {
-		if arg == "--append-system-prompt" && i+1 < len(inv.Args) {
-			if contains(inv.Args[i+1], "Previous handoff content") {
-				hasAppend = true
-			}
+		if arg == "--append-system-prompt-file" && i+1 < len(inv.Args) {
+			promptFilePath = inv.Args[i+1]
 		}
 	}
-	if !hasAppend {
-		t.Errorf("expected --append-system-prompt with handoff content in args: %v", inv.Args)
+	if promptFilePath == "" {
+		t.Fatalf("expected --append-system-prompt-file in args: %v", inv.Args)
+	}
+	promptContent, err := os.ReadFile(promptFilePath)
+	if err != nil {
+		t.Fatalf("failed to read system prompt file %s: %v", promptFilePath, err)
+	}
+	if !contains(string(promptContent), "Previous handoff content") {
+		t.Errorf("system prompt file missing handoff content: %s", string(promptContent))
 	}
 }
 

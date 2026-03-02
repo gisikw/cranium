@@ -83,25 +83,40 @@ func buildFreshSessionPrompt(roomName, message string) string {
 }
 
 // buildAppendSystemPrompt constructs the --append-system-prompt value from
-// handoff content and cross-room landscape.
-func buildAppendSystemPrompt(handoffContent, landscape string) string {
+// handoff content and cross-room landscape. Canary values are embedded for
+// delivery verification — ask the agent "what is the handoff/landscape canary?"
+func buildAppendSystemPrompt(handoffContent, landscape string, now time.Time) string {
+	dateSeed := now.Format("2006-01-02")
 	var parts []string
 	if handoffContent != "" {
-		parts = append(parts, fmt.Sprintf("<room-handoff>\nThis is the handoff from your previous session in this room. Use it for context but don't reference it explicitly unless asked.\n\n%s\n</room-handoff>", handoffContent))
+		canary := fmt.Sprintf("%x", hashCanary("handoff", dateSeed))
+		parts = append(parts, fmt.Sprintf("<room-handoff>\ncanary:handoff=%s\nThis is the handoff from your previous session in this room. Use it for context but don't reference it explicitly unless asked.\n\n%s\n</room-handoff>", canary, handoffContent))
 	}
 	if landscape != "" {
-		parts = append(parts, fmt.Sprintf("<cross-room-context>\n%s\n</cross-room-context>", landscape))
+		canary := fmt.Sprintf("%x", hashCanary("landscape", dateSeed))
+		parts = append(parts, fmt.Sprintf("<cross-room-context>\ncanary:landscape=%s\n%s\n</cross-room-context>", canary, landscape))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// hashCanary produces a short deterministic canary value from a label and date seed.
+func hashCanary(label, dateSeed string) uint32 {
+	h := uint32(2166136261) // FNV-1a offset basis
+	for _, b := range []byte(label + ":" + dateSeed) {
+		h ^= uint32(b)
+		h *= 16777619
+	}
+	return h
 }
 
 // buildCLIArgs constructs the Claude CLI argument list.
 // The "--" sentinel separates flags from the positional prompt argument,
 // preventing messages that start with "-" from being parsed as flags.
-func buildCLIArgs(prompt, sessionID, appendSystemPrompt string) []string {
+// If systemPromptFile is set, uses --append-system-prompt-file instead of inline.
+func buildCLIArgs(prompt, sessionID, systemPromptFile string) []string {
 	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
-	if appendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", appendSystemPrompt)
+	if systemPromptFile != "" {
+		args = append(args, "--append-system-prompt-file", systemPromptFile)
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
@@ -115,8 +130,7 @@ func buildCLIArgs(prompt, sessionID, appendSystemPrompt string) []string {
 type InvocationPlan struct {
 	Prompt                   string
 	SessionID                string
-	AppendSystemPrompt       string
-	CLIArgs                  []string
+	AppendSystemPrompt       string // content to write to file; empty means don't pass --append-system-prompt-file
 	ShouldMarkInvoked        bool
 	ShouldUpdateReminderAt   bool
 	ReminderBucket           int
@@ -176,18 +190,21 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 		reminderBucket = saturationBucket(ctx.LastSaturation)
 	}
 
-	// Build append-system-prompt: always includes identity content,
-	// plus handoff/landscape for fresh sessions
-	var appendParts []string
-	if ctx.SystemPromptContent != "" {
-		appendParts = append(appendParts, ctx.SystemPromptContent)
-	}
+	// Build append-system-prompt: only for fresh sessions.
+	// Resumed sessions already have the system prompt baked in from creation;
+	// re-passing it would replace the original (which included handoff/landscape)
+	// with just the identity content, losing context.
+	var appendSystemPrompt string
 	if isFreshSession {
-		if extra := buildAppendSystemPrompt(ctx.HandoffContent, ctx.Landscape); extra != "" {
+		var appendParts []string
+		if ctx.SystemPromptContent != "" {
+			appendParts = append(appendParts, ctx.SystemPromptContent)
+		}
+		if extra := buildAppendSystemPrompt(ctx.HandoffContent, ctx.Landscape, ctx.Now); extra != "" {
 			appendParts = append(appendParts, extra)
 		}
+		appendSystemPrompt = strings.Join(appendParts, "\n\n")
 	}
-	appendSystemPrompt := strings.Join(appendParts, "\n\n")
 
 	// Determine effective session ID and whether to mark as invoked
 	effectiveSessionID := ""
@@ -196,8 +213,6 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 		effectiveSessionID = ctx.SessionID
 		shouldMarkInvoked = true
 	}
-
-	cliArgs := buildCLIArgs(prompt, effectiveSessionID, appendSystemPrompt)
 
 	// When a project dir is matched, always use it as working directory.
 	// Fresh sessions start there; resumed sessions need to return to the
@@ -211,7 +226,6 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 		Prompt:                 prompt,
 		SessionID:              effectiveSessionID,
 		AppendSystemPrompt:     appendSystemPrompt,
-		CLIArgs:                cliArgs,
 		ShouldMarkInvoked:      shouldMarkInvoked,
 		ShouldUpdateReminderAt: shouldUpdateReminder,
 		ReminderBucket:         reminderBucket,

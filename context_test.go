@@ -185,28 +185,47 @@ func TestBuildFreshSessionPrompt(t *testing.T) {
 }
 
 func TestBuildAppendSystemPrompt(t *testing.T) {
+	now := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+
 	// Both handoff and landscape
-	got := buildAppendSystemPrompt("handoff text", "landscape text")
+	got := buildAppendSystemPrompt("handoff text", "landscape text", now)
 	if !contains(got, "<room-handoff>") || !contains(got, "<cross-room-context>") {
 		t.Errorf("both = %q", got)
 	}
+	if !contains(got, "canary:handoff=") || !contains(got, "canary:landscape=") {
+		t.Errorf("missing canary values: %q", got)
+	}
 
 	// Handoff only
-	got = buildAppendSystemPrompt("handoff text", "")
+	got = buildAppendSystemPrompt("handoff text", "", now)
 	if !contains(got, "<room-handoff>") || contains(got, "<cross-room-context>") {
 		t.Errorf("handoff only = %q", got)
 	}
 
 	// Landscape only
-	got = buildAppendSystemPrompt("", "landscape text")
+	got = buildAppendSystemPrompt("", "landscape text", now)
 	if contains(got, "<room-handoff>") || !contains(got, "<cross-room-context>") {
 		t.Errorf("landscape only = %q", got)
 	}
 
 	// Neither
-	got = buildAppendSystemPrompt("", "")
+	got = buildAppendSystemPrompt("", "", now)
 	if got != "" {
 		t.Errorf("neither = %q, want empty", got)
+	}
+
+	// Canaries are deterministic for the same date
+	a := buildAppendSystemPrompt("x", "y", now)
+	b := buildAppendSystemPrompt("x", "y", now)
+	if a != b {
+		t.Errorf("canaries should be deterministic for the same date")
+	}
+
+	// Canaries differ across dates
+	tomorrow := now.Add(24 * time.Hour)
+	c := buildAppendSystemPrompt("x", "y", tomorrow)
+	if a == c {
+		t.Errorf("canaries should differ across dates")
 	}
 }
 
@@ -236,16 +255,16 @@ func TestBuildCLIArgs(t *testing.T) {
 		t.Errorf("resume args should end with [\"--\", \"hello\"], got %v", args)
 	}
 
-	// With append system prompt
-	args = buildCLIArgs("hello", "", "system stuff")
+	// With system prompt file
+	args = buildCLIArgs("hello", "", "/tmp/prompt.md")
 	found = false
 	for i, a := range args {
-		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == "system stuff" {
+		if a == "--append-system-prompt-file" && i+1 < len(args) && args[i+1] == "/tmp/prompt.md" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("append args missing --append-system-prompt: %v", args)
+		t.Errorf("append args missing --append-system-prompt-file: %v", args)
 	}
 
 	// Message starting with dash — the original crash scenario
@@ -356,15 +375,9 @@ func TestBuildInvocationPlan_FreshSession(t *testing.T) {
 		t.Errorf("fresh session should have empty session ID, got %q", plan.SessionID)
 	}
 
-	// Should have CLI args with append-system-prompt
-	hasAppendFlag := false
-	for i, arg := range plan.CLIArgs {
-		if arg == "--append-system-prompt" && i+1 < len(plan.CLIArgs) {
-			hasAppendFlag = true
-		}
-	}
-	if !hasAppendFlag {
-		t.Errorf("fresh session CLI args missing --append-system-prompt: %v", plan.CLIArgs)
+	// AppendSystemPrompt should be non-empty (caller writes to file and passes via --append-system-prompt-file)
+	if plan.AppendSystemPrompt == "" {
+		t.Errorf("fresh session should have non-empty AppendSystemPrompt")
 	}
 }
 
@@ -403,15 +416,9 @@ func TestBuildInvocationPlan_ExistingSession(t *testing.T) {
 		t.Errorf("existing session ID = %q, want %q", plan.SessionID, "sess-123")
 	}
 
-	// Should have CLI args with --resume
-	hasResumeFlag := false
-	for i, arg := range plan.CLIArgs {
-		if arg == "--resume" && i+1 < len(plan.CLIArgs) && plan.CLIArgs[i+1] == "sess-123" {
-			hasResumeFlag = true
-		}
-	}
-	if !hasResumeFlag {
-		t.Errorf("existing session CLI args missing --resume sess-123: %v", plan.CLIArgs)
+	// SessionID should be set (caller passes via --resume)
+	if plan.SessionID != "sess-123" {
+		t.Errorf("existing session plan.SessionID = %q, want %q", plan.SessionID, "sess-123")
 	}
 }
 
@@ -585,29 +592,22 @@ func TestBuildInvocationPlan_NoProjectDir(t *testing.T) {
 	}
 }
 
-func TestBuildInvocationPlan_SystemPromptAlwaysInjected(t *testing.T) {
-	// Even on resumed sessions, IDENTITY.md content should be in append-system-prompt
+func TestBuildInvocationPlan_ResumedSessionOmitsSystemPrompt(t *testing.T) {
+	// Resumed sessions must NOT pass --append-system-prompt.
+	// The session already has the system prompt baked in from creation;
+	// re-passing it replaces the original (which included handoff/landscape).
 	ctx := SessionContext{
-		SessionID:    "sess-123",
-		HasSession:   true,
-		RoomName:     "general",
-		Message:      "hello",
+		SessionID:           "sess-123",
+		HasSession:          true,
+		RoomName:            "general",
+		Message:             "hello",
 		SystemPromptContent: "# System Prompt\nBoot context.",
 	}
 
 	plan := buildInvocationPlan(ctx)
 
-	// Should have --append-system-prompt with IDENTITY.md content
-	found := false
-	for i, arg := range plan.CLIArgs {
-		if arg == "--append-system-prompt" && i+1 < len(plan.CLIArgs) {
-			if contains(plan.CLIArgs[i+1], "# System Prompt") {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Errorf("resumed session should still inject IDENTITY.md via --append-system-prompt: %v", plan.CLIArgs)
+	if plan.AppendSystemPrompt != "" {
+		t.Errorf("resumed session should have empty append-system-prompt, got %q", plan.AppendSystemPrompt)
 	}
 }
 

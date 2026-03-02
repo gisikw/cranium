@@ -107,7 +107,23 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		b.sessions.SetLastReminderAt(roomID, plan.ReminderBucket)
 	}
 
-	args := plan.CLIArgs
+	// Write system prompt to file for fresh sessions (auditable + avoids CLI arg size issues)
+	var systemPromptFile string
+	if plan.AppendSystemPrompt != "" {
+		promptDir := filepath.Join(b.dataDir, "system-prompts")
+		os.MkdirAll(promptDir, 0755)
+		slug := slugify(b.getRoomName(ctx, roomID))
+		if slug == "" {
+			slug = "unknown"
+		}
+		systemPromptFile = filepath.Join(promptDir, fmt.Sprintf("%s_%s.md", slug, b.now().Format("2006-01-02_15-04-05")))
+		if err := os.WriteFile(systemPromptFile, []byte(plan.AppendSystemPrompt), 0644); err != nil {
+			return "", "", ContextInfo{}, nil, fmt.Errorf("failed to write system prompt file: %w", err)
+		}
+		log.Printf("Wrote system prompt to %s (%d bytes)", systemPromptFile, len(plan.AppendSystemPrompt))
+	}
+
+	args := buildCLIArgs(plan.Prompt, plan.SessionID, systemPromptFile)
 
 	log.Printf("Invoking claude with args: %v", args)
 
