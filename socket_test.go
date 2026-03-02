@@ -727,8 +727,8 @@ func TestBridge_TTS_Success(t *testing.T) {
 		if body["text"] != "Hello world" {
 			t.Errorf("expected text 'Hello world', got %q", body["text"])
 		}
-		if body["voice"] != "af_heart" {
-			t.Errorf("expected voice 'af_heart', got %q", body["voice"])
+		if body["voice"] != "af_bella" {
+			t.Errorf("expected voice 'af_bella', got %q", body["voice"])
 		}
 		if body["format"] != "mp3" {
 			t.Errorf("expected format 'mp3', got %q", body["format"])
