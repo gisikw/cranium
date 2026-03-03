@@ -1,6 +1,6 @@
 ---
 id: crn-2e3e
-status: resolved
+status: closed
 deps: []
 created: 2026-03-01T06:38:17Z
 type: task

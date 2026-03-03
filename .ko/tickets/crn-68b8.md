@@ -1,6 +1,6 @@
 ---
 id: crn-68b8
-status: resolved
+status: closed
 deps: []
 created: 2026-03-01T05:15:10Z
 type: task
