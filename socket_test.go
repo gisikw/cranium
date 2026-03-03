@@ -1016,3 +1016,151 @@ func TestBridge_TTS_ExplicitArgOverridesConfig(t *testing.T) {
 		t.Errorf("expected explicit voice 'bf_emma' to override config, got %q", gotVoice)
 	}
 }
+
+// --- TTS chunking tests ---
+
+func TestTTSChunkBatch_SingleShortParagraph(t *testing.T) {
+	batches := ttsChunkBatch("Hello world, this is a test.", 30, 100)
+	if len(batches) != 1 {
+		t.Fatalf("expected 1 batch, got %d", len(batches))
+	}
+	if batches[0] != "Hello world, this is a test." {
+		t.Errorf("unexpected batch content: %q", batches[0])
+	}
+}
+
+func TestTTSChunkBatch_FirstBatchCapsAt30Words(t *testing.T) {
+	// Build text with three paragraphs: 20 words, 20 words, 20 words
+	p1 := strings.Repeat("word ", 20)
+	p2 := strings.Repeat("more ", 20)
+	p3 := strings.Repeat("last ", 20)
+	text := strings.TrimSpace(p1) + "\n\n" + strings.TrimSpace(p2) + "\n\n" + strings.TrimSpace(p3)
+
+	batches := ttsChunkBatch(text, 30, 100)
+	if len(batches) < 2 {
+		t.Fatalf("expected at least 2 batches, got %d", len(batches))
+	}
+
+	// First batch should contain p1+p2 (40 words >= 30 threshold)
+	firstWords := len(strings.Fields(batches[0]))
+	if firstWords < 30 {
+		t.Errorf("first batch should have >= 30 words, got %d", firstWords)
+	}
+	if firstWords > 40 {
+		t.Errorf("first batch should not exceed 40 words (p1+p2), got %d", firstWords)
+	}
+}
+
+func TestTTSChunkBatch_SubsequentBatchCapsAt100Words(t *testing.T) {
+	// First paragraph: 35 words (triggers first batch)
+	// Then 4 x 30-word paragraphs — should batch at ~100 word boundaries
+	p1 := strings.TrimSpace(strings.Repeat("alpha ", 35))
+	var rest []string
+	for i := 0; i < 4; i++ {
+		rest = append(rest, strings.TrimSpace(strings.Repeat("beta ", 30)))
+	}
+	text := p1 + "\n\n" + strings.Join(rest, "\n\n")
+
+	batches := ttsChunkBatch(text, 30, 100)
+
+	// First batch: 35 words (>= 30)
+	// Remaining: 120 words total — should split into ~100 + remainder
+	if len(batches) < 2 {
+		t.Fatalf("expected at least 2 batches, got %d", len(batches))
+	}
+
+	firstWords := len(strings.Fields(batches[0]))
+	if firstWords != 35 {
+		t.Errorf("first batch should be 35 words, got %d", firstWords)
+	}
+}
+
+func TestTTSChunkBatch_EmptyText(t *testing.T) {
+	batches := ttsChunkBatch("", 30, 100)
+	if len(batches) != 0 {
+		t.Errorf("expected 0 batches for empty text, got %d", len(batches))
+	}
+}
+
+func TestTTSChunkBatch_WhitespaceOnly(t *testing.T) {
+	batches := ttsChunkBatch("   \n\n   \n\n   ", 30, 100)
+	if len(batches) != 0 {
+		t.Errorf("expected 0 batches for whitespace-only text, got %d", len(batches))
+	}
+}
+
+func TestTTSChunkBatch_SingleLongParagraph(t *testing.T) {
+	// One paragraph with 200 words — no paragraph boundaries to split on,
+	// so it all goes in one batch
+	text := strings.TrimSpace(strings.Repeat("word ", 200))
+	batches := ttsChunkBatch(text, 30, 100)
+	if len(batches) != 1 {
+		t.Fatalf("expected 1 batch (no paragraph breaks), got %d", len(batches))
+	}
+	if len(strings.Fields(batches[0])) != 200 {
+		t.Errorf("expected 200 words in single batch")
+	}
+}
+
+func TestBridge_TTS_ChunkedSynthesis(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	origConfigPath := ttsConfigPath
+	ttsConfigPath = func() string { return filepath.Join(b.dataDir, "no-such-tts.json") }
+	defer func() { ttsConfigPath = origConfigPath }()
+
+	var callCount int
+	var receivedTexts []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		receivedTexts = append(receivedTexts, body["text"])
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-audio"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	// Build text that will produce multiple chunks:
+	// ~35 words first paragraph, ~35 words second, ~35 words third
+	p1 := strings.TrimSpace(strings.Repeat("hello ", 35))
+	p2 := strings.TrimSpace(strings.Repeat("world ", 35))
+	p3 := strings.TrimSpace(strings.Repeat("again ", 35))
+	text := p1 + "\n\n" + p2 + "\n\n" + p3
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: text}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %+v", resp)
+	}
+
+	// Should have made multiple synthesis calls
+	if callCount < 2 {
+		t.Errorf("expected >= 2 synthesis calls for chunked text, got %d", callCount)
+	}
+
+	// First chunk should be shorter than subsequent ones
+	if len(receivedTexts) >= 2 {
+		firstWords := len(strings.Fields(receivedTexts[0]))
+		if firstWords > 40 {
+			t.Errorf("first chunk should be ~35 words, got %d", firstWords)
+		}
+	}
+}

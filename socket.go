@@ -442,24 +442,56 @@ func loadTTSConfig() TTSConfig {
 	return cfg
 }
 
-// synthesizeAndPostAudio calls the TTS endpoint and sends the resulting audio to a Matrix room.
-// Returns the event ID of the posted audio message, or an error.
-func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, text, voice, format string) (id.EventID, error) {
-	// Apply defaults: explicit args > config file > hardcoded fallback
-	cfg := loadTTSConfig()
-	if voice == "" {
-		voice = cfg.Voice
+// ttsChunkBatch groups paragraphs into batches for chunked TTS synthesis.
+// The first batch targets firstWordLimit words for fast time-to-audio;
+// subsequent batches target restWordLimit words each.
+// Splits on paragraph boundaries (double newlines).
+func ttsChunkBatch(text string, firstWordLimit, restWordLimit int) []string {
+	paragraphs := strings.Split(text, "\n\n")
+	// Filter out empty paragraphs
+	var paras []string
+	for _, p := range paragraphs {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			paras = append(paras, trimmed)
+		}
 	}
-	if voice == "" {
-		voice = "af_nicole"
-	}
-	if format == "" {
-		format = cfg.Format
-	}
-	if format == "" {
-		format = "mp3"
+	if len(paras) == 0 {
+		return nil
 	}
 
+	var batches []string
+	var current []string
+	currentWords := 0
+	isFirst := true
+
+	for _, p := range paras {
+		words := len(strings.Fields(p))
+		limit := restWordLimit
+		if isFirst {
+			limit = firstWordLimit
+		}
+
+		current = append(current, p)
+		currentWords += words
+
+		if currentWords >= limit {
+			batches = append(batches, strings.Join(current, "\n\n"))
+			current = nil
+			currentWords = 0
+			isFirst = false
+		}
+	}
+	// Flush remainder
+	if len(current) > 0 {
+		batches = append(batches, strings.Join(current, "\n\n"))
+	}
+	return batches
+}
+
+// synthesizeChunk calls the TTS endpoint for a single text chunk and posts
+// the resulting audio to a Matrix room. Returns the event ID or an error.
+func (b *Bridge) synthesizeChunk(ctx context.Context, roomID id.RoomID, text, voice, format, contentType, fileName string) (id.EventID, error) {
 	payload, err := json.Marshal(map[string]string{
 		"text":   text,
 		"voice":  voice,
@@ -491,22 +523,6 @@ func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, t
 		return "", fmt.Errorf("failed to read audio: %w", err)
 	}
 
-	// Determine MIME type from format
-	contentType := "audio/mpeg"
-	ext := "mp3"
-	switch format {
-	case "wav":
-		contentType = "audio/wav"
-		ext = "wav"
-	case "ogg":
-		contentType = "audio/ogg"
-		ext = "ogg"
-	case "opus":
-		contentType = "audio/opus"
-		ext = "opus"
-	}
-	fileName := fmt.Sprintf("tts.%s", ext)
-
 	uploadResp, err := b.client.UploadBytesWithName(ctx, audioBytes, contentType, fileName)
 	if err != nil {
 		return "", fmt.Errorf("upload failed: %w", err)
@@ -528,6 +544,68 @@ func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, t
 	}
 
 	return matrixResp.EventID, nil
+}
+
+// synthesizeAndPostAudio splits text into paragraph-boundary chunks and
+// sequentially synthesizes + posts each as a separate audio message.
+// The first chunk is kept short (~30 words) for fast time-to-audio;
+// subsequent chunks are larger (~100 words) since playback buys time.
+// Returns the event ID of the first posted audio message, or an error.
+func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, text, voice, format string) (id.EventID, error) {
+	// Apply defaults: explicit args > config file > hardcoded fallback
+	cfg := loadTTSConfig()
+	if voice == "" {
+		voice = cfg.Voice
+	}
+	if voice == "" {
+		voice = "af_nicole"
+	}
+	if format == "" {
+		format = cfg.Format
+	}
+	if format == "" {
+		format = "mp3"
+	}
+
+	// Determine MIME type from format
+	contentType := "audio/mpeg"
+	ext := "mp3"
+	switch format {
+	case "wav":
+		contentType = "audio/wav"
+		ext = "wav"
+	case "ogg":
+		contentType = "audio/ogg"
+		ext = "ogg"
+	case "opus":
+		contentType = "audio/opus"
+		ext = "opus"
+	}
+	fileName := fmt.Sprintf("tts.%s", ext)
+
+	batches := ttsChunkBatch(text, 30, 100)
+	if len(batches) == 0 {
+		return "", fmt.Errorf("no text to synthesize")
+	}
+
+	var firstEventID id.EventID
+	for i, chunk := range batches {
+		eventID, err := b.synthesizeChunk(ctx, roomID, chunk, voice, format, contentType, fileName)
+		if err != nil {
+			log.Printf("TTS chunk %d/%d failed: %v", i+1, len(batches), err)
+			if i == 0 {
+				return "", err
+			}
+			// Log but don't fail the whole thing if a later chunk fails
+			continue
+		}
+		if i == 0 {
+			firstEventID = eventID
+		}
+		log.Printf("TTS chunk %d/%d posted: event %s (%d words)", i+1, len(batches), eventID, len(strings.Fields(chunk)))
+	}
+
+	return firstEventID, nil
 }
 
 // handleTTSRequest synthesizes speech via the TTS endpoint and sends it to a Matrix room.
