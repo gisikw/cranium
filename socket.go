@@ -413,11 +413,48 @@ func (b *Bridge) handlePostAudioRequest(ctx context.Context, conn net.Conn, req 
 // ttsEndpoint is the URL for the TTS synthesis service. Exported as a var for testing.
 var ttsEndpoint = "https://tts.gisi.network/synthesize"
 
+// TTSConfig holds TTS defaults loaded from the XDG config file.
+type TTSConfig struct {
+	Voice  string `json:"voice"`
+	Format string `json:"format"`
+}
+
+// ttsConfigPath returns the path to the TTS config file, following XDG conventions.
+// Exported as a var for testing.
+var ttsConfigPath = func() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "cranium", "tts.json")
+}
+
+// loadTTSConfig reads the TTS config from disk. Returns zero-value config if
+// the file doesn't exist or can't be parsed.
+func loadTTSConfig() TTSConfig {
+	data, err := os.ReadFile(ttsConfigPath())
+	if err != nil {
+		return TTSConfig{}
+	}
+	var cfg TTSConfig
+	json.Unmarshal(data, &cfg)
+	return cfg
+}
+
 // synthesizeAndPostAudio calls the TTS endpoint and sends the resulting audio to a Matrix room.
 // Returns the event ID of the posted audio message, or an error.
 func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, text, voice, format string) (id.EventID, error) {
+	// Apply defaults: explicit args > config file > hardcoded fallback
+	cfg := loadTTSConfig()
+	if voice == "" {
+		voice = cfg.Voice
+	}
 	if voice == "" {
 		voice = "af_nicole"
+	}
+	if format == "" {
+		format = cfg.Format
 	}
 	if format == "" {
 		format = "mp3"

@@ -714,6 +714,11 @@ func TestBridge_TTS_Success(t *testing.T) {
 	mc.joinedRooms = []id.RoomID{roomID}
 	mc.roomNames[roomID] = "nerve"
 
+	// Point config to a nonexistent path so hardcoded defaults are used
+	origConfigPath := ttsConfigPath
+	ttsConfigPath = func() string { return filepath.Join(b.dataDir, "no-such-tts.json") }
+	defer func() { ttsConfigPath = origConfigPath }()
+
 	// Set up a mock TTS server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -904,5 +909,110 @@ func TestBridge_TTS_EndpointError(t *testing.T) {
 
 	if !strings.Contains(resp["error"], "synthesis returned 500") {
 		t.Errorf("expected synthesis error, got %+v", resp)
+	}
+}
+
+func TestBridge_TTS_ConfigFileOverridesDefault(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	// Write a TTS config file
+	configDir := filepath.Join(b.dataDir, "tts-config")
+	os.MkdirAll(configDir, 0755)
+	configPath := filepath.Join(configDir, "tts.json")
+	os.WriteFile(configPath, []byte(`{"voice":"af_kore","format":"wav"}`), 0644)
+
+	origConfigPath := ttsConfigPath
+	ttsConfigPath = func() string { return configPath }
+	defer func() { ttsConfigPath = origConfigPath }()
+
+	var gotVoice, gotFormat string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		gotVoice = body["voice"]
+		gotFormat = body["format"]
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-audio"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	// No voice/format specified — should come from config file
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: "Test config"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %+v", resp)
+	}
+	if gotVoice != "af_kore" {
+		t.Errorf("expected voice 'af_kore' from config, got %q", gotVoice)
+	}
+	if gotFormat != "wav" {
+		t.Errorf("expected format 'wav' from config, got %q", gotFormat)
+	}
+}
+
+func TestBridge_TTS_ExplicitArgOverridesConfig(t *testing.T) {
+	b, mc, _ := newTestBridge(t)
+	ctx := context.Background()
+
+	roomID := id.RoomID("!nerve:matrix.example.com")
+	mc.joinedRooms = []id.RoomID{roomID}
+	mc.roomNames[roomID] = "nerve"
+
+	// Config says af_kore, but the request will specify bf_emma
+	configDir := filepath.Join(b.dataDir, "tts-config")
+	os.MkdirAll(configDir, 0755)
+	configPath := filepath.Join(configDir, "tts.json")
+	os.WriteFile(configPath, []byte(`{"voice":"af_kore"}`), 0644)
+
+	origConfigPath := ttsConfigPath
+	ttsConfigPath = func() string { return configPath }
+	defer func() { ttsConfigPath = origConfigPath }()
+
+	var gotVoice string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		gotVoice = body["voice"]
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-audio"))
+	}))
+	defer ts.Close()
+
+	origEndpoint := ttsEndpoint
+	ttsEndpoint = ts.URL
+	defer func() { ttsEndpoint = origEndpoint }()
+
+	hookConn, bridgeConn := net.Pipe()
+	go b.handleSocketConnection(ctx, bridgeConn)
+
+	req := SocketRequest{Type: "tts", Room: "nerve", Text: "Test", Voice: "bf_emma"}
+	json.NewEncoder(hookConn).Encode(req)
+
+	var resp map[string]string
+	json.NewDecoder(hookConn).Decode(&resp)
+	hookConn.Close()
+
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %+v", resp)
+	}
+	if gotVoice != "bf_emma" {
+		t.Errorf("expected explicit voice 'bf_emma' to override config, got %q", gotVoice)
 	}
 }
