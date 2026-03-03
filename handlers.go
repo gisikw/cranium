@@ -255,15 +255,18 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 	roomName := b.getRoomName(ctx, roomID)
 	if strings.HasPrefix(roomName, "audio-") {
 		// Determine the reply text: either the non-streamed response or
-		// the last non-tool section from the streamed output.
+		// all non-tool text sections from the streamed output joined together.
 		replyText := response
 		if replyText == "" && len(partialSections) > 0 {
-			for i := len(partialSections) - 1; i >= 0; i-- {
-				if !strings.HasPrefix(partialSections[i], "> **") {
-					replyText = partialSections[i]
-					break
+			var textSections []string
+			for _, s := range partialSections {
+				// Skip tool call lines ("> **ToolName** `detail`")
+				if strings.HasPrefix(s, "> **") {
+					continue
 				}
+				textSections = append(textSections, s)
 			}
+			replyText = strings.Join(textSections, "\n\n")
 		}
 		if replyText != "" {
 			go func() {
