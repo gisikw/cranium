@@ -1,0 +1,50 @@
+---
+id: cv2-271e
+status: open
+deps: []
+created: 2026-03-05T22:55:49Z
+type: task
+priority: 2
+---
+# TTS integration: wire Egress Synthesizer to Kokoro HTTP endpoint, chunk at sentence boundaries, produce audio segments per stream_id
+
+Cranium v2 Egress stage has a Synthesizer step (lib/cranium/egress/synthesizer.ex) that is currently a stub. Wire it to the Kokoro TTS HTTP endpoint.
+
+## Kokoro endpoint
+
+POST text to the Kokoro HTTP endpoint on lordhenry. Check ~/Projects/cranium/ (v1 source) for the exact endpoint URL and request shape. Do NOT use the fort CLI — use direct HTTP.
+
+## What to implement
+
+1. Read lib/cranium/egress/synthesizer.ex — it's a stub step module
+2. Read lib/cranium/backend/tts.ex — it defines the TTS behaviour
+3. Implement Cranium.Backend.TTS.Kokoro to POST text to the Kokoro HTTP endpoint and return audio binary
+4. Wire Synthesizer to call the TTS backend when mode is :voice
+5. The Chunker step (upstream of Synthesizer) should chunk at sentence boundaries — check lib/cranium/egress/chunker.ex and implement sentence-boundary detection
+
+## Acceptance criteria
+
+- Cranium.Backend.TTS.Kokoro.synthesize("Hello world") returns {:ok, audio_binary}
+- Egress in voice mode produces audio segments
+- Tests for the backend (mock HTTP) and chunker (sentence splitting)
+
+Cranium v2 Egress stage has a Synthesizer step (lib/cranium/egress/synthesizer.ex) that is currently a stub. Wire it to the Kokoro TTS HTTP endpoint.
+
+## Kokoro endpoint
+
+POST text to the Kokoro HTTP endpoint on lordhenry. Check ~/Projects/cranium/ (v1 source) for the exact endpoint URL and request shape. Do NOT use the fort CLI — use direct HTTP.
+
+## What to implement
+
+1. Read lib/cranium/egress/synthesizer.ex — it's a stub step module
+2. Read lib/cranium/backend/tts.ex — it defines the TTS behaviour
+3. Implement Cranium.Backend.TTS.Kokoro to POST text to the Kokoro HTTP endpoint and return audio binary
+4. Wire Synthesizer to call the TTS backend when mode is :voice
+5. The Chunker step (upstream of Synthesizer) should chunk at paragraph boundaries with minimum word thresholds: 30 words for the first chunk, 100 words for subsequent chunks. This matches cranium v1 behavior — gives Kokoro enough context for good prosody and avoids overhead of many tiny TTS requests. Check lib/cranium/egress/chunker.ex and implement this logic.
+
+## Acceptance criteria
+
+- Cranium.Backend.TTS.Kokoro.synthesize("Hello world") returns {:ok, audio_binary}
+- Chunker splits on paragraph boundaries with 30-word first / 100-word subsequent minimums
+- Egress in voice mode produces audio segments
+- Tests for the backend (mock HTTP) and chunker (paragraph splitting with thresholds)
