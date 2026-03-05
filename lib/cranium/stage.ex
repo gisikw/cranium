@@ -52,6 +52,15 @@ defmodule Cranium.Stage do
 
   @type stream_id :: String.t()
 
+  @type stream_metadata :: %{
+          optional(:conversation_id) => String.t(),
+          optional(:epoch_id) => String.t(),
+          optional(:mode) => :text | :voice,
+          optional(:content_type) => :llm_response | :audio | :text,
+          optional(:source) => atom(),
+          optional(atom()) => term()
+        }
+
   @doc """
   Process a complete message through this stage.
 
@@ -60,6 +69,19 @@ defmodule Cranium.Stage do
   """
   @callback process(message :: term(), context :: map()) ::
               {:ok, result :: term()} | {:error, reason :: term()}
+
+  @doc """
+  Called when a new stream begins, before any chunks arrive.
+
+  Creates the buffer, captures metadata about the stream (conversation,
+  epoch, mode, content type), and lets the stage prepare for incoming
+  data. Without this, stages are blind on the first chunk.
+
+  Return `{:ok, state}` to accept the stream, or `{:error, reason, state}`
+  to reject it.
+  """
+  @callback handle_stream_start(stream_id(), stream_metadata(), state :: term()) ::
+              {:ok, new_state :: term()} | {:error, reason :: term(), new_state :: term()}
 
   @doc """
   Handle an incoming streaming chunk.
@@ -78,7 +100,7 @@ defmodule Cranium.Stage do
               {:ok, result :: term(), new_state :: term()}
               | {:error, reason :: term(), new_state :: term()}
 
-  @optional_callbacks [handle_chunk: 3, handle_stream_end: 2]
+  @optional_callbacks [handle_stream_start: 3, handle_chunk: 3, handle_stream_end: 2]
 
   @doc """
   Generate a unique stream ID for a new streaming operation.
@@ -89,21 +111,54 @@ defmodule Cranium.Stage do
   end
 
   @doc """
+  Initialize a stream buffer with metadata.
+
+  Call this from `handle_stream_start/3` to prepare for incoming chunks.
+  The metadata is stored alongside the chunk list so stages can reference
+  it during processing.
+  """
+  @spec init_stream(map(), stream_id(), stream_metadata()) :: map()
+  def init_stream(buffers, stream_id, metadata) do
+    Map.put(buffers, stream_id, %{chunks: [], metadata: metadata})
+  end
+
+  @doc """
   Helper to update a buffer map with a new chunk.
   Chunks are prepended (reverse on read for efficiency).
   """
   @spec buffer_chunk(map(), stream_id(), binary()) :: map()
   def buffer_chunk(buffers, stream_id, chunk) do
-    Map.update(buffers, stream_id, [chunk], &[chunk | &1])
+    case Map.get(buffers, stream_id) do
+      %{chunks: chunks} = entry ->
+        Map.put(buffers, stream_id, %{entry | chunks: [chunk | chunks]})
+
+      _ ->
+        # Legacy path: no stream_start was sent, just store raw chunk list
+        Map.update(buffers, stream_id, [chunk], &[chunk | &1])
+    end
   end
 
   @doc """
   Read buffered chunks in order and clear the buffer.
+
+  Returns `{data, remaining_buffers}` for legacy (chunk-list) buffers, or
+  `{data, metadata, remaining_buffers}` for structured buffers initialized
+  via `init_stream/3`.
   """
-  @spec flush_buffer(map(), stream_id()) :: {binary(), map()}
+  @spec flush_buffer(map(), stream_id()) ::
+          {binary(), map()} | {binary(), stream_metadata(), map()}
   def flush_buffer(buffers, stream_id) do
-    chunks = Map.get(buffers, stream_id, [])
-    data = chunks |> Enum.reverse() |> IO.iodata_to_binary()
-    {data, Map.delete(buffers, stream_id)}
+    case Map.get(buffers, stream_id) do
+      %{chunks: chunks, metadata: metadata} ->
+        data = chunks |> Enum.reverse() |> IO.iodata_to_binary()
+        {data, metadata, Map.delete(buffers, stream_id)}
+
+      chunks when is_list(chunks) ->
+        data = chunks |> Enum.reverse() |> IO.iodata_to_binary()
+        {data, Map.delete(buffers, stream_id)}
+
+      nil ->
+        {"", Map.delete(buffers, stream_id)}
+    end
   end
 end

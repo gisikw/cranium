@@ -73,4 +73,24 @@ defmodule Cranium.Context do
     result = process(message, context)
     {:reply, result, state}
   end
+
+  @impl GenServer
+  def handle_info({:stream_start, stream_id, metadata}, state) do
+    Logger.debug("Stream started", stage: :context, stream_id: stream_id)
+    buffers = Cranium.Stage.init_stream(state.buffers, stream_id, metadata)
+    {:noreply, %{state | buffers: buffers}}
+  end
+
+  @impl GenServer
+  def handle_info({:chunk, stream_id, chunk}, state) do
+    buffers = Cranium.Stage.buffer_chunk(state.buffers, stream_id, chunk)
+    {:noreply, %{state | buffers: buffers}}
+  end
+
+  @impl GenServer
+  def handle_info({:stream_end, stream_id}, state) do
+    {_data, _metadata, buffers} = Cranium.Stage.flush_buffer(state.buffers, stream_id)
+    # TODO: Process buffered streaming context
+    {:noreply, %{state | buffers: buffers}}
+  end
 end

@@ -95,6 +95,19 @@ defmodule Cranium.Egress do
   end
 
   @impl GenServer
+  def handle_info({:stream_start, stream_id, metadata}, state) do
+    Logger.debug("Stream started",
+      stage: :egress,
+      stream_id: stream_id,
+      mode: Map.get(metadata, :mode, :text)
+    )
+
+    buffers = Cranium.Stage.init_stream(state.buffers, stream_id, metadata)
+    mode = Map.get(metadata, :mode, state.mode)
+    {:noreply, %{state | buffers: buffers, mode: mode}}
+  end
+
+  @impl GenServer
   def handle_info({:chunk, stream_id, chunk}, state) do
     case handle_chunk(stream_id, chunk, state) do
       {:forward, data, new_state} ->
@@ -109,7 +122,12 @@ defmodule Cranium.Egress do
 
   @impl GenServer
   def handle_info({:stream_end, stream_id}, state) do
-    {:ok, _data, new_state} = handle_stream_end(stream_id, state)
-    {:noreply, new_state}
+    case Cranium.Stage.flush_buffer(state.buffers, stream_id) do
+      {_data, _metadata, new_buffers} ->
+        {:noreply, %{state | buffers: new_buffers}}
+
+      {_data, new_buffers} ->
+        {:noreply, %{state | buffers: new_buffers}}
+    end
   end
 end
