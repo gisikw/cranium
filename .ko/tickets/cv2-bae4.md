@@ -1,10 +1,37 @@
 ---
 id: cv2-bae4
-status: open
+status: blocked
 deps: []
 created: 2026-03-05T22:55:49Z
 type: task
 priority: 2
+plan-questions:
+  - id: q1
+    question: "Should the audio rendition include a `duration` field, and if so, how should it be populated before TTS synthesis completes?"
+    context: "The README shows `"duration": 1.2` on audio renditions, but audio is served lazily from TTS cache. Duration won't be known until synthesis finishes. If the manifest needs post-synthesis updates, an `update_segment/3` API would be required."
+    options:
+      - label: "Omit duration field (Recommended)"
+        value: omit_duration
+        description: "Audio renditions don't include duration initially; updated via API after TTS synthesis if needed"
+      - label: "Include duration as null"
+        value: null_duration
+        description: "Audio renditions include `"duration": null` initially, replaced with actual value after synthesis"
+      - label: "Add update API"
+        value: update_api
+        description: "Implement an explicit `update_segment/3` function to modify segments after creation"
+  - id: q2
+    question: "How should `conversation_id` be passed to the Manifest?"
+    context: "The ticket API signatures don't include `conversation_id` in `add_utterance/add_cue`. The plan assumes first-call initialization or nil default, but a cleaner design might use an explicit `init_stream` call that Egress invokes with metadata from `stream_metadata`."
+    options:
+      - label: "Explicit init_stream call (Recommended)"
+        value: init_stream_api
+        description: "Add `init_stream(stream_id, conversation_id)` for Egress to call on stream start"
+      - label: "Optional param on first call"
+        value: first_call_param
+        description: "Pass `conversation_id` to the first `add_utterance` call; no separate init"
+      - label: "Defaults to nil"
+        value: nil_default
+        description: "Conversation_id defaults to nil; no explicit initialization needed"
 ---
 # Segment manifest design: define manifest format for multimedia responses (renditions, cues, growing playlist)
 
