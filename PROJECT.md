@@ -26,16 +26,18 @@ Store handlers are all stubs returning `:not_found` or `{:ok, []}`.
 
 ## Current State (as of 2026-03-05)
 
-**What works:** Compiles clean. 25 tests pass. Terminology rename complete
-(room→conversation, session→epoch). All module files exist with correct structure.
+**What works:** Compiles clean. 35 tests pass. Real Anthropic SSE streaming
+through Agent → Egress (vertical slice complete). SSE parser handles arbitrary
+chunk boundaries. Agent runs inference loop with receive-based message dispatch.
+Epoch wires submit → Agent → Egress. Testable from `iex -S mix`.
 
-**What doesn't work yet:** No real inference. Agent.infer/3 is a stub that returns
-immediately. Store has no Ecto schemas — every handler is a stub. Backend.LLM.Anthropic
-has the Req call structure but no SSE parsing (does a single POST, not streaming).
-No transports. No migrations.
+**What doesn't work yet:** Store has no Ecto schemas — every handler is a stub.
+No TTS/STT integration (backends are stubs). No HTTP transport or segment manifest.
+No transports. No migrations. No multi-turn (each submit is stateless).
 
-**Unstaged changes:** The terminology rename from the previous session is sitting
-in git as unstaged modifications across ~20 files. Commit or stash before branching.
+**API key:** `.env` file (gitignored) with `ANTHROPIC_API_KEY`. Load with
+`set -a && source .env && set +a` before running. Default model is Haiku
+(preserve API credits for production Opus usage).
 
 ## Architecture in 30 Seconds
 
@@ -164,11 +166,18 @@ See README.md glossary for full term definitions.
 
 ## Roadmap (Next Steps)
 
-1. **Stream initialization** — add `{:stream_start, stream_id, metadata}` to
-   `Cranium.Stage` behaviour and all stage handle_info clauses
-2. **Vertical slice** — one real Anthropic API call with SSE streaming through
-   Agent → Egress. Prove it works from `iex -S mix`. No transport, no TTS.
-3. **Epoch lifecycle** — implement clear/handoff/saturation tracking
+1. ~~Stream initialization~~ — done.
+2. ~~Vertical slice~~ — done. Real SSE streaming, testable from iex.
+3. **TTS integration** — wire Synthesizer to Kokoro HTTP endpoint
+4. **STT integration** — wire Transcriber to stt.gisi.network HTTP endpoint
+5. **Segment manifest + HTTP transport** — Plug + Bandit, submit/manifest/segment
+   endpoints, TTS cache GenServer, client disposition
+6. **Persistence** — Ecto schemas, multi-turn conversation history
+7. **Hearth integration** — point Hearth at HTTP API
+8. **Epoch lifecycle** — clear/handoff/saturation tracking
+
+See README.md "Segment Manifest" section for the manifest design (renditions,
+cues-as-segments, TTS cache, disposition).
 
 ## File Reference
 

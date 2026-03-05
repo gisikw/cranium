@@ -219,6 +219,108 @@ that position. The model's natural sense of timing **is** the timing data.
 This lets rich media (code blocks, images, audio clips) appear in the output stream
 at the position the model intended, without post-hoc alignment.
 
+### Segment Manifest
+
+Egress produces a **segment manifest** — a growing playlist of heterogeneous
+content blocks that clients poll and consume. This is the delivery contract
+between the pipeline and any client (Hearth, Matrix, CLI, future web UI).
+
+The design borrows from HLS live playlists (sequence numbers, growing segment
+list, end-of-stream marker) but uses JSON and supports mixed media types. It is
+not an HLS/DASH/CMAF manifest — those formats assume homogeneous media segments
+of known duration in a continuous playout timeline, which doesn't fit
+heterogeneous LLM output.
+
+#### Manifest Shape
+
+```json
+{
+  "stream_id": "a1b2c3",
+  "status": "streaming",
+  "segments": [
+    {
+      "index": 0,
+      "type": "utterance",
+      "renditions": {
+        "audio": {"url": "/v1/streams/a1b2c3/segments/0/audio", "mime": "audio/mp3", "duration": 1.2},
+        "text": {"url": "/v1/streams/a1b2c3/segments/0/text", "mime": "text/plain"}
+      }
+    },
+    {
+      "index": 1,
+      "type": "cue",
+      "cue_type": "image",
+      "data": {"url": "...", "alt": "A comparison table"}
+    },
+    {
+      "index": 2,
+      "type": "utterance",
+      "renditions": {
+        "audio": {"url": "/v1/streams/a1b2c3/segments/2/audio", "mime": "audio/mp3", "duration": 2.1},
+        "text": {"url": "/v1/streams/a1b2c3/segments/2/text", "mime": "text/plain"}
+      }
+    }
+  ]
+}
+```
+
+`status` is `"streaming"` while the Agent is generating, `"complete"` after
+`end_turn`. Clients poll the manifest and play/render new segments as they
+appear.
+
+#### Segment Types
+
+- **`utterance`** — spoken/written content. Has renditions (see below).
+- **`cue`** — SCTE-style marker from a tool call. Contains structured data
+  for the client to render (image, code block, table, etc.). Cues are
+  sequential segments, not sidecar annotations — LLM generation is
+  autoregressive, so the model cannot speak and emit a tool call
+  simultaneously. The natural ordering is always
+  `utterance → cue → utterance`.
+
+#### Renditions
+
+Text and audio of the same utterance are **renditions**, not separate segments.
+The client picks which rendition to consume based on its capabilities and the
+user's preference.
+
+- Matrix client: consumes `text` renditions, renders cues inline as markdown.
+- Hearth: consumes `audio` renditions, renders cues as visual overlays.
+- Airplane mode: text input, audio output — consumes `audio` renditions.
+
+Renditions are independent of input modality. A request carries a
+**disposition** — the set of output renditions the client wants:
+
+```json
+{"text": "...", "disposition": ["audio", "text"]}
+```
+
+#### TTS Cache
+
+Audio renditions are served from a lazy in-memory cache (GenServer keyed by
+`{stream_id, segment_index}`). Default behavior is lazy: audio is synthesized
+on first GET for that segment. When the client's disposition includes `audio`,
+Egress eagerly warms the cache as chunks arrive, so audio is ready before the
+client polls.
+
+Segments are evicted on first retrieval — replay is unlikely, and Kokoro
+resynthesizes in ~350ms/sentence if needed. The cache is a buffer between
+production and consumption, not durable storage. Text renditions don't need
+caching; they're stored as conversation context, which we keep anyway.
+
+#### HTTP Transport
+
+Three endpoints serve the manifest:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /v1/submit` | Accept input (text or audio), create epoch, return `stream_id` |
+| `GET /v1/streams/:id/manifest` | Segment manifest with current status |
+| `GET /v1/streams/:id/segments/:n/:rendition` | Individual segment content |
+
+Client loop: submit → poll manifest → consume new segments → repeat until
+`status: "complete"`.
+
 ## Design Decisions
 
 Captured from initial design review. These are directional, not final.
@@ -238,11 +340,15 @@ not a design flaw — the behaviour abstraction is in the right place.
 
 ### Stream Initialization
 
-Every stage that accepts streaming input needs a `{:stream_start, stream_id,
+Every stage that accepts streaming input receives a `{:stream_start, stream_id,
 metadata}` message before the first chunk arrives. This creates the buffer,
 establishes context (conversation, epoch, mode), and lets the stage know what
-it's receiving. Without this, stages are blind on the first chunk. The initial
-scaffold is missing this — it only has `{:chunk, ...}` and `{:stream_end, ...}`.
+it's receiving. The streaming protocol is: `stream_start → chunk* → stream_end`.
+
+The `handle_stream_start/3` callback and `init_stream/3` helper are defined in
+`Cranium.Stage`. All stages handle the full protocol. Structured buffers carry
+metadata alongside chunks, with backward compatibility for legacy chunk-list
+buffers.
 
 ## Open Questions
 
@@ -299,11 +405,18 @@ When multiple links connect to the same conversation:
 
 ### Next Steps
 
-1. **Stream initialization** — add `{:stream_start, ...}` to the streaming protocol
-2. **Vertical slice** — one real Anthropic API call with SSE streaming through
-   Agent → Egress, emitting text. No transport, no TTS. Prove the core path
-   works in `iex -S mix`
-3. **Epoch lifecycle** — implement clear/handoff/saturation tracking
+1. ~~Stream initialization~~ — done. Full `stream_start → chunk → stream_end` protocol.
+2. ~~Vertical slice~~ — done. Real Anthropic SSE streaming through Agent → Egress.
+   Testable from `iex -S mix`.
+3. **TTS integration** — wire Egress Synthesizer to Kokoro HTTP endpoint, produce
+   audio segments per stream_id
+4. **STT integration** — wire Ingress Transcriber to stt.gisi.network, accept audio
+   input
+5. **Segment manifest + HTTP transport** — Plug + Bandit with submit/manifest/segment
+   endpoints, TTS cache GenServer, disposition-driven eager warming
+6. **Persistence** — Ecto schemas for conversation history, multi-turn context
+7. **Hearth integration** — point Hearth at cranium-v2 HTTP API
+8. **Epoch lifecycle** — clear/handoff/saturation tracking
 
 ## Development
 

@@ -58,7 +58,7 @@ defmodule Cranium.Backend.LLM.Anthropic do
   alias Cranium.Backend.SSE
 
   @api_url "https://api.anthropic.com/v1/messages"
-  @default_model "claude-sonnet-4-6"
+  @default_model "claude-haiku-4-5-20251001"
   @default_max_tokens 8192
 
   @impl true
