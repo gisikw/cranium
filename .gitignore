@@ -1,0 +1,24 @@
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Claude Code
+.claude/
+
+# Secrets
+.env
+.env.local
+
+# Ko build artifacts
+.ko/builds/
+
+# Language-specific (uncomment as needed)
+# /target/       # Rust
+# /bin/          # Go binaries
+# /node_modules/ # Node
+# __pycache__/   # Python
+# .venv/         # Python virtualenv
+# /result        # Nix build output
