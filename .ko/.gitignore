@@ -1,0 +1,4 @@
+agent.lock
+agent.pid
+agent.log
+agent.heartbeat

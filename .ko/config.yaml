@@ -1,0 +1,67 @@
+# Knockout pipeline configuration for cranium-v2
+#
+# Pipeline: classify → route to workflow
+# Task workflow: plan → actionable gate → implement → verify → review
+# Research workflow: investigate → close with findings
+# Bug workflow: diagnose → assess (fixable? route to task or close)
+
+project:
+  prefix: cv2
+
+pipeline:
+  model: claude-sonnet-4-6
+  allow_all_tool_calls: true
+  max_retries: 2
+  max_depth: 2
+  discretion: medium
+
+  workflows:
+    main:
+      - name: classify
+        type: decision
+        prompt: classify.md
+        model: claude-haiku-4-5-20251001
+        routes: [task, research, bug]
+
+    task:
+      - name: plan
+        type: action
+        prompt: plan.md
+      - name: actionable
+        type: decision
+        prompt: actionable.md
+        model: claude-haiku-4-5-20251001
+      - name: implement
+        type: action
+        prompt: implement.md
+      - name: verify
+        type: action
+        run: mix test --no-start && mix compile --warnings-as-errors
+      - name: review
+        type: decision
+        prompt: review.md
+        note_artifact: summary.md
+
+    research:
+      - name: investigate
+        type: action
+        prompt: investigate.md
+        note_artifact: findings.md
+
+    bug:
+      - name: diagnose
+        type: action
+        prompt: diagnose.md
+        note_artifact: diagnosis.md
+      - name: assess
+        type: decision
+        prompt: assess.md
+        model: claude-haiku-4-5-20251001
+        routes: [task]
+
+  on_succeed:
+    - git add -A && git commit -m "ko: ${TICKET_ID} — ${TICKET_TITLE}"
+
+  on_fail:
+    - git add .ko/tickets/ && git diff --cached --quiet || git commit -m "ko: ${TICKET_ID} (blocked)"
+    - git stash push -u -m "ko: ${TICKET_ID} failed build"
