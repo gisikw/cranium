@@ -7,4 +7,11 @@ config :cranium, Cranium.Store.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+# Read API key from environment if available
+if api_key = System.get_env("ANTHROPIC_API_KEY") do
+  config :cranium, :backends,
+    anthropic_api_key: api_key,
+    anthropic_model: System.get_env("ANTHROPIC_MODEL") || "claude-sonnet-4-6"
+end
+
 config :logger, level: :debug

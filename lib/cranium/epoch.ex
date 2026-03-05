@@ -23,6 +23,7 @@ defmodule Cranium.Epoch do
     :conversation_id,
     :transport,
     :transport_meta,
+    :agent_pid,
     status: :idle,
     stream_id: nil,
     started_at: nil
@@ -32,6 +33,7 @@ defmodule Cranium.Epoch do
           conversation_id: String.t(),
           transport: module() | nil,
           transport_meta: map() | nil,
+          agent_pid: pid() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
           started_at: DateTime.t() | nil
@@ -74,7 +76,7 @@ defmodule Cranium.Epoch do
   @doc """
   Submit a message to the epoch's pipeline.
   """
-  @spec submit(pid(), map()) :: {:ok, String.t()} | {:error, term()}
+  @spec submit(pid(), map() | String.t()) :: {:ok, map()} | {:error, term()}
   def submit(pid, message) do
     GenServer.call(pid, {:submit, message}, :infinity)
   end
@@ -124,22 +126,29 @@ defmodule Cranium.Epoch do
   end
 
   @impl true
-  def handle_call({:submit, _message}, _from, %{status: :idle} = state) do
-    # Pipeline flow: Ingress → Context → Agent → Egress
-    # For now, this is a placeholder that will be fleshed out as stages
-    # are implemented. The shape is correct — each stage is called in
-    # sequence, with Agent being the streaming/async portion.
+  def handle_call({:submit, message}, _from, %{status: :idle} = state) do
     state = %{state | status: :processing, stream_id: Cranium.Stage.new_stream_id()}
     Logger.info("Processing message", stage: :epoch)
 
-    # TODO: Wire pipeline stages
-    # 1. Cranium.Ingress.process(message, context)
-    # 2. Cranium.Context.process(ingress_result, context)
-    # 3. Cranium.Agent.infer(context_result, callback)
-    # 4. Cranium.Egress.process(agent_output, context)
+    # Build minimal context from the message.
+    # Full pipeline: Ingress → Context → Agent → Egress
+    # Vertical slice: build context directly, run Agent → Egress
+    context = build_context(message, state)
 
-    state = %{state | status: :idle, stream_id: nil}
-    {:reply, {:ok, state.conversation_id}, state}
+    # Start a fresh Agent for this invocation
+    {:ok, agent_pid} = Cranium.Agent.start_link(
+      conversation_id: state.conversation_id,
+      epoch_pid: self()
+    )
+
+    egress_pid = Process.whereis(Cranium.Egress)
+    state = %{state | status: :inferring, agent_pid: agent_pid}
+
+    # Run inference (blocking — Agent.infer is synchronous)
+    result = Cranium.Agent.infer(agent_pid, context, egress_pid)
+
+    state = %{state | status: :idle, stream_id: nil, agent_pid: nil}
+    {:reply, result, state}
   end
 
   def handle_call({:submit, _message}, _from, state) do
@@ -160,11 +169,32 @@ defmodule Cranium.Epoch do
   @impl true
   def handle_cast(:cancel, %{status: status} = state) when status in [:processing, :inferring] do
     Logger.info("Cancelling inference", stage: :epoch)
-    # TODO: Kill the Agent process, capture partial context
+
+    if state.agent_pid do
+      GenServer.cast(state.agent_pid, :cancel)
+    end
+
     {:noreply, %{state | status: :cancelled}}
   end
 
   def handle_cast(:cancel, state) do
     {:noreply, state}
+  end
+
+  # --- Private ---
+
+  defp build_context(message, state) when is_binary(message) do
+    build_context(%{text: message}, state)
+  end
+
+  defp build_context(message, state) when is_map(message) do
+    text = Map.get(message, :text) || Map.get(message, "text") || ""
+
+    %{
+      system: Map.get(message, :system) || Map.get(message, "system"),
+      messages: [%{role: "user", content: text}],
+      mode: :text,
+      conversation_id: state.conversation_id
+    }
   end
 end

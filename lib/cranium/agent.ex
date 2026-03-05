@@ -56,7 +56,8 @@ defmodule Cranium.Agent do
     status: :idle,
     messages: [],
     tool_calls_pending: [],
-    partial_output: []
+    partial_output: [],
+    usage: %{input_tokens: 0, output_tokens: 0}
   ]
 
   @type t :: %__MODULE__{
@@ -67,7 +68,8 @@ defmodule Cranium.Agent do
           status: :idle | :inferring | :tool_use | :cancelled,
           messages: list(),
           tool_calls_pending: list(),
-          partial_output: list()
+          partial_output: list(),
+          usage: map()
         }
 
   # --- Public API ---
@@ -114,49 +116,134 @@ defmodule Cranium.Agent do
   end
 
   @impl true
-  def handle_call({:infer, context, _egress_pid}, _from, state) do
+  def handle_call({:infer, context, egress_pid}, _from, state) do
     stream_id = Cranium.Stage.new_stream_id()
+
+    messages = context[:messages] || []
+    system = context[:system]
 
     state = %{
       state
       | status: :inferring,
         stream_id: stream_id,
-        messages: context[:messages] || []
+        messages: messages,
+        partial_output: [],
+        usage: %{input_tokens: 0, output_tokens: 0}
     }
 
-    # TODO: Implement the inference loop
-    # 1. Call llm_backend.stream_chat(messages, opts)
-    # 2. Process SSE chunks
-    # 3. Handle tool calls via Harness
-    # 4. Forward text chunks to egress_pid
-    # 5. Loop on tool_use, complete on end_turn
+    # Signal stream start to Egress
+    metadata = %{
+      conversation_id: state.conversation_id,
+      content_type: :llm_response,
+      mode: Map.get(context, :mode, :text),
+      source: :agent
+    }
 
-    Logger.info("Inference complete")
-    {:reply, {:ok, %{stream_id: stream_id, status: :complete}}, %{state | status: :idle}}
+    send(egress_pid, {:stream_start, stream_id, metadata})
+
+    # Start the LLM backend stream
+    opts = [system: system, max_tokens: Map.get(context, :max_tokens, 8192)]
+
+    result = run_inference(state, egress_pid, stream_id, messages, opts)
+
+    send(egress_pid, {:stream_end, stream_id})
+
+    case result do
+      {:ok, final_state} ->
+        Logger.info("Inference complete",
+          output_length: length(final_state.partial_output),
+          input_tokens: final_state.usage[:input_tokens],
+          output_tokens: final_state.usage[:output_tokens]
+        )
+
+        reply = %{
+          stream_id: stream_id,
+          status: :complete,
+          output: final_state.partial_output |> Enum.reverse() |> Enum.join(),
+          usage: final_state.usage
+        }
+
+        {:reply, {:ok, reply}, %{final_state | status: :idle, stream_id: nil}}
+
+      {:error, reason} = error ->
+        Logger.error("Inference failed", error: inspect(reason))
+        {:reply, error, %{state | status: :idle, stream_id: nil}}
+    end
   end
 
   @impl true
   def handle_cast(:cancel, state) do
     Logger.info("Agent cancelled")
-    # TODO: Kill LLM backend stream, capture partial output
     {:noreply, %{state | status: :cancelled}}
   end
 
-  # Handle streaming chunks from LLM backend
-  @impl true
-  def handle_info({:llm_chunk, _chunk}, %{status: :cancelled} = state) do
-    # Discard chunks after cancel
-    {:noreply, state}
+  # --- Inference Loop ---
+
+  defp run_inference(state, egress_pid, stream_id, messages, opts) do
+    case state.llm_backend.stream_chat(messages, opts) do
+      {:ok, llm_pid} ->
+        ref = Process.monitor(llm_pid)
+        result = receive_loop(state, egress_pid, stream_id, ref)
+        Process.demonitor(ref, [:flush])
+        result
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  def handle_info({:llm_chunk, chunk}, state) do
-    # TODO: Parse chunk, detect tool_use vs text, route accordingly
-    state = %{state | partial_output: [chunk | state.partial_output]}
-    {:noreply, state}
+  defp receive_loop(state, egress_pid, stream_id, ref) do
+    receive do
+      {:llm_text, text} ->
+        send(egress_pid, {:chunk, stream_id, text})
+        state = %{state | partial_output: [text | state.partial_output]}
+        receive_loop(state, egress_pid, stream_id, ref)
+
+      {:llm_tool_use, _tool_call} ->
+        # TODO: Route through ToolRouter → ToolExecutor/MarkerEmitter
+        # For now, log and continue (no tool execution in vertical slice)
+        Logger.info("Tool call received (not yet implemented)")
+        receive_loop(state, egress_pid, stream_id, ref)
+
+      {:llm_usage, usage} ->
+        merged = merge_usage(state.usage, usage)
+        receive_loop(%{state | usage: merged}, egress_pid, stream_id, ref)
+
+      {:llm_stop, "end_turn"} ->
+        {:ok, state}
+
+      {:llm_stop, "tool_use"} ->
+        # TODO: Execute tools, append results, re-enter inference
+        Logger.info("Tool use stop (not yet implemented)")
+        {:ok, state}
+
+      {:llm_stop, {:error, _status, _body} = error} ->
+        {:error, error}
+
+      {:llm_stop, {:error, _reason} = error} ->
+        {:error, error}
+
+      {:llm_stop, other} ->
+        Logger.warning("Unexpected stop reason", reason: inspect(other))
+        {:ok, state}
+
+      {:DOWN, ^ref, :process, _pid, :normal} ->
+        # LLM process exited normally — might not have sent :llm_stop
+        {:ok, state}
+
+      {:DOWN, ^ref, :process, _pid, reason} ->
+        {:error, {:llm_crash, reason}}
+    after
+      120_000 ->
+        {:error, :timeout}
+    end
   end
 
-  def handle_info({:llm_done, _reason}, state) do
-    {:noreply, %{state | status: :idle}}
+  defp merge_usage(existing, new) do
+    %{
+      input_tokens: (existing[:input_tokens] || 0) + (new[:input_tokens] || 0),
+      output_tokens: (existing[:output_tokens] || 0) + (new[:output_tokens] || 0)
+    }
   end
 
   # --- Private ---
