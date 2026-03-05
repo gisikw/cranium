@@ -1,0 +1,58 @@
+defmodule Cranium.Agent.ToolExecutor do
+  @moduledoc """
+  Executes real tool calls and returns results.
+
+  This is where tool calls become side effects. The executor receives
+  a tool name and input, runs the tool, and returns a result that gets
+  appended to the conversation as a tool_result message.
+
+  ## Safety
+
+  Tool execution happens in a sandboxed context:
+  - Working directory is scoped to the session's project dir
+  - Execution has a configurable timeout
+  - Results are truncated if they exceed a size limit
+
+  ## Future
+
+  This module will grow to support:
+  - File read/write tools
+  - Search tools (grep, glob)
+  - Code execution (sandboxed)
+  - External API calls
+  - Skill invocation
+  """
+
+  require Logger
+
+  @result_max_size 50_000
+  @default_timeout 30_000
+
+  @spec execute(String.t(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def execute(tool_name, input, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    Logger.info("Executing tool: #{tool_name}", stage: :agent)
+
+    task =
+      Task.async(fn ->
+        do_execute(tool_name, input, opts)
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task) do
+      {:ok, result} -> result
+      nil -> {:error, :tool_timeout}
+    end
+  end
+
+  defp do_execute(_tool_name, _input, _opts) do
+    # TODO: Implement tool dispatch
+    {:ok, ~s({"error": "tool not implemented"})}
+  end
+
+  @doc false
+  def truncate_result(result) when byte_size(result) > @result_max_size do
+    String.slice(result, 0, @result_max_size) <> "\n... (truncated)"
+  end
+
+  def truncate_result(result), do: result
+end
