@@ -5,10 +5,10 @@ defmodule Cranium.Ingress.CommandDetector do
   Commands are prefixed with `!` and control the pipeline rather than
   being sent to inference:
 
-  - `!clear` — clear session, generate handoff
+  - `!clear` — clear epoch, generate handoff
   - `!cancel` — cancel active inference
   - `!usage` — report context usage stats
-  - `!new <name>` — create a new room
+  - `!new <name>` — create a new conversation
 
   If a command is detected, returns `{:command, command_type, args}`.
   Otherwise returns `{:ok, event}` and the message continues through
@@ -17,19 +17,20 @@ defmodule Cranium.Ingress.CommandDetector do
 
   @spec process(map(), map()) :: {:ok, map()} | {:command, atom(), map()}
   def process(%{body: "!clear"} = event, _context) do
-    {:command, :clear, %{room_id: event.room_id}}
+    {:command, :clear, %{conversation_id: event.conversation_id}}
   end
 
   def process(%{body: "!cancel"} = event, _context) do
-    {:command, :cancel, %{room_id: event.room_id}}
+    {:command, :cancel, %{conversation_id: event.conversation_id}}
   end
 
   def process(%{body: "!usage"} = event, _context) do
-    {:command, :usage, %{room_id: event.room_id}}
+    {:command, :usage, %{conversation_id: event.conversation_id}}
   end
 
   def process(%{body: "!new " <> name} = event, _context) do
-    {:command, :new_room, %{room_id: event.room_id, name: String.trim(name)}}
+    {:command, :new_conversation,
+     %{conversation_id: event.conversation_id, name: String.trim(name)}}
   end
 
   def process(event, _context) do
@@ -41,7 +42,7 @@ defmodule Cranium.Ingress.CommandDetector do
       text: event[:body] || "",
       attachments: event[:attachments] || [],
       event_id: event.event_id,
-      room_id: event.room_id,
+      conversation_id: event.conversation_id,
       sender: event.sender,
       timestamp: event.timestamp
     }

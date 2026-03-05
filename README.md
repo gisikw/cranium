@@ -7,7 +7,38 @@ introspection.
 
 Cranium v2 replaces [cranium](../cranium/) — a Go bridge that delegates to Claude
 Code subprocesses. v2 manages the LLM conversation directly via the Anthropic API,
-gaining control over context assembly, streaming, tool execution, and session state.
+gaining control over context assembly, streaming, tool execution, and epoch state.
+
+## Glossary
+
+These terms are settled and used consistently throughout the codebase.
+
+| Term | Definition | Elixir module | Identifier |
+|------|-----------|---------------|------------|
+| **Conversation** | Persistent, named, indefinite interaction context. "nerve", "hearth", "personal-chat". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
+| **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. | `Cranium.Epoch` | `epoch_id` |
+| **Round** | A single trip through the pipeline. One user message in, one assistant response out (may include multiple tool call loops internally, but from the pipeline's perspective it's one round). | — (pipeline traversal) | `stream_id` |
+| **Link** | A live connection between a client and a conversation. Receives output chunks, sends cancels, handles mode switching. When a client disconnects, the link drops but the conversation persists. | — (future) | — |
+| **Stage** | A pipeline processing unit. GenServer implementing `Cranium.Stage` behaviour. Six top-level stages: Ingress, Context, Agent, Egress, Effects, Store. | `Cranium.Stage` | — |
+| **Step** | A pure-function module within a stage. E.g., `CommandDetector` is a step within Ingress. | Step modules | — |
+| **Transport** | Protocol adapter that lives outside the pipeline. Converts protocol-specific events to normalized messages (Matrix, Hearth). | `Cranium.Transport.*` | — |
+| **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (Kokoro), LLM (Anthropic). | `Cranium.Backend.*` | — |
+| **Handoff** | Summary document generated on `!clear`, capturing epoch context for the next epoch. | — (stored entity) | — |
+| **Landscape** | Cross-conversation awareness — summaries from other active conversations injected into the system prompt. | — (assembled by PromptBuilder) | — |
+| **Marker** | SCTE-style positional cue in the output stream. The model calls tools like `show`, `show_code`, `play_audio` that are intercepted and emitted as markers at the model's intended position. | — (stream event) | — |
+
+### Deprecated Terms
+
+These terms appear in cranium v1 and design documents but should **not** appear
+in v2 code:
+
+| Old term | Replacement |
+|----------|-------------|
+| `room_id` | `conversation_id` |
+| `session` (as a domain concept) | `epoch` |
+| `Session` (module) | `Epoch` |
+| `room` (in cross-room context) | `conversation` |
+| `RoomSummarizer` | `ConversationSummarizer` |
 
 ## Architecture
 
@@ -56,8 +87,8 @@ Builds the full inference context from the normalized message and persisted stat
 
 | Step | Responsibility |
 |------|---------------|
-| `Router` | Maps room/channel to working directory, resolves project context |
-| `PromptBuilder` | Assembles system prompt: identity document, room handoff, cross-room landscape |
+| `Router` | Maps conversation to working directory, resolves project context |
+| `PromptBuilder` | Assembles system prompt: identity document, conversation handoff, cross-conversation landscape |
 | `TurnInjector` | Adds per-turn context injections — time-gap reminders, saturation warnings, interrupted context breadcrumbs, resume signals. Injections are conditional and position-sensitive. |
 | `HistoryManager` | Retrieves and formats conversation history from Store |
 
@@ -88,8 +119,8 @@ Work triggered by pipeline events but not on the critical path.
 
 | Step | Responsibility |
 |------|---------------|
-| `HandoffWriter` | On `!clear`, generates a handoff document via separate LLM call summarizing the session |
-| `RoomSummarizer` | Every N turns, generates a cross-room summary via separate LLM call |
+| `HandoffWriter` | On `!clear`, generates a handoff document via separate LLM call summarizing the epoch |
+| `ConversationSummarizer` | Every N turns, generates a cross-conversation summary via separate LLM call |
 
 #### Store — Persistence
 
@@ -97,10 +128,10 @@ Centralized storage with soft read/write locking during active inference.
 
 | Entity | Purpose |
 |--------|---------|
-| Sessions | Per-room state: status, saturation, turn count, system prompt snapshot |
+| Epochs | Per-conversation state: status, saturation, turn count, system prompt snapshot |
 | Messages | Conversation history (role, content, token counts) |
-| Handoffs | Room handoff documents for session continuity |
-| Summaries | Cross-room awareness cache |
+| Handoffs | Conversation handoff documents for epoch continuity |
+| Summaries | Cross-conversation awareness cache |
 
 ### Streaming Model
 
@@ -127,12 +158,12 @@ This design anticipates:
 - LLM backends that support streaming prefill (vLLM)
 - SSE from the Anthropic API, enabling output processing before inference completes
 
-### Session Coordination
+### Epoch Coordination
 
-Each room has at most one active session at a time, enforced by
-`Cranium.Session.Registry` (an Elixir `Registry` with unique keys).
+Each conversation has at most one active epoch at a time, enforced by
+`Cranium.Epoch.Registry` (an Elixir `Registry` with unique keys).
 
-A `Session` process coordinates the pipeline for a single invocation:
+An `Epoch` process coordinates the pipeline for a single invocation:
 
 1. Ingress normalizes the incoming message
 2. Context assembles the full inference payload
@@ -141,7 +172,7 @@ A `Session` process coordinates the pipeline for a single invocation:
 5. Effects trigger as appropriate (handoffs, summaries)
 6. Store is updated throughout
 
-Sessions are spawned by transports and supervised by a `DynamicSupervisor`.
+Epochs are spawned by transports and supervised by a `DynamicSupervisor`.
 
 ### Backend Swappability
 
@@ -188,25 +219,6 @@ that position. The model's natural sense of timing **is** the timing data.
 This lets rich media (code blocks, images, audio clips) appear in the output stream
 at the position the model intended, without post-hoc alignment.
 
-## Terminology
-
-Settled in design review (2026-03-05). The codebase should use these terms
-consistently. The initial scaffold uses older terms (`room_id`, `session`) in
-many places — a renaming pass is needed.
-
-- **Conversation** — persistent, named, indefinite. "nerve", "hearth",
-  "personal-chat". Has a lifetime history. Survives everything. This is the
-  durable identity of an ongoing interaction context.
-- **Epoch** — a span of continuous context within a conversation. Starts fresh
-  (possibly with a handoff from the previous epoch). Ends on `!clear` or context
-  exhaustion. Tracks saturation, turn count, accumulated messages.
-- **Round** — a single trip through the pipeline. One user message in, one
-  assistant response out (may include multiple tool call loops internally, but
-  from the pipeline's perspective it's one round).
-- **Link** — a live connection between a client and a conversation. The link
-  receives output chunks, sends cancels, handles mode switching. When a client
-  disconnects, the link drops but the conversation persists.
-
 ## Design Decisions
 
 Captured from initial design review. These are directional, not final.
@@ -215,9 +227,6 @@ Captured from initial design review. These are directional, not final.
 
 Cranium v2 is **not** a Matrix bridge. Matrix may be one transport among several
 (Hearth, future clients), but the pipeline core must be transport-agnostic.
-The initial scaffold carries some Matrix-specific naming (`room_id`, room-based
-routing) inherited from cranium v1 — this needs a renaming pass to use
-Conversation/Epoch/Round/Link terminology.
 
 ### Inference Data Model
 
@@ -290,13 +299,11 @@ When multiple links connect to the same conversation:
 
 ### Next Steps
 
-1. **Renaming pass** — `room_id` → `conversation_id`, `session` → `epoch`,
-   add `{:stream_start, ...}` to the streaming protocol
+1. **Stream initialization** — add `{:stream_start, ...}` to the streaming protocol
 2. **Vertical slice** — one real Anthropic API call with SSE streaming through
    Agent → Egress, emitting text. No transport, no TTS. Prove the core path
    works in `iex -S mix`
-3. **Epoch lifecycle** — implement clear/handoff/saturation tracking with the
-   new terminology
+3. **Epoch lifecycle** — implement clear/handoff/saturation tracking
 
 ## Development
 
@@ -333,8 +340,7 @@ lib/
     application.ex                 # OTP supervision tree
     stage.ex                       # Stage behaviour (shared streaming interface)
 
-    session.ex                     # Per-room session coordinator
-    session/registry.ex            # One-session-per-room enforcement
+    epoch.ex                       # Per-conversation epoch coordinator
 
     ingress.ex                     # Input processing stage
     ingress/
@@ -365,12 +371,12 @@ lib/
     effects.ex                     # Async side-effects stage
     effects/
       handoff_writer.ex
-      room_summarizer.ex
+      conversation_summarizer.ex
 
     store.ex                       # Persistence stage
     store/
       repo.ex                     # Ecto Repo
-      schemas/                    # Ecto schemas (sessions, messages, etc.)
+      schemas/                    # Ecto schemas (epochs, messages, etc.)
 
     backend/                       # Hot-swappable backends
       stt.ex                      # Behaviour + Whisper impl

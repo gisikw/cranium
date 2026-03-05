@@ -1,12 +1,13 @@
-defmodule Cranium.Session do
+defmodule Cranium.Epoch do
   @moduledoc """
-  Per-room session coordinator.
+  Per-conversation epoch coordinator.
 
-  A Session orchestrates a single invocation through the pipeline for a room.
-  At most one Session exists per room at any time, enforced by the Registry.
+  An Epoch orchestrates a single span of continuous context within a
+  conversation. At most one Epoch exists per conversation at any time,
+  enforced by the Registry.
 
-  The Session does not hold conversation history in process state — that lives
-  in Store. Session state tracks the active invocation lifecycle:
+  The Epoch does not hold conversation history in process state — that lives
+  in Store. Epoch state tracks the active invocation lifecycle:
 
   - `:idle` — waiting for input
   - `:processing` — pipeline is running
@@ -19,7 +20,7 @@ defmodule Cranium.Session do
   require Logger
 
   defstruct [
-    :room_id,
+    :conversation_id,
     :transport,
     :transport_meta,
     status: :idle,
@@ -28,7 +29,7 @@ defmodule Cranium.Session do
   ]
 
   @type t :: %__MODULE__{
-          room_id: String.t(),
+          conversation_id: String.t(),
           transport: module() | nil,
           transport_meta: map() | nil,
           status: :idle | :processing | :inferring | :cancelled,
@@ -39,18 +40,18 @@ defmodule Cranium.Session do
   # --- Public API ---
 
   @doc """
-  Start a new session for a room, or return the existing one.
+  Start a new epoch for a conversation, or return the existing one.
   """
   @spec start_or_get(String.t(), keyword()) :: {:ok, pid()} | {:error, :already_active}
-  def start_or_get(room_id, opts \\ []) do
-    case lookup(room_id) do
+  def start_or_get(conversation_id, opts \\ []) do
+    case lookup(conversation_id) do
       {:ok, pid} ->
         {:ok, pid}
 
       :not_found ->
         case DynamicSupervisor.start_child(
-               Cranium.Session.Supervisor,
-               {__MODULE__, Keyword.merge(opts, room_id: room_id)}
+               Cranium.Epoch.Supervisor,
+               {__MODULE__, Keyword.merge(opts, conversation_id: conversation_id)}
              ) do
           {:ok, pid} -> {:ok, pid}
           {:error, {:already_started, pid}} -> {:ok, pid}
@@ -60,18 +61,18 @@ defmodule Cranium.Session do
   end
 
   @doc """
-  Look up the session process for a room.
+  Look up the epoch process for a conversation.
   """
   @spec lookup(String.t()) :: {:ok, pid()} | :not_found
-  def lookup(room_id) do
-    case Registry.lookup(Cranium.Session.Registry, room_id) do
+  def lookup(conversation_id) do
+    case Registry.lookup(Cranium.Epoch.Registry, conversation_id) do
       [{pid, _}] -> {:ok, pid}
       [] -> :not_found
     end
   end
 
   @doc """
-  Submit a message to the session's pipeline.
+  Submit a message to the epoch's pipeline.
   """
   @spec submit(pid(), map()) :: {:ok, String.t()} | {:error, term()}
   def submit(pid, message) do
@@ -79,7 +80,7 @@ defmodule Cranium.Session do
   end
 
   @doc """
-  Clear the session — trigger handoff and reset.
+  Clear the epoch — trigger handoff and reset.
   """
   @spec clear(pid()) :: :ok
   def clear(pid) do
@@ -97,23 +98,23 @@ defmodule Cranium.Session do
   # --- GenServer Implementation ---
 
   def start_link(opts) do
-    room_id = Keyword.fetch!(opts, :room_id)
-    GenServer.start_link(__MODULE__, opts, name: via(room_id))
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
+    GenServer.start_link(__MODULE__, opts, name: via(conversation_id))
   end
 
-  defp via(room_id) do
-    {:via, Registry, {Cranium.Session.Registry, room_id}}
+  defp via(conversation_id) do
+    {:via, Registry, {Cranium.Epoch.Registry, conversation_id}}
   end
 
   @impl true
   def init(opts) do
-    room_id = Keyword.fetch!(opts, :room_id)
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
 
-    Logger.metadata(room_id: room_id)
-    Logger.info("Session started")
+    Logger.metadata(conversation_id: conversation_id)
+    Logger.info("Epoch started")
 
     state = %__MODULE__{
-      room_id: room_id,
+      conversation_id: conversation_id,
       transport: Keyword.get(opts, :transport),
       transport_meta: Keyword.get(opts, :transport_meta, %{}),
       started_at: DateTime.utc_now()
@@ -129,7 +130,7 @@ defmodule Cranium.Session do
     # are implemented. The shape is correct — each stage is called in
     # sequence, with Agent being the streaming/async portion.
     state = %{state | status: :processing, stream_id: Cranium.Stage.new_stream_id()}
-    Logger.info("Processing message", stage: :session)
+    Logger.info("Processing message", stage: :epoch)
 
     # TODO: Wire pipeline stages
     # 1. Cranium.Ingress.process(message, context)
@@ -138,7 +139,7 @@ defmodule Cranium.Session do
     # 4. Cranium.Egress.process(agent_output, context)
 
     state = %{state | status: :idle, stream_id: nil}
-    {:reply, {:ok, state.room_id}, state}
+    {:reply, {:ok, state.conversation_id}, state}
   end
 
   def handle_call({:submit, _message}, _from, state) do
@@ -147,10 +148,10 @@ defmodule Cranium.Session do
 
   @impl true
   def handle_call(:clear, _from, state) do
-    Logger.info("Clearing session", stage: :session)
+    Logger.info("Clearing epoch", stage: :epoch)
 
     # TODO: Trigger handoff generation via Effects
-    # Cranium.Effects.generate_handoff(state.room_id)
+    # Cranium.Effects.generate_handoff(state.conversation_id)
 
     state = %{state | status: :idle, stream_id: nil}
     {:reply, :ok, state}
@@ -158,7 +159,7 @@ defmodule Cranium.Session do
 
   @impl true
   def handle_cast(:cancel, %{status: status} = state) when status in [:processing, :inferring] do
-    Logger.info("Cancelling inference", stage: :session)
+    Logger.info("Cancelling inference", stage: :epoch)
     # TODO: Kill the Agent process, capture partial context
     {:noreply, %{state | status: :cancelled}}
   end

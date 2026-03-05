@@ -5,7 +5,7 @@ defmodule Cranium.Ingress.CommandDetectorTest do
 
   @base_event %{
     event_id: "evt-1",
-    room_id: "test-room",
+    conversation_id: "test-convo",
     sender: "@user:example.com",
     timestamp: ~U[2026-03-05 10:00:00Z]
   }
@@ -13,23 +13,30 @@ defmodule Cranium.Ingress.CommandDetectorTest do
   describe "process/2" do
     test "detects !clear command" do
       event = Map.put(@base_event, :body, "!clear")
-      assert {:command, :clear, %{room_id: "test-room"}} = CommandDetector.process(event, %{})
+
+      assert {:command, :clear, %{conversation_id: "test-convo"}} =
+               CommandDetector.process(event, %{})
     end
 
     test "detects !cancel command" do
       event = Map.put(@base_event, :body, "!cancel")
-      assert {:command, :cancel, %{room_id: "test-room"}} = CommandDetector.process(event, %{})
+
+      assert {:command, :cancel, %{conversation_id: "test-convo"}} =
+               CommandDetector.process(event, %{})
     end
 
     test "detects !usage command" do
       event = Map.put(@base_event, :body, "!usage")
-      assert {:command, :usage, %{room_id: "test-room"}} = CommandDetector.process(event, %{})
+
+      assert {:command, :usage, %{conversation_id: "test-convo"}} =
+               CommandDetector.process(event, %{})
     end
 
-    test "detects !new with room name" do
+    test "detects !new with conversation name" do
       event = Map.put(@base_event, :body, "!new my-project")
 
-      assert {:command, :new_room, %{room_id: "test-room", name: "my-project"}} =
+      assert {:command, :new_conversation,
+              %{conversation_id: "test-convo", name: "my-project"}} =
                CommandDetector.process(event, %{})
     end
 
@@ -37,7 +44,7 @@ defmodule Cranium.Ingress.CommandDetectorTest do
       event = Map.put(@base_event, :body, "Hello, how are you?")
       assert {:ok, normalized} = CommandDetector.process(event, %{})
       assert normalized.text == "Hello, how are you?"
-      assert normalized.room_id == "test-room"
+      assert normalized.conversation_id == "test-convo"
     end
 
     test "normalizes event fields" do

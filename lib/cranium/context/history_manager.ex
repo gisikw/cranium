@@ -2,15 +2,16 @@ defmodule Cranium.Context.HistoryManager do
   @moduledoc """
   Retrieves and formats conversation history from Store.
 
-  Loads the conversation history for the room and formats it as a list
-  of messages suitable for the LLM API. The current user message is
-  appended as the final entry.
+  Loads the conversation history and formats it as a list of messages
+  suitable for the LLM API. The current user message is appended as
+  the final entry.
 
   ## History Windowing
 
   For long conversations, only the most recent N messages are included
-  (configurable). Older messages are summarized by the RoomSummarizer
-  and available via the cross-room landscape.
+  (configurable). Older messages are summarized by the
+  ConversationSummarizer and available via the cross-conversation
+  landscape.
 
   ## Message Format
 
@@ -28,10 +29,10 @@ defmodule Cranium.Context.HistoryManager do
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
-    room_id = message.room_id
+    conversation_id = message.conversation_id
     window = Map.get(context, :history_window, @default_window)
 
-    {:ok, history} = Cranium.Store.get_messages(room_id, limit: window)
+    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: window)
 
     api_messages =
       history

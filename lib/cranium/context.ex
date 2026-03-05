@@ -6,7 +6,7 @@ defmodule Cranium.Context do
   context: system prompt, turn-level injections, and conversation history.
   Decomposes into four steps:
 
-  - `Router` — map room to working directory, determine project context
+  - `Router` — map conversation to working directory, determine project context
   - `PromptBuilder` — assemble system prompt (identity + handoff + landscape)
   - `TurnInjector` — add per-turn context (time gaps, saturation, interrupted
     context, resume breadcrumbs)
@@ -20,9 +20,9 @@ defmodule Cranium.Context do
         system: String.t(),           # assembled system prompt
         messages: [message()],        # conversation history + current turn
         metadata: %{                  # routing and state info
-          room_id: String.t(),
+          conversation_id: String.t(),
           working_dir: String.t(),
-          session_id: String.t(),
+          epoch_id: String.t(),
           ...
         }
       }

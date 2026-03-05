@@ -16,7 +16,7 @@ defmodule Cranium.Ingress do
   Transport delivers a raw event (text, audio, image, or mixed). Ingress
   runs it through each step in order. If CommandDetector identifies a
   control command, it returns `{:command, command}` instead of a
-  normalized message — the Session handles commands separately from
+  normalized message — the Epoch handles commands separately from
   the inference pipeline.
 
   ## Streaming
@@ -40,7 +40,7 @@ defmodule Cranium.Ingress do
           audio: binary() | nil,
           image: binary() | nil,
           event_id: String.t(),
-          room_id: String.t(),
+          conversation_id: String.t(),
           sender: String.t(),
           timestamp: DateTime.t()
         }
@@ -49,7 +49,7 @@ defmodule Cranium.Ingress do
           text: String.t(),
           attachments: [map()],
           event_id: String.t(),
-          room_id: String.t(),
+          conversation_id: String.t(),
           sender: String.t(),
           timestamp: DateTime.t()
         }

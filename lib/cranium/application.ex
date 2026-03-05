@@ -11,10 +11,10 @@ defmodule Cranium.Application do
       ├── Cranium.Context             # Context assembly stage
       ├── Cranium.Egress              # Output processing stage
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
-      ├── Cranium.Session.Registry    # One-session-per-room enforcement
-      └── Cranium.Session.Supervisor  # Per-room session processes
+      ├── Cranium.Epoch.Registry      # One-epoch-per-conversation enforcement
+      └── Cranium.Epoch.Supervisor    # Per-conversation epoch processes
 
-  Agent processes are started per-session (inside Session), not as top-level
+  Agent processes are started per-epoch (inside Epoch), not as top-level
   children. Transports (Matrix, Hearth) will be added as children once
   implemented.
   """
@@ -36,9 +36,9 @@ defmodule Cranium.Application do
       # Async effects (handoffs, summaries)
       {DynamicSupervisor, name: Cranium.Effects.Supervisor, strategy: :one_for_one},
 
-      # Session management
-      {Registry, keys: :unique, name: Cranium.Session.Registry},
-      {DynamicSupervisor, name: Cranium.Session.Supervisor, strategy: :one_for_one}
+      # Epoch management
+      {Registry, keys: :unique, name: Cranium.Epoch.Registry},
+      {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one}
 
       # Transports — uncomment when implemented
       # Cranium.Transport.Matrix,

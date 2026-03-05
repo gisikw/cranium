@@ -5,14 +5,14 @@ defmodule Cranium.Context.PromptBuilder do
   The system prompt is a composite of:
 
   1. **Identity document** — the base personality/instructions (e.g., EXO.md)
-  2. **Room handoff** — context from the previous session in this room,
-     wrapped in `<room-handoff>` tags
-  3. **Cross-room landscape** — summaries from other active rooms, wrapped
-     in `<cross-room-context>` tags
+  2. **Conversation handoff** — context from the previous epoch in this
+     conversation, wrapped in `<conversation-handoff>` tags
+  3. **Cross-conversation landscape** — summaries from other active
+     conversations, wrapped in `<cross-conversation-context>` tags
 
-  For fresh sessions, all three components are assembled. For resumed
-  sessions, the system prompt from session creation is reused (stored
-  in the session state).
+  For fresh epochs, all three components are assembled. For resumed
+  epochs, the system prompt from epoch creation is reused (stored
+  in the epoch state).
 
   ## Canary Tags
 
@@ -23,10 +23,10 @@ defmodule Cranium.Context.PromptBuilder do
   @spec process(map(), map()) :: {:ok, map()}
   def process(%{is_fresh: true} = message, context) do
     identity = Map.get(context, :identity, "")
-    room_id = message.room_id
+    conversation_id = message.conversation_id
 
-    handoff = load_handoff(room_id)
-    landscape = build_landscape(room_id)
+    handoff = load_handoff(conversation_id)
+    landscape = build_landscape(conversation_id)
 
     system_prompt =
       [
@@ -41,9 +41,9 @@ defmodule Cranium.Context.PromptBuilder do
   end
 
   def process(message, _context) do
-    # Resumed session — system prompt is reused from session state
+    # Resumed epoch — system prompt is reused from epoch state
     system_prompt =
-      case message[:session_state] do
+      case message[:epoch_state] do
         {:ok, %{system_prompt: prompt}} -> prompt
         _ -> ""
       end
@@ -53,18 +53,18 @@ defmodule Cranium.Context.PromptBuilder do
 
   # --- Private ---
 
-  defp load_handoff(room_id) do
-    case Cranium.Store.get_latest_handoff(room_id) do
+  defp load_handoff(conversation_id) do
+    case Cranium.Store.get_latest_handoff(conversation_id) do
       {:ok, content} -> content
       :not_found -> nil
     end
   end
 
-  defp build_landscape(exclude_room_id) do
+  defp build_landscape(exclude_conversation_id) do
     case Cranium.Store.get_all_summaries() do
       {:ok, summaries} ->
         summaries
-        |> Enum.reject(&(&1.room_id == exclude_room_id))
+        |> Enum.reject(&(&1.conversation_id == exclude_conversation_id))
         |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
 
       _ ->
@@ -78,12 +78,12 @@ defmodule Cranium.Context.PromptBuilder do
     canary = canary_hash("handoff")
 
     """
-    <room-handoff>
+    <conversation-handoff>
     canary:handoff=#{canary}
-    This is the handoff from your previous session in this room. Use it for context but don't reference it explicitly unless asked.
+    This is the handoff from your previous epoch in this conversation. Use it for context but don't reference it explicitly unless asked.
 
     #{content}
-    </room-handoff>
+    </conversation-handoff>
     """
   end
 
@@ -96,17 +96,17 @@ defmodule Cranium.Context.PromptBuilder do
       summaries
       |> Enum.map(fn s ->
         age = format_age(s.updated_at)
-        "- **#{s.room_id}** (last active #{age}): #{s.content}"
+        "- **#{s.conversation_id}** (last active #{age}): #{s.content}"
       end)
       |> Enum.join("\n")
 
     """
-    <cross-room-context>
+    <cross-conversation-context>
     canary:landscape=#{canary}
-    Here's what's happening in your other rooms:
+    Here's what's happening in your other conversations:
 
     #{entries}
-    </cross-room-context>
+    </cross-conversation-context>
     """
   end
 

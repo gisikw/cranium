@@ -21,6 +21,6 @@ config :cranium, :pipeline,
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:room_id, :session_id, :stage]
+  metadata: [:conversation_id, :epoch_id, :stage]
 
 import_config "#{config_env()}.exs"

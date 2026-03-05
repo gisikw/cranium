@@ -1,11 +1,11 @@
-defmodule Cranium.Effects.RoomSummarizer do
+defmodule Cranium.Effects.ConversationSummarizer do
   @moduledoc """
-  Generates cross-room summaries periodically.
+  Generates cross-conversation summaries periodically.
 
   Every N turns (configured via `:summary_interval`), generates a 2-4
-  sentence summary of the room's current activity. These summaries are
-  used by PromptBuilder to create the cross-room landscape — giving
-  the agent awareness of what's happening in other rooms.
+  sentence summary of the conversation's current activity. These summaries
+  are used by PromptBuilder to create the cross-conversation landscape —
+  giving the agent awareness of what's happening in other conversations.
 
   ## Generation
 
@@ -23,12 +23,15 @@ defmodule Cranium.Effects.RoomSummarizer do
   """
 
   @spec generate(String.t()) :: :ok | {:error, term()}
-  def generate(room_id) do
-    Logger.info("Generating room summary", room_id: room_id, stage: :effects)
+  def generate(conversation_id) do
+    Logger.info("Generating conversation summary",
+      conversation_id: conversation_id,
+      stage: :effects
+    )
 
     backend = Application.get_env(:cranium, :backends)[:llm]
 
-    {:ok, history} = Cranium.Store.get_messages(room_id, limit: 30)
+    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 30)
 
     messages =
       Enum.map(history, fn msg ->
@@ -41,15 +44,21 @@ defmodule Cranium.Effects.RoomSummarizer do
       {:ok, stream_pid} ->
         case collect_text(stream_pid) do
           {:ok, text} ->
-            Cranium.Store.save_summary(room_id, text)
+            Cranium.Store.save_summary(conversation_id, text)
 
           {:error, reason} ->
-            Logger.error("Summary generation failed: #{inspect(reason)}", room_id: room_id)
+            Logger.error("Summary generation failed: #{inspect(reason)}",
+              conversation_id: conversation_id
+            )
+
             {:error, reason}
         end
 
       {:error, reason} ->
-        Logger.error("Summary LLM call failed: #{inspect(reason)}", room_id: room_id)
+        Logger.error("Summary LLM call failed: #{inspect(reason)}",
+          conversation_id: conversation_id
+        )
+
         {:error, reason}
     end
   end

@@ -43,9 +43,9 @@ Don't just ignore it.
 ### Supervision
 
 - The application supervisor uses `strategy: :rest_for_one` — if Store crashes,
-  everything downstream restarts. If a transport crashes, sessions remain.
-- Per-room sessions are supervised by a `DynamicSupervisor` — one session crash
-  does not affect other rooms.
+  everything downstream restarts. If a transport crashes, epochs remain.
+- Per-conversation epochs are supervised by a `DynamicSupervisor` — one epoch
+  crash does not affect other conversations.
 - Effects (handoffs, summaries) run as supervised `Task`s — crash isolation from
   the main pipeline.
 
@@ -53,7 +53,7 @@ Don't just ignore it.
 
 - No blocking calls in `handle_info/2` — delegate to `Task` or `handle_continue`
 - GenServer state is a struct, never a bare map
-- Timeouts are explicit, never infinite (except for session idle — that uses
+- Timeouts are explicit, never infinite (except for epoch idle — that uses
   `:hibernate` instead)
 - `handle_call` is for synchronous queries; `handle_cast` is for fire-and-forget
   mutations; `handle_info` is for async messages and streaming chunks
@@ -82,8 +82,8 @@ Stages that support streaming may forward chunks incrementally.
 - Every stage caches streamed input until downstream delivery is confirmed
 - Cache is cleared on successful delivery, not on stream completion
 - If streaming fails, cached data enables retry without upstream re-request
-- Stream IDs are unique per invocation (not per room — concurrent retries
-  must not collide)
+- Stream IDs are unique per invocation (not per conversation — concurrent
+  retries must not collide)
 
 ### Backend Swappability
 
@@ -93,12 +93,12 @@ Stages that support streaming may forward chunks incrementally.
   always go through the behaviour
 - Backend configuration is resolved at startup and injected into stage state
 
-### Session Isolation
+### Epoch Isolation
 
-- At most one active session per room (enforced by Registry, not convention)
-- Session crash in room A must not affect room B
-- A session coordinates pipeline stages — it does not bypass them
-- Sessions do not hold conversation history in process state — history lives
+- At most one active epoch per conversation (enforced by Registry, not convention)
+- Epoch crash in conversation A must not affect conversation B
+- An epoch coordinates pipeline stages — it does not bypass them
+- Epochs do not hold conversation history in process state — history lives
   in Store
 
 ## Storage Contracts
@@ -114,9 +114,9 @@ Stages that support streaming may forward chunks incrementally.
 ### Locking
 
 - Store uses soft locks during active inference: reads are always allowed,
-  writes queue behind active inference for the same room
+  writes queue behind active inference for the same conversation
 - No database-level advisory locks — coordination happens in the Store GenServer
-- Lock scope is per-room, never global
+- Lock scope is per-conversation, never global
 
 ## Testing
 

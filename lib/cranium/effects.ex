@@ -4,41 +4,41 @@ defmodule Cranium.Effects do
 
   Handles work triggered by pipeline events that is not on the critical
   path. Effects run as supervised Tasks under `Cranium.Effects.Supervisor`
-  — if a handoff generation fails, it doesn't affect the active session.
+  — if a handoff generation fails, it doesn't affect the active epoch.
 
   Decomposes into two steps:
 
   - `HandoffWriter` — on `!clear`, generates a handoff document via a
-    separate LLM call that summarizes the session. The handoff is stored
-    and injected into the next session's system prompt.
-  - `RoomSummarizer` — every N turns, generates a cross-room summary via
-    a separate LLM call. Summaries are stored and used for cross-room
-    awareness (the "landscape").
+    separate LLM call that summarizes the epoch. The handoff is stored
+    and injected into the next epoch's system prompt.
+  - `ConversationSummarizer` — every N turns, generates a cross-conversation
+    summary via a separate LLM call. Summaries are stored and used for
+    cross-conversation awareness (the "landscape").
 
   ## Timing
 
-  Effects are fire-and-forget from the Session's perspective. The Session
+  Effects are fire-and-forget from the Epoch's perspective. The Epoch
   doesn't wait for handoff generation to complete before clearing. Summary
   generation happens in the background after the Nth turn completes.
 
   Both effects use the LLM backend but with separate, minimal prompts —
-  they don't inherit the full session context.
+  they don't inherit the full epoch context.
   """
 
   require Logger
 
   @doc """
-  Generate a handoff document for a room.
+  Generate a handoff document for a conversation.
 
   Spawns a Task under the Effects supervisor. Returns immediately.
   """
   @spec generate_handoff(String.t()) :: :ok
-  def generate_handoff(room_id) do
-    Logger.info("Generating handoff", room_id: room_id, stage: :effects)
+  def generate_handoff(conversation_id) do
+    Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
       Cranium.Effects.Supervisor,
-      fn -> Cranium.Effects.HandoffWriter.generate(room_id) end,
+      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id) end,
       restart: :temporary
     )
 
@@ -46,17 +46,17 @@ defmodule Cranium.Effects do
   end
 
   @doc """
-  Generate a cross-room summary for a room.
+  Generate a cross-conversation summary.
 
   Spawns a Task under the Effects supervisor. Returns immediately.
   """
   @spec generate_summary(String.t()) :: :ok
-  def generate_summary(room_id) do
-    Logger.info("Generating summary", room_id: room_id, stage: :effects)
+  def generate_summary(conversation_id) do
+    Logger.info("Generating summary", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
       Cranium.Effects.Supervisor,
-      fn -> Cranium.Effects.RoomSummarizer.generate(room_id) end,
+      fn -> Cranium.Effects.ConversationSummarizer.generate(conversation_id) end,
       restart: :temporary
     )
 

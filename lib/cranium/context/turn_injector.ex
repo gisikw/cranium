@@ -9,13 +9,14 @@ defmodule Cranium.Context.TurnInjector do
   ## Injections
 
   - **Time-gap reminder** — if >30 minutes since last invocation, inject
-    elapsed time, current time, and optionally the cross-room landscape
+    elapsed time, current time, and optionally the cross-conversation
+    landscape
   - **Saturation warning** — rising-edge detection at 5% bucket boundaries
     above 50% context utilization
   - **Interrupted context** — if the previous invocation was cancelled,
     include a breadcrumb summarizing what was in progress
   - **Resume breadcrumb** — after a process restart, include context about
-    the prior session state
+    the prior epoch state
 
   ## Design Note
 
@@ -58,7 +59,7 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp maybe_add_time_gap(injections, _message, context) do
-    last_invoked = get_in(context, [:session, :last_invoked_at])
+    last_invoked = get_in(context, [:epoch, :last_invoked_at])
     now = Map.get(context, :now, DateTime.utc_now())
 
     case last_invoked do
@@ -78,8 +79,8 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp maybe_add_saturation(injections, _message, context) do
-    current = get_in(context, [:session, :saturation]) || 0
-    last_bucket = get_in(context, [:session, :last_reminder_bucket]) || 0
+    current = get_in(context, [:epoch, :saturation]) || 0
+    last_bucket = get_in(context, [:epoch, :last_reminder_bucket]) || 0
     current_bucket = div(trunc(current), @saturation_bucket_size) * @saturation_bucket_size
 
     if current >= @saturation_warn_threshold and current_bucket > last_bucket do
@@ -95,7 +96,7 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp maybe_add_interrupted(injections, _message, context) do
-    case get_in(context, [:session, :interrupted_context]) do
+    case get_in(context, [:epoch, :interrupted_context]) do
       nil ->
         injections
 
@@ -111,7 +112,7 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp maybe_add_resume(injections, _message, context) do
-    case get_in(context, [:session, :resume_breadcrumb]) do
+    case get_in(context, [:epoch, :resume_breadcrumb]) do
       nil ->
         injections
 
@@ -120,7 +121,7 @@ defmodule Cranium.Context.TurnInjector do
 
       crumb ->
         reminder =
-          "<system-reminder>Session was restarted. Previous context:\n\n#{crumb}</system-reminder>"
+          "<system-reminder>Epoch was restarted. Previous context:\n\n#{crumb}</system-reminder>"
 
         [reminder | injections]
     end

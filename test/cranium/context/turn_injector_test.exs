@@ -15,7 +15,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       last = ~U[2026-03-05 10:00:00Z]
 
       message = %{text: "hello"}
-      context = %{session: %{last_invoked_at: last}, now: now}
+      context = %{epoch: %{last_invoked_at: last}, now: now}
 
       injections = TurnInjector.build_injections(message, context)
       assert length(injections) == 1
@@ -28,7 +28,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       last = ~U[2026-03-05 10:00:00Z]
 
       message = %{text: "hello"}
-      context = %{session: %{last_invoked_at: last}, now: now}
+      context = %{epoch: %{last_invoked_at: last}, now: now}
 
       assert TurnInjector.build_injections(message, context) == []
     end
@@ -37,7 +37,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
 
       context = %{
-        session: %{saturation: 55.0, last_reminder_bucket: 45}
+        epoch: %{saturation: 55.0, last_reminder_bucket: 45}
       }
 
       injections = TurnInjector.build_injections(message, context)
@@ -50,7 +50,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
 
       context = %{
-        session: %{saturation: 53.0, last_reminder_bucket: 50}
+        epoch: %{saturation: 53.0, last_reminder_bucket: 50}
       }
 
       assert TurnInjector.build_injections(message, context) == []
@@ -60,7 +60,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
 
       context = %{
-        session: %{interrupted_context: "Was working on deploying the new service"}
+        epoch: %{interrupted_context: "Was working on deploying the new service"}
       }
 
       injections = TurnInjector.build_injections(message, context)
@@ -76,7 +76,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
 
       context = %{
-        session: %{
+        epoch: %{
           last_invoked_at: last,
           saturation: 72.0,
           last_reminder_bucket: 65
@@ -94,7 +94,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
 
       context = %{
-        session: %{interrupted_context: "fixing a bug"}
+        epoch: %{interrupted_context: "fixing a bug"}
       }
 
       {:ok, result} = TurnInjector.process(message, context)

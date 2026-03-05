@@ -55,8 +55,8 @@ defmodule Cranium.Stage do
   @doc """
   Process a complete message through this stage.
 
-  `context` carries room state, session info, and configuration needed
-  by the stage to do its work.
+  `context` carries conversation state, epoch info, and configuration
+  needed by the stage to do its work.
   """
   @callback process(message :: term(), context :: map()) ::
               {:ok, result :: term()} | {:error, reason :: term()}

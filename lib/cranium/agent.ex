@@ -4,7 +4,7 @@ defmodule Cranium.Agent do
 
   This is the most complex pipeline stage — a lightweight agent harness that
   manages the LLM inference loop. Unlike other stages, Agent processes are
-  per-session (spawned by the Session coordinator), not singleton.
+  per-epoch (spawned by the Epoch coordinator), not singleton.
 
   Decomposes into four steps:
 
@@ -28,13 +28,13 @@ defmodule Cranium.Agent do
          d. Append tool_result to messages, go to step 1
       5. If response is complete (stop_reason: "end_turn"):
          a. Signal stream end to Egress
-         b. Return final state to Session
+         b. Return final state to Epoch
 
   ## Cancel
 
   On cancel, the Agent process exits immediately. The LLM backend connection
   is closed. Any in-flight chunks already forwarded to Egress drain naturally.
-  The Session captures partial output for the interrupted context breadcrumb.
+  The Epoch captures partial output for the interrupted context breadcrumb.
 
   ## Streaming
 
@@ -49,8 +49,8 @@ defmodule Cranium.Agent do
   require Logger
 
   defstruct [
-    :room_id,
-    :session_pid,
+    :conversation_id,
+    :epoch_pid,
     :stream_id,
     :llm_backend,
     status: :idle,
@@ -60,8 +60,8 @@ defmodule Cranium.Agent do
   ]
 
   @type t :: %__MODULE__{
-          room_id: String.t(),
-          session_pid: pid() | nil,
+          conversation_id: String.t(),
+          epoch_pid: pid() | nil,
           stream_id: String.t() | nil,
           llm_backend: module(),
           status: :idle | :inferring | :tool_use | :cancelled,
@@ -73,9 +73,9 @@ defmodule Cranium.Agent do
   # --- Public API ---
 
   @doc """
-  Start an Agent process for a session.
+  Start an Agent process for an epoch.
 
-  The agent is linked to the calling session — if the session dies, the
+  The agent is linked to the calling epoch — if the epoch dies, the
   agent dies too.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -98,15 +98,15 @@ defmodule Cranium.Agent do
 
   @impl true
   def init(opts) do
-    room_id = Keyword.fetch!(opts, :room_id)
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
     llm_backend = backend_module()
 
-    Logger.metadata(room_id: room_id, stage: :agent)
+    Logger.metadata(conversation_id: conversation_id, stage: :agent)
     Logger.info("Agent started")
 
     state = %__MODULE__{
-      room_id: room_id,
-      session_pid: Keyword.get(opts, :session_pid),
+      conversation_id: conversation_id,
+      epoch_pid: Keyword.get(opts, :epoch_pid),
       llm_backend: llm_backend
     }
 

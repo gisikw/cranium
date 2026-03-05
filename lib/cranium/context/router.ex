@@ -1,40 +1,40 @@
 defmodule Cranium.Context.Router do
   @moduledoc """
-  Maps rooms to working directories and project context.
+  Maps conversations to working directories and project context.
 
-  Given a room name (e.g., "nerve"), checks if a matching directory
-  exists under the configured projects path. If so, the session runs
-  in that directory, giving the agent access to project-specific files,
+  Given a conversation name (e.g., "nerve"), checks if a matching directory
+  exists under the configured projects path. If so, the epoch runs in that
+  directory, giving the agent access to project-specific files,
   INVARIANTS.md, etc.
 
-  Also determines whether this is a fresh session or a resumed one,
+  Also determines whether this is a fresh epoch or a resumed one,
   which affects downstream context assembly.
   """
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
-    room_id = message.room_id
+    conversation_id = message.conversation_id
     projects_dir = Map.get(context, :projects_dir, "~/Projects")
 
-    working_dir = resolve_project_dir(room_id, projects_dir)
-    session_state = Cranium.Store.get_session(room_id)
+    working_dir = resolve_project_dir(conversation_id, projects_dir)
+    epoch_state = Cranium.Store.get_epoch(conversation_id)
 
     enriched =
       Map.merge(message, %{
         working_dir: working_dir,
-        session_state: session_state,
-        is_fresh: session_state == :not_found
+        epoch_state: epoch_state,
+        is_fresh: epoch_state == :not_found
       })
 
     {:ok, enriched}
   end
 
   @doc """
-  Resolve a room name to a project directory, if one exists.
+  Resolve a conversation name to a project directory, if one exists.
   """
   @spec resolve_project_dir(String.t(), String.t()) :: String.t() | nil
-  def resolve_project_dir(room_id, projects_dir) do
-    slug = slugify(room_id)
+  def resolve_project_dir(conversation_id, projects_dir) do
+    slug = slugify(conversation_id)
     expanded = Path.expand(projects_dir)
     candidate = Path.join(expanded, slug)
 
@@ -42,7 +42,7 @@ defmodule Cranium.Context.Router do
   end
 
   @doc """
-  Convert a room ID or name to a filesystem-safe slug.
+  Convert a conversation ID or name to a filesystem-safe slug.
   """
   @spec slugify(String.t()) :: String.t()
   def slugify(name) do
