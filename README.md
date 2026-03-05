@@ -188,23 +188,68 @@ that position. The model's natural sense of timing **is** the timing data.
 This lets rich media (code blocks, images, audio clips) appear in the output stream
 at the position the model intended, without post-hoc alignment.
 
+## Terminology
+
+Settled in design review (2026-03-05). The codebase should use these terms
+consistently. The initial scaffold uses older terms (`room_id`, `session`) in
+many places — a renaming pass is needed.
+
+- **Conversation** — persistent, named, indefinite. "nerve", "hearth",
+  "personal-chat". Has a lifetime history. Survives everything. This is the
+  durable identity of an ongoing interaction context.
+- **Epoch** — a span of continuous context within a conversation. Starts fresh
+  (possibly with a handoff from the previous epoch). Ends on `!clear` or context
+  exhaustion. Tracks saturation, turn count, accumulated messages.
+- **Round** — a single trip through the pipeline. One user message in, one
+  assistant response out (may include multiple tool call loops internally, but
+  from the pipeline's perspective it's one round).
+- **Link** — a live connection between a client and a conversation. The link
+  receives output chunks, sends cancels, handles mode switching. When a client
+  disconnects, the link drops but the conversation persists.
+
+## Design Decisions
+
+Captured from initial design review. These are directional, not final.
+
+### Transport Agnosticism
+
+Cranium v2 is **not** a Matrix bridge. Matrix may be one transport among several
+(Hearth, future clients), but the pipeline core must be transport-agnostic.
+The initial scaffold carries some Matrix-specific naming (`room_id`, room-based
+routing) inherited from cranium v1 — this needs a renaming pass to use
+Conversation/Epoch/Round/Link terminology.
+
+### Inference Data Model
+
+The internal message format currently mirrors Anthropic's API shape (role/content
+pairs, multipart content blocks, tool_use/tool_result types). This is pragmatic
+since Anthropic is the first backend. Other LLM backends (vLLM, Ollama) would
+need a translation layer at the `Backend.LLM` boundary. This is future scope,
+not a design flaw — the behaviour abstraction is in the right place.
+
+### Stream Initialization
+
+Every stage that accepts streaming input needs a `{:stream_start, stream_id,
+metadata}` message before the first chunk arrives. This creates the buffer,
+establishes context (conversation, epoch, mode), and lets the stage know what
+it's receiving. Without this, stages are blind on the first chunk. The initial
+scaffold is missing this — it only has `{:chunk, ...}` and `{:stream_end, ...}`.
+
 ## Open Questions
 
-Areas requiring design work as the project matures. Assumptions made during initial
-scaffolding are noted; revisit these before treating them as settled.
+Areas requiring design work as the project matures.
 
 ### Data Model
 
 The storage schema needs careful design. Key tensions:
 - Message history needs both full conversation replay and efficient windowed retrieval
 - Handoffs/summaries are write-heavy, read-infrequent, but reads are latency-sensitive
-  (they block session start)
-- Session state updates are frequent during streaming (saturation tracking)
+  (they block epoch start)
+- Epoch state updates are frequent during streaming (saturation tracking)
 - Should we store raw tool call/result pairs, or summarized representations?
 - How much of the Anthropic API message format do we preserve vs normalize?
 
-**Current assumption**: Postgres with Ecto. Schema is minimal — sessions, messages,
-handoffs, summaries. Will need iteration.
+**Current assumption**: Postgres with Ecto. Schema is minimal. Will need iteration.
 
 ### Tool Architecture
 
@@ -212,15 +257,12 @@ The Agent needs to support:
 - Real tool execution (file operations, web searches, code execution)
 - SCTE marker tools (intercepted, never executed)
 - Skill dispatch (registered skill invocation)
-- Tool approval routing (pause inference → ask user via transport → resume)
+- Tool approval routing (pause inference → ask user via link → resume)
 
 The approval flow is interesting in OTP terms. Options:
 - Agent process blocks on a `receive` waiting for approval
 - State machine with `:awaiting_approval` state
 - Separate approval process that the Agent monitors
-
-**Current assumption**: Agent blocks on approval, with a timeout. Approval request
-is sent to the transport, which routes it to the user (e.g., Matrix reaction).
 
 ### Context Window Management
 
@@ -230,28 +272,31 @@ When managing conversation history ourselves (not delegating to Claude Code):
   window limits and let it error, then compact?
 - Saturation tracking: computed from cumulative token counts vs model context limit
 
-**Current assumption**: Track tokens from API responses. Compact proactively at
-configurable thresholds (matching v1's rising-edge detection at 5% buckets above 50%).
+### Transport Strategy
 
-### Matrix Client
+Cranium v1 has a full Matrix client (mautrix-go). v2 needs to decide:
+- Build a minimal Matrix transport? (sync loop, room state, send/edit, reactions)
+- Hearth transport first, Matrix as optional add-on?
+- External Matrix integration (plugin/bridge that connects via Link) vs built-in?
 
-The v1 cranium uses mautrix-go (mature Go Matrix client). Elixir's Matrix ecosystem
-is thinner.
-- Build a minimal Matrix client (sync loop, room state, send/edit messages, reactions)
-- E2EE: not currently needed (rooms are unencrypted)
-- Typing indicators, read receipts, room creation
+### Multi-Link Coordination
 
-**Current assumption**: Minimal custom Matrix client. Sync loop + room operations.
-No E2EE initially.
+When multiple links connect to the same conversation:
+- Shared epoch? Separate epochs?
+- Output to all links simultaneously?
+- Cancel from one link affects the others?
 
-### Multi-Transport Coordination
+**Current assumption**: Defer this. Single-link-per-conversation initially.
 
-When both Matrix and Hearth connect to the same room:
-- Shared session? Separate sessions?
-- Output to both transports simultaneously?
-- Cancel from one transport affects the other?
+### Next Steps
 
-**Current assumption**: Defer this. Build for single-transport-per-room initially.
+1. **Renaming pass** — `room_id` → `conversation_id`, `session` → `epoch`,
+   add `{:stream_start, ...}` to the streaming protocol
+2. **Vertical slice** — one real Anthropic API call with SSE streaming through
+   Agent → Egress, emitting text. No transport, no TTS. Prove the core path
+   works in `iex -S mix`
+3. **Epoch lifecycle** — implement clear/handoff/saturation tracking with the
+   new terminology
 
 ## Development
 
