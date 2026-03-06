@@ -1,6 +1,6 @@
 ---
 id: cv2-bae4
-status: open
+status: closed
 deps: []
 created: 2026-03-05T22:55:49Z
 type: task
