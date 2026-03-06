@@ -195,8 +195,7 @@ defmodule Cranium.Epoch do
   def handle_call(:clear, _from, state) do
     Logger.info("Clearing epoch", stage: :epoch)
 
-    # TODO: Trigger handoff generation via Effects
-    # Cranium.Effects.generate_handoff(state.conversation_id)
+    Cranium.Effects.generate_handoff(state.conversation_id)
 
     state = %{state | status: :idle, stream_id: nil}
     {:reply, :ok, state}

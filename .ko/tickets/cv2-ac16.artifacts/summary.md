@@ -1,16 +1,4 @@
----
-id: cv2-ac16
-status: resolved
-deps: []
-created: 2026-03-06T12:43:03Z
-type: task
-priority: 2
----
-# Epoch lifecycle: wire !clear to trigger handoff generation via Effects
-
-## Notes
-
-**2026-03-06 13:19:37 UTC:** # Summary: cv2-ac16 — Wire !clear to handoff generation
+# Summary: cv2-ac16 — Wire !clear to handoff generation
 
 ## What was done
 
@@ -27,5 +15,3 @@ priority: 2
 ## Invariant check
 
 No violations. The `generate_handoff` call is fire-and-forget (async Task), consistent with the "Effects run as supervised Tasks — crash isolation from main pipeline" invariant. No blocking in `handle_call`. No secrets. No scope creep.
-
-**2026-03-06 13:19:37 UTC:** ko: SUCCEED

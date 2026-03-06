@@ -8,3 +8,4 @@
 {"event":"node_start","node":"actionable","ticket":"cv2-15da","ts":"2026-03-06T13:09:38Z","workflow":"task"}
 {"event":"node_complete","node":"actionable","result":"needs_input","ticket":"cv2-15da","ts":"2026-03-06T13:10:00Z","workflow":"task"}
 {"event":"build_complete","outcome":"fail","ticket":"cv2-15da","ts":"2026-03-06T13:10:00Z"}
+{"event":"build_error","reason":"hook 'git stash push -u -m \"ko: ${TICKET_ID} failed build\"' failed: exit status 1\nerror: Entry 'flake.lock' not uptodate. Cannot merge.\nCannot save the current worktree state\n","stage":"on_fail_hook","ticket":"cv2-15da","ts":"2026-03-06T13:10:00Z"}
