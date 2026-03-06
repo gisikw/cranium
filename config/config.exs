@@ -12,6 +12,9 @@ config :cranium, :backends,
   tts: Cranium.Backend.TTS.Kokoro,
   llm: Cranium.Backend.LLM.Anthropic
 
+# Tool registry — tools are registered at runtime via ToolRouter.register/2
+config :cranium, :tools, []
+
 # Pipeline tuning
 config :cranium, :pipeline,
   summary_interval: 10,

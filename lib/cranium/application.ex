@@ -35,6 +35,9 @@ defmodule Cranium.Application do
       # TTS audio cache (ephemeral buffer between Synthesizer and HTTP transport)
       Cranium.TTS.Cache,
 
+      # Input protocol (chunked audio take registry)
+      Cranium.Input.TakeRegistry,
+
       # Pipeline stages
       Cranium.Ingress,
       Cranium.Context,

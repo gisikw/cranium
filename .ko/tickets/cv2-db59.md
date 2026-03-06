@@ -1,6 +1,6 @@
 ---
 id: cv2-db59
-status: blocked
+status: closed
 deps: []
 created: 2026-03-06T16:59:35Z
 type: task

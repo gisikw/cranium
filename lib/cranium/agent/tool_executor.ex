@@ -28,14 +28,15 @@ defmodule Cranium.Agent.ToolExecutor do
   @result_max_size 50_000
   @default_timeout 30_000
 
-  @spec execute(String.t(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def execute(tool_name, input, opts \\ []) do
+  @spec execute(module(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def execute(module, input, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    Logger.info("Executing tool: #{tool_name}", stage: :agent)
+    label = if function_exported?(module, :name, 0), do: module.name(), else: inspect(module)
+    Logger.info("Executing tool: #{label}", stage: :agent)
 
     task =
       Task.async(fn ->
-        do_execute(tool_name, input, opts)
+        do_execute(module, input, opts)
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
@@ -44,9 +45,8 @@ defmodule Cranium.Agent.ToolExecutor do
     end
   end
 
-  defp do_execute(_tool_name, _input, _opts) do
-    # TODO: Implement tool dispatch
-    {:ok, ~s({"error": "tool not implemented"})}
+  defp do_execute(module, input, opts) do
+    module.execute(input, opts)
   end
 
   @doc false

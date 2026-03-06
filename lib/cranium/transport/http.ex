@@ -141,10 +141,125 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  post "/v1/input/start" do
+    conversation_id = conn.body_params["conversation_id"] || "default"
+    disposition = parse_disposition(conn.body_params["disposition"])
+
+    take_id = Cranium.Stage.new_stream_id()
+    stream_id = Cranium.Stage.new_stream_id()
+
+    :ok = Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition)
+    :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{"take_id" => take_id, "stream_id" => stream_id}))
+  end
+
+  put "/v1/input/:id/:seq" do
+    case Integer.parse(seq) do
+      {seq_int, ""} ->
+        case conn.body_params["chunk"] do
+          %Plug.Upload{path: path} ->
+            data = File.read!(path)
+
+            case Cranium.Input.TakeRegistry.put_chunk(id, seq_int, data) do
+              {:ok, :buffered} ->
+                conn
+                |> put_resp_content_type("application/json")
+                |> send_resp(200, Jason.encode!(%{"status" => "buffered"}))
+
+              {:ok, :complete, result} ->
+                trigger_audio_inference(result, id)
+
+                conn
+                |> put_resp_content_type("application/json")
+                |> send_resp(200, Jason.encode!(%{"status" => "complete"}))
+
+              {:error, :not_found} ->
+                conn
+                |> put_resp_content_type("application/json")
+                |> send_resp(404, Jason.encode!(%{"error" => "take not found"}))
+            end
+
+          _ ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(400, Jason.encode!(%{"error" => "missing chunk field"}))
+        end
+
+      _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "invalid sequence number"}))
+    end
+  end
+
+  post "/v1/input/:id/done" do
+    case conn.body_params["last_seq"] do
+      last_seq when is_integer(last_seq) ->
+        case Cranium.Input.TakeRegistry.seal(id, last_seq) do
+          {:ok, :complete, result} ->
+            trigger_audio_inference(result, id)
+
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(200, Jason.encode!(%{"missing" => []}))
+
+          {:ok, :incomplete, missing} ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(200, Jason.encode!(%{"missing" => missing}))
+
+          {:error, :not_found} ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(404, Jason.encode!(%{"error" => "take not found"}))
+        end
+
+      _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "missing or invalid last_seq"}))
+    end
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(404, Jason.encode!(%{"error" => "not found"}))
+  end
+
+  defp trigger_audio_inference(result, take_id) do
+    Task.start(fn ->
+      stt = Application.get_env(:cranium, :backends)[:stt] || Cranium.Backend.STT.Whisper
+
+      case stt.transcribe(result.audio, []) do
+        {:ok, text} ->
+          Logger.info("Input STT: take=#{take_id} transcribed #{byte_size(result.audio)} bytes", transport: :http)
+
+          case Cranium.Epoch.start_or_get(result.conversation_id) do
+            {:ok, epoch_pid} ->
+              stream_id = result.stream_id
+              message = %{
+                text: text,
+                conversation_id: result.conversation_id,
+                stream_id: stream_id,
+                disposition: result.disposition
+              }
+
+              case Cranium.Epoch.submit(epoch_pid, message) do
+                {:ok, _} -> Cranium.TTS.Cache.schedule_cleanup(stream_id)
+                {:error, reason} ->
+                  Logger.error("Input submit failed: take=#{take_id} reason=#{inspect(reason)}", transport: :http)
+                  Cranium.Manifest.complete(stream_id)
+              end
+          end
+
+        {:error, reason} ->
+          Logger.error("Input STT failed: take=#{take_id} reason=#{inspect(reason)}", transport: :http)
+      end
+    end)
   end
 
   defp parse_disposition(list) when is_list(list), do: list

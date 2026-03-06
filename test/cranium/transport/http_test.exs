@@ -178,4 +178,36 @@ defmodule Cranium.Transport.HTTPTest do
       assert Jason.decode!(conn.resp_body)["error"] == "not found"
     end
   end
+
+  describe "input protocol" do
+    test "POST /v1/input/start returns take_id and stream_id" do
+      conn =
+        Plug.Test.conn(:post, "/v1/input/start", %{"conversation_id" => "conv-input-1", "disposition" => ~s(["audio","text"])})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      json = Jason.decode!(conn.resp_body)
+      assert is_binary(json["take_id"])
+      assert is_binary(json["stream_id"])
+    end
+
+    test "POST /v1/input/:id/done for unknown take returns 404" do
+      conn =
+        Plug.Test.conn(:post, "/v1/input/nonexistent/done", %{"last_seq" => 0})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 404
+    end
+
+    test "POST /v1/input/:id/done with missing last_seq returns 400" do
+      conn =
+        Plug.Test.conn(:post, "/v1/input/some-id/done", %{})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 400
+    end
+  end
 end

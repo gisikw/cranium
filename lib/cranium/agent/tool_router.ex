@@ -37,8 +37,7 @@ defmodule Cranium.Agent.ToolRouter do
         {:marker, String.to_existing_atom(name), input}
 
       true ->
-        # TODO: Look up registered tool handlers
-        {:unknown, name}
+        find_handler(name, input)
     end
   end
 
@@ -49,5 +48,20 @@ defmodule Cranium.Agent.ToolRouter do
   def requires_approval?(_tool_name) do
     # TODO: Implement approval rules (auto-approve list, deny list)
     false
+  end
+
+  @doc "Register a tool handler at runtime."
+  @spec register(String.t(), module()) :: :ok
+  def register(name, module) do
+    tools = Application.get_env(:cranium, :tools, [])
+    Application.put_env(:cranium, :tools, [{name, module} | tools])
+    :ok
+  end
+
+  defp find_handler(name, input) do
+    case Application.get_env(:cranium, :tools, []) |> List.keyfind(name, 0) do
+      {_, module} -> {:execute, module, input}
+      nil -> {:unknown, name}
+    end
   end
 end
