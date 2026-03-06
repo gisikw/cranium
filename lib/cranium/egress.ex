@@ -110,21 +110,11 @@ defmodule Cranium.Egress do
       {:ok, stream} ->
         text = stream.text <> chunk
 
-        case split_paragraphs(text) do
-          {segments, remainder} when segments != [] ->
-            new_index =
-              Enum.reduce(segments, stream.segment_index, fn seg_text, idx ->
-                emit_segment(stream_id, idx, seg_text, stream.disposition)
-                idx + 1
-              end)
+        {emittable, remainder} = split_paragraphs(text)
+        {new_index, leftover} = batch_and_emit(emittable, remainder, stream, stream_id)
 
-            stream = %{stream | text: remainder, segment_index: new_index}
-            {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
-
-          {[], _} ->
-            stream = %{stream | text: text}
-            {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
-        end
+        stream = %{stream | text: leftover, segment_index: new_index}
+        {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
 
       :error ->
         {:noreply, state}
@@ -152,6 +142,9 @@ defmodule Cranium.Egress do
 
   # --- Private ---
 
+  @first_batch_words 30
+  @subsequent_batch_words 100
+
   defp split_paragraphs(text) do
     case String.split(text, ~r/\n\n+/, parts: :infinity) do
       [single] ->
@@ -162,6 +155,44 @@ defmodule Cranium.Egress do
         segments = segments |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
         {segments, remainder}
     end
+  end
+
+  # Merge paragraphs until word threshold is met, then emit.
+  # First segment: emit on first paragraph break on or after 30 words.
+  # Subsequent: on or after 100 words.
+  defp batch_and_emit([], remainder, stream, _stream_id) do
+    {stream.segment_index, remainder}
+  end
+
+  defp batch_and_emit(paragraphs, remainder, stream, stream_id) do
+    threshold = if stream.segment_index == 0, do: @first_batch_words, else: @subsequent_batch_words
+
+    {index, acc} =
+      Enum.reduce(paragraphs, {stream.segment_index, ""}, fn para, {idx, acc} ->
+        merged = if acc == "", do: para, else: acc <> "\n\n" <> para
+
+        if word_count(merged) >= threshold do
+          emit_segment(stream_id, idx, merged, stream.disposition)
+          {idx + 1, ""}
+        else
+          {idx, merged}
+        end
+      end)
+
+    # Any accumulated text that didn't meet threshold goes back into the buffer
+    # along with the remainder (incomplete paragraph still streaming in)
+    leftover =
+      case {acc, remainder} do
+        {"", r} -> r
+        {a, ""} -> a
+        {a, r} -> a <> "\n\n" <> r
+      end
+
+    {index, leftover}
+  end
+
+  defp word_count(text) do
+    text |> String.split(~r/\s+/, trim: true) |> length()
   end
 
   defp emit_segment(stream_id, index, text, disposition) do
