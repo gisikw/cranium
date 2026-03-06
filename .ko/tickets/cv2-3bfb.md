@@ -1,6 +1,6 @@
 ---
 id: cv2-3bfb
-status: open
+status: closed
 deps: [cv2-78f3, cv2-ede0]
 created: 2026-03-05T22:55:49Z
 type: task
