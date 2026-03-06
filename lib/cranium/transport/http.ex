@@ -16,14 +16,37 @@ defmodule Cranium.Transport.HTTP do
   require Logger
 
   plug :match
-  plug Plug.Parsers, parsers: [:json], json_decoder: Jason
+  plug Plug.Parsers, parsers: [:json, :multipart], json_decoder: Jason
   plug :dispatch
 
   post "/v1/submit" do
     conversation_id = conn.body_params["conversation_id"] || "default"
-    text = conn.body_params["text"]
     system = conn.body_params["system"]
-    disposition = conn.body_params["disposition"] || ["text"]
+    disposition = parse_disposition(conn.body_params["disposition"])
+
+    # Extract text — either directly or by transcribing audio
+    text =
+      case {conn.body_params["text"], conn.body_params["audio"]} do
+        {text, _} when is_binary(text) and text != "" ->
+          text
+
+        {_, %Plug.Upload{path: path}} ->
+          audio = File.read!(path)
+          stt = Application.get_env(:cranium, :backends)[:stt] || Cranium.Backend.STT.Whisper
+
+          case stt.transcribe(audio, []) do
+            {:ok, transcribed} ->
+              Logger.info("STT: transcribed #{byte_size(audio)} bytes", transport: :http)
+              transcribed
+
+            {:error, reason} ->
+              Logger.error("STT failed: #{inspect(reason)}", transport: :http)
+              nil
+          end
+
+        _ ->
+          nil
+      end
 
     message = %{
       text: text,
@@ -125,6 +148,15 @@ defmodule Cranium.Transport.HTTP do
     |> put_resp_content_type("application/json")
     |> send_resp(404, Jason.encode!(%{"error" => "not found"}))
   end
+
+  defp parse_disposition(list) when is_list(list), do: list
+  defp parse_disposition(str) when is_binary(str) do
+    case Jason.decode(str) do
+      {:ok, list} when is_list(list) -> list
+      _ -> ["text"]
+    end
+  end
+  defp parse_disposition(_), do: ["text"]
 
   defp warm_cache(stream_id, index, text, disposition) do
     if "audio" in disposition do
