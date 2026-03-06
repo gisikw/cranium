@@ -11,7 +11,7 @@ defmodule Cranium.Agent.Tools.Bash do
   def execute(%{"command" => command}, _opts) do
     Logger.info("Bash tool: #{command}")
 
-    case System.cmd("sh", ["-c", command], stderr_to_stdout: true, timeout: 30_000) do
+    case System.cmd("sh", ["-c", command], stderr_to_stdout: true) do
       {output, 0} -> {:ok, output}
       {output, code} -> {:ok, "exit code #{code}\n#{output}"}
     end
