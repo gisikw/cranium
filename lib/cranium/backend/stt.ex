@@ -40,8 +40,16 @@ defmodule Cranium.Backend.STT.Whisper do
   @impl true
   def transcribe(audio, opts) do
     url = Keyword.get(opts, :url) || stt_url()
+    plug = Keyword.get(opts, :plug)
 
-    case Req.post(url, body: audio, headers: [{"content-type", "application/octet-stream"}]) do
+    req_opts =
+      [form_multipart: [file: {audio, filename: "audio", content_type: "application/octet-stream"}]] ++
+        if(plug, do: [plug: plug], else: [])
+
+    case Req.post(url, req_opts) do
+      {:ok, %{status: 200, body: %{"error" => error}}} when not is_nil(error) ->
+        {:error, {:stt_error, error}}
+
       {:ok, %{status: 200, body: %{"text" => text}}} ->
         {:ok, String.trim(text)}
 
@@ -54,6 +62,6 @@ defmodule Cranium.Backend.STT.Whisper do
   end
 
   defp stt_url do
-    Application.get_env(:cranium, :backends)[:stt_url] || "http://localhost:8787/transcribe"
+    Application.get_env(:cranium, :backends)[:stt_url] || "https://stt.example.com/transcribe"
   end
 end
