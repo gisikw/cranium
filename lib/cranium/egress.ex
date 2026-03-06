@@ -14,6 +14,16 @@ defmodule Cranium.Egress do
   - `Synthesizer` — routes text chunks through TTS backend when in voice
     mode. Pass-through in text mode.
 
+  ## Incremental Manifest Population
+
+  Egress pushes segments to the Manifest as they arrive. Text accumulates
+  in a per-stream buffer. When a paragraph boundary (`\\n\\n`) is detected,
+  everything before it is emitted as one or more segments. On stream end,
+  remaining text becomes the final segment.
+
+  When the client's disposition includes "audio", Egress eagerly warms
+  the TTS cache for each emitted segment.
+
   ## Mode
 
   Egress operates in one of two modes, set per-session:
@@ -35,7 +45,7 @@ defmodule Cranium.Egress do
 
   require Logger
 
-  defstruct buffers: %{}, mode: :text
+  defstruct mode: :text, streams: %{}
 
   # --- Public API ---
 
@@ -57,27 +67,6 @@ defmodule Cranium.Egress do
         {:ok, chunks}
       end
     end
-  end
-
-  @doc false
-  def handle_chunk(stream_id, chunk, state) do
-    # Forward text chunks through chunker immediately
-    case Cranium.Egress.Chunker.process_chunk(chunk) do
-      {:emit, processed} ->
-        {:forward, processed, state}
-
-      :accumulate ->
-        {:buffer,
-         Cranium.Stage.buffer_chunk(state.buffers, stream_id, chunk)
-         |> then(&%{state | buffers: &1})}
-    end
-  end
-
-  @doc false
-  def handle_stream_end(stream_id, state) do
-    {data, buffers} = Cranium.Stage.flush_buffer(state.buffers, stream_id)
-    # Flush any remaining buffered text as a final chunk
-    {:ok, data, %{state | buffers: buffers}}
   end
 
   # --- GenServer Implementation ---
@@ -102,32 +91,105 @@ defmodule Cranium.Egress do
       mode: Map.get(metadata, :mode, :text)
     )
 
-    buffers = Cranium.Stage.init_stream(state.buffers, stream_id, metadata)
+    disposition = Map.get(metadata, :disposition, ["text"])
+
+    streams =
+      Map.put(state.streams, stream_id, %{
+        text: "",
+        segment_index: 0,
+        disposition: disposition
+      })
+
     mode = Map.get(metadata, :mode, state.mode)
-    {:noreply, %{state | buffers: buffers, mode: mode}}
+    {:noreply, %{state | streams: streams, mode: mode}}
   end
 
   @impl GenServer
   def handle_info({:chunk, stream_id, chunk}, state) do
-    case handle_chunk(stream_id, chunk, state) do
-      {:forward, data, new_state} ->
-        # TODO: Forward to transport
-        Logger.debug("Forwarding chunk", stage: :egress, data_size: byte_size(data))
-        {:noreply, new_state}
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, stream} ->
+        text = stream.text <> chunk
 
-      {:buffer, new_state} ->
-        {:noreply, new_state}
+        case split_paragraphs(text) do
+          {segments, remainder} when segments != [] ->
+            new_index =
+              Enum.reduce(segments, stream.segment_index, fn seg_text, idx ->
+                emit_segment(stream_id, idx, seg_text, stream.disposition)
+                idx + 1
+              end)
+
+            stream = %{stream | text: remainder, segment_index: new_index}
+            {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
+
+          {[], _} ->
+            stream = %{stream | text: text}
+            {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
+        end
+
+      :error ->
+        {:noreply, state}
     end
   end
 
   @impl GenServer
   def handle_info({:stream_end, stream_id}, state) do
-    case Cranium.Stage.flush_buffer(state.buffers, stream_id) do
-      {_data, _metadata, new_buffers} ->
-        {:noreply, %{state | buffers: new_buffers}}
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, stream} ->
+        remaining = String.trim(stream.text)
 
-      {_data, new_buffers} ->
-        {:noreply, %{state | buffers: new_buffers}}
+        if remaining != "" do
+          emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
+        end
+
+        Cranium.Manifest.complete(stream_id)
+
+        {:noreply, %{state | streams: Map.delete(state.streams, stream_id)}}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  # --- Private ---
+
+  defp split_paragraphs(text) do
+    case String.split(text, ~r/\n\n+/, parts: :infinity) do
+      [single] ->
+        {[], single}
+
+      parts ->
+        {segments, [remainder]} = Enum.split(parts, -1)
+        segments = segments |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+        {segments, remainder}
+    end
+  end
+
+  defp emit_segment(stream_id, index, text, disposition) do
+    Cranium.Manifest.add_utterance(stream_id, index, text)
+
+    if "audio" in disposition do
+      warm_tts(stream_id, index, text)
+    end
+
+    Logger.debug("Segment emitted",
+      stage: :egress,
+      stream_id: stream_id,
+      segment: index,
+      length: String.length(text)
+    )
+  end
+
+  defp warm_tts(stream_id, index, text) do
+    backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
+
+    case backend.synthesize(text, []) do
+      {:ok, audio} ->
+        Cranium.TTS.Cache.put(stream_id, index, audio)
+
+      {:error, reason} ->
+        Logger.error("TTS warm failed: stream=#{stream_id} segment=#{index} reason=#{inspect(reason)}",
+          stage: :egress
+        )
     end
   end
 end

@@ -48,12 +48,6 @@ defmodule Cranium.Transport.HTTP do
           nil
       end
 
-    message = %{
-      text: text,
-      system: system,
-      conversation_id: conversation_id
-    }
-
     # Get or start an epoch for this conversation
     epoch_pid =
       case Cranium.Epoch.start_or_get(conversation_id) do
@@ -64,18 +58,22 @@ defmodule Cranium.Transport.HTTP do
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
+    message = %{
+      text: text,
+      system: system,
+      conversation_id: conversation_id,
+      stream_id: stream_id,
+      disposition: disposition
+    }
+
     Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
 
-    # Run inference asynchronously — client polls the manifest
+    # Run inference asynchronously — Egress handles manifest population
+    # and TTS warming incrementally. Task just schedules cleanup.
     Task.start(fn ->
       case Cranium.Epoch.submit(epoch_pid, message) do
-        {:ok, result} ->
-          output = result.output || ""
-          Cranium.Manifest.add_utterance(stream_id, 0, output)
-          warm_cache(stream_id, 0, output, disposition)
-          Cranium.Manifest.complete(stream_id)
+        {:ok, _result} ->
           Cranium.TTS.Cache.schedule_cleanup(stream_id)
-          Logger.info("Complete: stream=#{stream_id} segments=1 output=#{inspect(String.slice(output, 0..80))}", transport: :http)
 
         {:error, reason} ->
           Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
@@ -158,18 +156,4 @@ defmodule Cranium.Transport.HTTP do
   end
   defp parse_disposition(_), do: ["text"]
 
-  defp warm_cache(stream_id, index, text, disposition) do
-    if "audio" in disposition do
-      backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
-
-      case backend.synthesize(text, []) do
-        {:ok, audio} ->
-          Cranium.TTS.Cache.put(stream_id, index, audio)
-          Logger.info("TTS warm: stream=#{stream_id} segment=#{index}", transport: :http)
-
-        {:error, reason} ->
-          Logger.error("TTS warm failed: stream=#{stream_id} segment=#{index} reason=#{inspect(reason)}", transport: :http)
-      end
-    end
-  end
 end

@@ -4,6 +4,7 @@ Application.ensure_all_started(:req)
 # Start services needed by tests when running with --no-start
 Cranium.Manifest.start_link(name: Cranium.Manifest)
 Cranium.TTS.Cache.start_link(name: Cranium.TTS.Cache)
+Cranium.Egress.start_link([])
 
 ExUnit.start()
 

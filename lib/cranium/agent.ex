@@ -117,7 +117,7 @@ defmodule Cranium.Agent do
 
   @impl true
   def handle_call({:infer, context, egress_pid}, _from, state) do
-    stream_id = Cranium.Stage.new_stream_id()
+    stream_id = context[:stream_id] || Cranium.Stage.new_stream_id()
 
     messages = context[:messages] || []
     system = context[:system]
@@ -136,6 +136,7 @@ defmodule Cranium.Agent do
       conversation_id: state.conversation_id,
       content_type: :llm_response,
       mode: Map.get(context, :mode, :text),
+      disposition: Map.get(context, :disposition, ["text"]),
       source: :agent
     }
 

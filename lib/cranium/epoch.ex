@@ -194,7 +194,9 @@ defmodule Cranium.Epoch do
       system: Map.get(message, :system) || Map.get(message, "system"),
       messages: [%{role: "user", content: text}],
       mode: :text,
-      conversation_id: state.conversation_id
+      conversation_id: state.conversation_id,
+      stream_id: Map.get(message, :stream_id),
+      disposition: Map.get(message, :disposition, ["text"])
     }
   end
 end
