@@ -6,32 +6,19 @@ cranium-v2 dev shell
 
 Elixir Elixir 1.18.4 (compiled with Erlang/OTP 27)
 Erlang/OTP 28
-I'll evaluate this plan against the criteria.
+## Plan Evaluation
 
-## Analysis
+The plan is **complete in structure** with clear goal, context, identified files, and ordered tasks with verification steps. However, it contains two **open questions** that have been answered in the ticket notes but not yet incorporated into the plan text.
 
-**Open Questions:** The plan explicitly lists 2 open questions:
+**Identified Open Questions:**
 
-1. **Tool registration mechanism** (Q1): Config-based (`Application.get_env`) vs. runtime registration (`ToolRouter.register/2`). The plan recommends config but says "unless directed otherwise."
+1. **Q1**: The plan suggests config-based registration (line 55) but the ticket notes (ticket.md, line 14-15) record a decision to use **runtime registration** with `ToolRouter.register/2`.
 
-2. **ToolExecutor logging** (Q2): Whether to log `inspect(module)` or add a `name/0` callback to the Tool behaviour for human-readable names. The plan frames this as conditional: "If a human-readable tool name is important..."
+2. **Q2**: The plan notes logging observability concerns (lines 57-58) but leaves it open whether to add a `name/0` callback. The ticket notes (line 18-19) decided to **add optional `name/0` callback**.
 
-Both are genuine architectural decisions that require human direction before implementation can proceed.
-
-**Completeness:** ✓ The plan has:
-- Clear, focused goal
-- Detailed context identifying specific files and their current state
-- Explicit approach section
-- 6 ordered tasks with verification steps for each
-- Complete verification chain ending with full test suite
-
-**Feasibility:** ✓ All referenced files and patterns are standard for an Elixir project:
-- File paths follow the project structure
-- Uses established patterns (Application.get_env for config registry, Task.async for timeouts)
-- Behaviour definition is standard Elixir approach
-- New test files are created from scratch, as expected given "no existing tests"
-
-**Verdict:** Plan is well-written and detailed, but cannot proceed without resolving the two open questions.
+The plan's stated approach at line 16-17 conflicts with the decided direction on Q1. Since the plan lists open questions with decisions already made externally, the plan needs either:
+- An update to incorporate the decided approach, OR
+- Confirmation that the decided direction is correct
 
 ```json
 {
@@ -40,34 +27,34 @@ Both are genuine architectural decisions that require human direction before imp
     {
       "id": "q1",
       "question": "Should tools be registered in application config (fixed at startup) or via a runtime registration function?",
-      "context": "Config-based registration is consistent with the existing backends pattern but locks tool list at startup. Runtime registration would allow dynamic registration and cleaner test isolation.",
+      "context": "The plan currently suggests config-based registration for consistency with backends pattern (line 16-17). Ticket notes document a decision for runtime registration with ToolRouter.register/2 for dynamic registration and cleaner test isolation.",
       "options": [
         {
-          "label": "Config-based registration (Recommended)",
+          "label": "Config-based registration",
           "value": "config_based",
-          "description": "Register tools in application config, consistent with backends pattern but fixed at startup"
+          "description": "Register tools in config/config.exs under :tools key, fixed at startup, consistent with backends pattern"
         },
         {
-          "label": "Runtime registration function",
+          "label": "Runtime registration with ToolRouter.register/2 (Recommended)",
           "value": "runtime_registration",
-          "description": "Add ToolRouter.register/2 for dynamic registration with cleaner test isolation"
+          "description": "Add ToolRouter.register/2 function for dynamic registration at runtime, provides cleaner test isolation"
         }
       ]
     },
     {
       "id": "q2",
-      "question": "How should tool modules be identified in logs after changing the ToolExecutor signature?",
-      "context": "The signature change from (String.t(), ...) to (module(), ...) removes the tool_name string used for logging. Current approach logs inspect(module), but human-readable names could be supported via a name/0 callback.",
+      "question": "How should tool modules be identified in logs after ToolExecutor accepts modules directly?",
+      "context": "Changing execute/3 signature from (String.t(), map(), keyword()) to (module(), map(), keyword()) loses the tool name string for logging. Ticket notes document a decision to add optional name/0 callback for human-readable tool names.",
       "options": [
         {
-          "label": "Use inspect(module) for logging",
+          "label": "Use inspect(module) in logs",
           "value": "inspect_module",
-          "description": "Log module names directly, e.g., Elixir.MyApp.Tools.Search"
+          "description": "Log module name via inspect/1, simpler but less readable (e.g. 'Elixir.Tools.Calc')"
         },
         {
-          "label": "Add name/0 callback to Tool behaviour (Recommended)",
+          "label": "Add optional name/0 callback (Recommended)",
           "value": "name_callback",
-          "description": "Add optional name/0 callback for human-readable tool names in logs"
+          "description": "Add optional name/0 callback to Tool behaviour for human-readable names like 'calculator' in logs"
         }
       ]
     }

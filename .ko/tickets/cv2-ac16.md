@@ -1,6 +1,6 @@
 ---
 id: cv2-ac16
-status: resolved
+status: closed
 deps: []
 created: 2026-03-06T12:43:03Z
 type: task

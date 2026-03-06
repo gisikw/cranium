@@ -6,17 +6,13 @@ cranium-v2 dev shell
 
 Elixir Elixir 1.18.4 (compiled with Erlang/OTP 27)
 Erlang/OTP 28
-Looking at the ticket title and description:
-
-**"Agent tool routing: implement real tool dispatch in ToolExecutor and ToolRouter registration"**
-
-This ticket is clearly asking for **code implementation**:
-- "implement real tool dispatch" — specific feature to build
-- Identifies concrete components to modify (ToolExecutor, ToolRouter)
-- No reported errors or unexpected behavior
-- Not asking "can we do this?" or "why is this happening?"
-- Expected output: working implementation in those components
-
 ```json
 {"disposition": "route", "workflow": "task"}
 ```
+
+This ticket describes concrete code changes to implement:
+- Implement real tool dispatch in ToolExecutor
+- Add ToolRouter.register/2 for dynamic runtime registration
+- Add name/0 callback to Tool behaviour for logging
+
+The architectural decisions are already decided (runtime registration, name callback), so this is ready for implementation rather than investigation.
