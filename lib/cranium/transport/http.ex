@@ -49,6 +49,7 @@ defmodule Cranium.Transport.HTTP do
           output = result.output || ""
           Cranium.Manifest.add_utterance(stream_id, 0, output)
           Cranium.Manifest.complete(stream_id)
+          Cranium.TTS.Cache.schedule_cleanup(stream_id)
           Logger.info("Complete: stream=#{stream_id} segments=1 output=#{inspect(String.slice(output, 0..80))}", transport: :http)
 
         {:error, reason} ->
@@ -95,13 +96,26 @@ defmodule Cranium.Transport.HTTP do
   end
 
   get "/v1/streams/:id/segments/:n/audio" do
-    # Audio served from TTS cache (cv2-59b9). Stub for now.
-    _index = String.to_integer(n)
-    _stream_id = id
+    index = String.to_integer(n)
 
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(501, Jason.encode!(%{"error" => "TTS cache not implemented"}))
+    case Cranium.TTS.Cache.get(id, index) do
+      {:ok, audio} ->
+        conn
+        |> put_resp_content_type("audio/mpeg")
+        |> send_resp(200, audio)
+
+      {:error, :segment_not_found} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(404, Jason.encode!(%{"error" => "segment not found"}))
+
+      {:error, reason} ->
+        Logger.error("TTS synthesis failed: stream=#{id} segment=#{index} reason=#{inspect(reason)}", transport: :http)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(502, Jason.encode!(%{"error" => "TTS synthesis failed"}))
+    end
   end
 
   match _ do

@@ -7,6 +7,7 @@ defmodule Cranium.Application do
       Cranium.Supervisor
       ├── Cranium.Store.Repo          # Ecto connection pool
       ├── Cranium.Store               # Storage service with soft locking
+      ├── Cranium.TTS.Cache            # Ephemeral TTS audio buffer
       ├── Cranium.Ingress             # Input processing stage
       ├── Cranium.Context             # Context assembly stage
       ├── Cranium.Egress              # Output processing stage
@@ -30,6 +31,9 @@ defmodule Cranium.Application do
 
       # Manifest registry (segment playlist for active streams)
       Cranium.Manifest,
+
+      # TTS audio cache (ephemeral buffer between Synthesizer and HTTP transport)
+      Cranium.TTS.Cache,
 
       # Pipeline stages
       Cranium.Ingress,

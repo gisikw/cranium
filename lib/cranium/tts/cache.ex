@@ -1,0 +1,138 @@
+defmodule Cranium.TTS.Cache do
+  @moduledoc """
+  In-memory TTS audio cache keyed by `{stream_id, segment_index}`.
+
+  Sits between the Synthesizer (which produces audio) and the HTTP transport
+  (which serves it). Two paths to audio:
+
+  - **Eager warming**: Caller puts audio via `put/4` after synthesis. Used when
+    client disposition includes audio — audio is ready before the client asks.
+  - **Lazy synthesis**: `get/3` finds no cached entry, pulls text from the
+    Manifest, synthesizes on the caller's process, and returns the audio without
+    caching it (since it's already being consumed).
+
+  Entries are evicted on first retrieval — this is an ephemeral buffer, not
+  durable storage. When a stream completes, `schedule_cleanup/2` sets a timer
+  to sweep any unconsumed entries after a configurable delay (default 5 min).
+  """
+
+  use GenServer
+
+  require Logger
+
+  @cleanup_delay :timer.minutes(5)
+
+  defstruct entries: %{}, cleanup_timers: %{}
+
+  # --- Public API ---
+
+  def start_link(opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc """
+  Get audio for a segment. Checks cache first (evicting on hit), then falls
+  back to lazy synthesis on the caller's process.
+
+  Returns `{:ok, audio_binary}` or `{:error, reason}`.
+  """
+  def get(stream_id, index, name \\ __MODULE__) do
+    case GenServer.call(name, {:get, stream_id, index}) do
+      {:ok, audio} -> {:ok, audio}
+      :not_found -> synthesize_lazy(stream_id, index)
+    end
+  end
+
+  @doc """
+  Pre-cache audio for a segment (eager warming).
+  """
+  def put(stream_id, index, audio, name \\ __MODULE__) do
+    GenServer.call(name, {:put, stream_id, index, audio})
+  end
+
+  @doc """
+  Schedule cleanup of all entries for a stream after the cleanup delay.
+  Call this when the stream completes.
+  """
+  def schedule_cleanup(stream_id, name \\ __MODULE__) do
+    GenServer.cast(name, {:schedule_cleanup, stream_id})
+  end
+
+  # --- GenServer Callbacks ---
+
+  @impl true
+  def init(opts) do
+    delay = Keyword.get(opts, :cleanup_delay, @cleanup_delay)
+    Logger.info("TTS cache started")
+    {:ok, %__MODULE__{} |> Map.put(:cleanup_delay, delay)}
+  end
+
+  @impl true
+  def handle_call({:get, stream_id, index}, _from, state) do
+    key = {stream_id, index}
+
+    case Map.fetch(state.entries, key) do
+      {:ok, audio} ->
+        entries = Map.delete(state.entries, key)
+        {:reply, {:ok, audio}, %{state | entries: entries}}
+
+      :error ->
+        {:reply, :not_found, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:put, stream_id, index, audio}, _from, state) do
+    key = {stream_id, index}
+    entries = Map.put(state.entries, key, audio)
+    {:reply, :ok, %{state | entries: entries}}
+  end
+
+  @impl true
+  def handle_cast({:schedule_cleanup, stream_id}, state) do
+    state = cancel_timer(state, stream_id)
+    delay = Map.get(state, :cleanup_delay, @cleanup_delay)
+    ref = Process.send_after(self(), {:cleanup, stream_id}, delay)
+    timers = Map.put(state.cleanup_timers, stream_id, ref)
+    {:noreply, %{state | cleanup_timers: timers}}
+  end
+
+  @impl true
+  def handle_info({:cleanup, stream_id}, state) do
+    {evicted, remaining} =
+      Enum.split_with(state.entries, fn {{sid, _}, _} -> sid == stream_id end)
+
+    timers = Map.delete(state.cleanup_timers, stream_id)
+
+    if length(evicted) > 0 do
+      Logger.info("TTS cache: evicted #{length(evicted)} unconsumed entries for stream #{stream_id}")
+    end
+
+    {:noreply, %{state | entries: Map.new(remaining), cleanup_timers: timers}}
+  end
+
+  # --- Private ---
+
+  defp cancel_timer(state, stream_id) do
+    case Map.fetch(state.cleanup_timers, stream_id) do
+      {:ok, ref} ->
+        Process.cancel_timer(ref)
+        %{state | cleanup_timers: Map.delete(state.cleanup_timers, stream_id)}
+
+      :error ->
+        state
+    end
+  end
+
+  defp synthesize_lazy(stream_id, index) do
+    case Cranium.Manifest.get_segment_text(stream_id, index) do
+      {:ok, text} ->
+        backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
+        backend.synthesize(text, [])
+
+      :not_found ->
+        {:error, :segment_not_found}
+    end
+  end
+end
