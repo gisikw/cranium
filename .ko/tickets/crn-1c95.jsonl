@@ -8,3 +8,8 @@
 {"event":"node_start","node":"actionable","ticket":"crn-1c95","ts":"2026-03-03T03:37:45Z","workflow":"task"}
 {"event":"node_complete","node":"actionable","result":"needs_input","ticket":"crn-1c95","ts":"2026-03-03T03:38:07Z","workflow":"task"}
 {"event":"build_complete","outcome":"fail","ticket":"crn-1c95","ts":"2026-03-03T03:38:07Z"}
+{"event":"build_start","ticket":"crn-1c95","ts":"2026-03-06T21:41:22Z"}
+{"event":"workflow_start","ticket":"crn-1c95","ts":"2026-03-06T21:41:22Z","workflow":"main"}
+{"event":"node_start","node":"classify","ticket":"crn-1c95","ts":"2026-03-06T21:41:22Z","workflow":"main"}
+{"attempt":1,"event":"node_fail","node":"classify","reason":"agent command failed: signal: terminated","ticket":"crn-1c95","ts":"2026-03-06T21:41:32Z","workflow":"main"}
+{"attempt":2,"event":"node_retry","node":"classify","ticket":"crn-1c95","ts":"2026-03-06T21:41:32Z","workflow":"main"}
