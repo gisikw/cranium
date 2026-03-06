@@ -9,7 +9,7 @@ The README's "Input Protocol" section is the spec. The client opens a take, stre
 **Existing patterns to follow:**
 - `Cranium.Manifest` is the structural model: a GenServer with a `takes` map, `start_link/1` with `name:` opt, isolated per-test via named process.
 - `Cranium.Stage.new_stream_id/0` generates 16-char hex IDs.
-- HTTP transport uses `Plug.Router`. Raw binary bodies (PUT chunks) pass through `Plug.Parsers` unmodified when Content-Type is `application/octet-stream`; call `Plug.Conn.read_body/2` in the route handler.
+- HTTP transport uses `Plug.Router`. `Plug.Parsers` already includes `:multipart` (line 19 of `http.ex`). Multipart uploads arrive as `%Plug.Upload{}` structs in `conn.body_params`; read with `File.read!/1` on the upload path (same pattern as the existing `audio` field in `/v1/submit`).
 - Inference is triggered by spawning a `Task` in the HTTP handler (see existing `/v1/submit` route). Same pattern here.
 - STT backend accessed via `Application.get_env(:cranium, :backends)[:stt]` with fallback to `Cranium.Backend.STT.Whisper`.
 - Supervision tree in `application.ex` uses `:rest_for_one`. `TakeRegistry` should sit alongside `Manifest` and `TTS.Cache`.
@@ -28,7 +28,7 @@ Add a `Cranium.Input.TakeRegistry` GenServer that tracks open takes, buffers num
 
    State: `%TakeRegistry{takes: %{take_id => %Take{}}}`
 
-   Take struct fields: `take_id`, `stream_id`, `conversation_id`, `disposition`, `chunks` (map of `seq => binary`), `status` (`:open | :sealed | :complete`), `last_seq` (set on seal).
+   Take struct fields: `take_id`, `stream_id`, `conversation_id`, `disposition`, `chunks` (map of `seq => binary`), `status` (`:open | :sealed | :complete`), `last_seq` (set on seal), `completed_at` (monotonic timestamp in ms, set when status → `:complete`).
 
    Public API (all accept an optional `name:` keyword for test isolation):
    - `open(take_id, stream_id, conversation_id, disposition, opts)` → `:ok | {:error, :conflict}`
@@ -37,6 +37,8 @@ Add a `Cranium.Input.TakeRegistry` GenServer that tracks open takes, buffers num
    - `seal(take_id, last_seq, opts)` → `{:ok, :complete, result} | {:ok, :incomplete, missing} | {:error, :not_found}`
 
    Completeness check: `missing = (0..last_seq |> MapSet.new) -- MapSet.new(Map.keys(chunks))`. Audio assembly: sort chunks by seq, concat binaries. A `put_chunk` on a `:sealed` take runs the completeness check after inserting; if no missing, return `:complete`.
+
+   **TTL eviction:** In `init/1`, schedule a periodic `:cleanup` message via `Process.send_after(self(), :cleanup, ttl_ms)`. In `handle_info(:cleanup, state)`, remove takes where `status == :complete` and `System.monotonic_time(:millisecond) - completed_at >= ttl_ms`. Also remove takes that are `:open` or `:sealed` but were created more than `ttl_ms` ago (use `opened_at` field). Re-schedule `:cleanup` at the end of the handler. TTL defaults to 86_400_000 ms (24h); read from `Application.get_env(:cranium, :take_ttl_ms, 86_400_000)`. Add `opened_at` field to Take struct (set on `open/5`).
 
    Verify: `mix test test/cranium/input/take_registry_test.exs` passes.
 
@@ -59,7 +61,7 @@ Add a `Cranium.Input.TakeRegistry` GenServer that tracks open takes, buffers num
 
    **`PUT /v1/input/:id/:seq`**
    - Parse `seq` as integer; reject non-integer with 400.
-   - Read raw body with `Plug.Conn.read_body(conn)`.
+   - Extract chunk from multipart: `conn.body_params["chunk"]` yields `%Plug.Upload{path: path}`; read with `File.read!(path)`. Return 400 if field absent or not a `%Plug.Upload{}`.
    - Call `TakeRegistry.put_chunk(id, seq, data)`.
    - On `{:ok, :buffered}`: return 200 `{"status": "buffered"}`.
    - On `{:ok, :complete, result}`: spawn Task → `trigger_audio_inference(result)`, return 200 `{"status": "complete"}`.
@@ -107,8 +109,8 @@ Add a `Cranium.Input.TakeRegistry` GenServer that tracks open takes, buffers num
 
 ## Open Questions
 
-1. **`last_seq` in `/done` body (assumption above).** The README says `/done` "seals the take" and returns `{missing: [...]}`, but doesn't specify how the server knows the expected range. The implementation above requires `last_seq` in the body (the highest sequence number the client sent). If the protocol should infer this differently (e.g., the client includes a `count` field, or it's guaranteed no trailing chunks are lost), this changes the seal logic. **Assumption: require `last_seq` integer in `/done` body; return 400 if absent.**
+None. All previously open questions resolved:
 
-2. **Chunk Content-Type expectation.** The plan assumes clients send `PUT` chunks with `Content-Type: application/octet-stream` (raw binary). If Hearth sends multipart or base64-encoded JSON instead, the `read_body/2` approach needs adjustment. Clarify Hearth's actual upload format.
-
-3. **Take lifetime / cleanup.** Completed and abandoned takes accumulate in TakeRegistry memory. The plan doesn't add TTL eviction. Acceptable for now (takes are small metadata + audio blobs), but should be tracked as follow-up. Manifest has the same gap.
+1. **`last_seq` in `/done` body** — confirmed: client sends `last_seq` integer in `/done` body; 400 if absent.
+2. **Chunk Content-Type** — resolved: multipart form data. Client sends chunk in a `"chunk"` form field as a file upload.
+3. **Take lifetime / cleanup** — resolved: add TTL eviction now with 24h default.

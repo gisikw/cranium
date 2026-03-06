@@ -6,21 +6,10 @@ cranium-v2 dev shell
 
 Elixir Elixir 1.18.4 (compiled with Erlang/OTP 27)
 Erlang/OTP 28
-The plan is at `.ko/tickets/cv2-db59.artifacts/plan.md`. Here's a summary:
+Plan updated. The two substantive changes from the ticket answers:
 
-**Goal:** Implement the chunked audio input protocol with a new `TakeRegistry` GenServer and three HTTP endpoints.
+1. **Chunk uploads are multipart form-data** (not raw binary): The `PUT /v1/input/:id/:seq` handler reads `conn.body_params["chunk"]` as a `%Plug.Upload{}` and calls `File.read!` on it — identical to how `/v1/submit` handles audio. No changes needed to `Plug.Parsers` config since `:multipart` is already there.
 
-**New files:**
-- `lib/cranium/input/take_registry.ex` — GenServer tracking open takes, buffering numbered chunks, detecting gaps on seal, assembling audio when complete
-- `test/cranium/input/take_registry_test.exs` — unit tests (isolated named process per test)
+2. **TTL eviction is in scope**: TakeRegistry gains `opened_at` + `completed_at` timestamp fields on each Take, and a periodic `:cleanup` message that evicts takes past the TTL (configurable via `Application.get_env(:cranium, :take_ttl_ms, 86_400_000)`).
 
-**Modified files:**
-- `lib/cranium/transport/http.ex` — add `POST /v1/input/start`, `PUT /v1/input/:id/:seq`, `POST /v1/input/:id/done`, plus a private `trigger_audio_inference/1` helper that mirrors the existing `/v1/submit` Task pattern
-- `lib/cranium/application.ex` — add `TakeRegistry` to supervision tree
-- `test/test_helper.exs` — start `TakeRegistry` singleton for tests
-- `test/cranium/transport/http_test.exs` — new `describe "input protocol"` block
-
-**3 open questions flagged:**
-1. **`last_seq` in `/done` body** — required to detect trailing lost chunks; assumed yes, but needs confirmation
-2. **Chunk Content-Type** — assumes `application/octet-stream`; needs confirmation of Hearth's actual format
-3. **Take lifetime/cleanup** — no TTL eviction in scope, noted as follow-up
+Everything else in the plan stands as-is.
