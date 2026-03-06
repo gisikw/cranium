@@ -23,6 +23,7 @@ defmodule Cranium.Transport.HTTP do
     conversation_id = conn.body_params["conversation_id"] || "default"
     text = conn.body_params["text"]
     system = conn.body_params["system"]
+    disposition = conn.body_params["disposition"] || ["text"]
 
     message = %{
       text: text,
@@ -38,9 +39,9 @@ defmodule Cranium.Transport.HTTP do
 
     # Generate a stream_id for manifest tracking
     stream_id = Cranium.Stage.new_stream_id()
-    Cranium.Manifest.init_stream(stream_id, conversation_id)
+    Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
-    Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
+    Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
 
     # Run inference asynchronously — client polls the manifest
     Task.start(fn ->
@@ -48,6 +49,7 @@ defmodule Cranium.Transport.HTTP do
         {:ok, result} ->
           output = result.output || ""
           Cranium.Manifest.add_utterance(stream_id, 0, output)
+          warm_cache(stream_id, 0, output, disposition)
           Cranium.Manifest.complete(stream_id)
           Cranium.TTS.Cache.schedule_cleanup(stream_id)
           Logger.info("Complete: stream=#{stream_id} segments=1 output=#{inspect(String.slice(output, 0..80))}", transport: :http)
@@ -122,5 +124,20 @@ defmodule Cranium.Transport.HTTP do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(404, Jason.encode!(%{"error" => "not found"}))
+  end
+
+  defp warm_cache(stream_id, index, text, disposition) do
+    if "audio" in disposition do
+      backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
+
+      case backend.synthesize(text, []) do
+        {:ok, audio} ->
+          Cranium.TTS.Cache.put(stream_id, index, audio)
+          Logger.info("TTS warm: stream=#{stream_id} segment=#{index}", transport: :http)
+
+        {:error, reason} ->
+          Logger.error("TTS warm failed: stream=#{stream_id} segment=#{index} reason=#{inspect(reason)}", transport: :http)
+      end
+    end
   end
 end

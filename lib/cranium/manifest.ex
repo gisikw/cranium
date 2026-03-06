@@ -24,9 +24,18 @@ defmodule Cranium.Manifest do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc "Initialize a new stream manifest."
-  def init_stream(stream_id, conversation_id, name \\ __MODULE__) do
-    GenServer.call(name, {:init_stream, stream_id, conversation_id})
+  @doc """
+  Initialize a new stream manifest.
+
+  Options:
+  - `:disposition` — list of rendition types the client wants (default `["text"]`).
+    Controls which renditions are advertised in the JSON manifest.
+  - `:name` — GenServer name (default `__MODULE__`, used by tests).
+  """
+  def init_stream(stream_id, conversation_id, opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    disposition = Keyword.get(opts, :disposition, ["text"])
+    GenServer.call(name, {:init_stream, stream_id, conversation_id, disposition})
   end
 
   @doc "Add an utterance segment with text content. Audio URL is advertised but served lazily."
@@ -63,10 +72,11 @@ defmodule Cranium.Manifest do
   end
 
   @impl true
-  def handle_call({:init_stream, stream_id, conversation_id}, _from, state) do
+  def handle_call({:init_stream, stream_id, conversation_id, disposition}, _from, state) do
     manifest = %{
       stream_id: stream_id,
       conversation_id: conversation_id,
+      disposition: disposition,
       status: :streaming,
       segments: []
     }
@@ -158,36 +168,44 @@ defmodule Cranium.Manifest do
   # --- Private ---
 
   defp to_json_manifest(manifest) do
+    disposition = Map.get(manifest, :disposition, ["text"])
+
     %{
       "stream_id" => manifest.stream_id,
       "status" => to_string(manifest.status),
-      "segments" => Enum.map(manifest.segments, &to_json_segment(&1, manifest.stream_id))
+      "segments" => Enum.map(manifest.segments, &to_json_segment(&1, manifest.stream_id, disposition))
     }
   end
 
-  defp to_json_segment(%{type: :utterance} = seg, stream_id) do
+  defp to_json_segment(%{type: :utterance} = seg, stream_id, disposition) do
+    renditions =
+      %{}
+      |> maybe_put_rendition("text", disposition, %{
+        "url" => "/v1/streams/#{stream_id}/segments/#{seg.index}/text",
+        "mime" => seg.renditions.text.mime
+      })
+      |> maybe_put_rendition("audio", disposition, %{
+        "url" => "/v1/streams/#{stream_id}/segments/#{seg.index}/audio",
+        "mime" => seg.renditions.audio.mime
+      })
+
     %{
       "index" => seg.index,
       "type" => "utterance",
-      "renditions" => %{
-        "text" => %{
-          "url" => "/v1/streams/#{stream_id}/segments/#{seg.index}/text",
-          "mime" => seg.renditions.text.mime
-        },
-        "audio" => %{
-          "url" => "/v1/streams/#{stream_id}/segments/#{seg.index}/audio",
-          "mime" => seg.renditions.audio.mime
-        }
-      }
+      "renditions" => renditions
     }
   end
 
-  defp to_json_segment(%{type: :cue} = seg, _stream_id) do
+  defp to_json_segment(%{type: :cue} = seg, _stream_id, _disposition) do
     %{
       "index" => seg.index,
       "type" => "cue",
       "cue_type" => to_string(seg.cue_type),
       "data" => seg.data
     }
+  end
+
+  defp maybe_put_rendition(renditions, type, disposition, value) do
+    if type in disposition, do: Map.put(renditions, type, value), else: renditions
   end
 end

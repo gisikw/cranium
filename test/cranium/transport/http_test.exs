@@ -129,9 +129,25 @@ defmodule Cranium.Transport.HTTPTest do
   end
 
   describe "manifest JSON shape" do
-    test "matches README spec with utterances and cues" do
-      sid = "http-shape-#{System.unique_integer([:positive])}"
+    test "text-only disposition omits audio renditions" do
+      sid = "http-shape-text-#{System.unique_integer([:positive])}"
       :ok = Manifest.init_stream(sid, "conv1")
+      :ok = Manifest.add_utterance(sid, 0, "Hello world")
+
+      conn =
+        Plug.Test.conn(:get, "/v1/streams/#{sid}/manifest")
+        |> HTTP.call(HTTP.init([]))
+
+      json = Jason.decode!(conn.resp_body)
+      [seg] = json["segments"]
+
+      assert seg["renditions"]["text"]["url"] == "/v1/streams/#{sid}/segments/0/text"
+      refute Map.has_key?(seg["renditions"], "audio")
+    end
+
+    test "audio+text disposition includes both renditions and cues" do
+      sid = "http-shape-both-#{System.unique_integer([:positive])}"
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["audio", "text"])
       :ok = Manifest.add_utterance(sid, 0, "Hello world")
       :ok = Manifest.add_cue(sid, 1, :image, %{"url" => "img.png", "alt" => "test"})
       :ok = Manifest.add_utterance(sid, 2, "After image")

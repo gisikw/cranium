@@ -11,7 +11,7 @@ defmodule Cranium.ManifestTest do
 
   describe "init_stream/3 + get/2" do
     test "initializes a stream with streaming status", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       {:ok, manifest} = Manifest.get("s1", name)
 
       assert manifest["stream_id"] == "s1"
@@ -25,8 +25,8 @@ defmodule Cranium.ManifestTest do
   end
 
   describe "add_utterance/4" do
-    test "adds utterance with text and audio renditions", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+    test "default disposition (text-only) advertises only text rendition", %{name: name} do
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_utterance("s1", 0, "Hello world", name)
 
       {:ok, manifest} = Manifest.get("s1", name)
@@ -36,8 +36,7 @@ defmodule Cranium.ManifestTest do
       assert seg["type"] == "utterance"
       assert seg["renditions"]["text"]["url"] == "/v1/streams/s1/segments/0/text"
       assert seg["renditions"]["text"]["mime"] == "text/plain"
-      assert seg["renditions"]["audio"]["url"] == "/v1/streams/s1/segments/0/audio"
-      assert seg["renditions"]["audio"]["mime"] == "audio/mp3"
+      refute Map.has_key?(seg["renditions"], "audio")
     end
 
     test "returns error for unknown stream", %{name: name} do
@@ -45,7 +44,7 @@ defmodule Cranium.ManifestTest do
     end
 
     test "segments accumulate in order", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_utterance("s1", 0, "First", name)
       :ok = Manifest.add_utterance("s1", 1, "Second", name)
 
@@ -56,9 +55,41 @@ defmodule Cranium.ManifestTest do
     end
   end
 
+  describe "disposition" do
+    test "audio+text disposition advertises both renditions", %{name: name} do
+      :ok = Manifest.init_stream("s1", "conv1", name: name, disposition: ["audio", "text"])
+      :ok = Manifest.add_utterance("s1", 0, "Hello world", name)
+
+      {:ok, manifest} = Manifest.get("s1", name)
+      [seg] = manifest["segments"]
+
+      assert seg["renditions"]["text"]["url"] == "/v1/streams/s1/segments/0/text"
+      assert seg["renditions"]["audio"]["url"] == "/v1/streams/s1/segments/0/audio"
+      assert seg["renditions"]["audio"]["mime"] == "audio/mp3"
+    end
+
+    test "audio-only disposition omits text rendition", %{name: name} do
+      :ok = Manifest.init_stream("s1", "conv1", name: name, disposition: ["audio"])
+      :ok = Manifest.add_utterance("s1", 0, "Hello world", name)
+
+      {:ok, manifest} = Manifest.get("s1", name)
+      [seg] = manifest["segments"]
+
+      assert Map.has_key?(seg["renditions"], "audio")
+      refute Map.has_key?(seg["renditions"], "text")
+    end
+
+    test "text stored internally regardless of disposition", %{name: name} do
+      :ok = Manifest.init_stream("s1", "conv1", name: name, disposition: ["audio"])
+      :ok = Manifest.add_utterance("s1", 0, "Hello world", name)
+
+      assert {:ok, "Hello world"} = Manifest.get_segment_text("s1", 0, name)
+    end
+  end
+
   describe "add_cue/5" do
     test "adds cue segment with type and data", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_cue("s1", 0, :image, %{url: "https://example.com/img.png"}, name)
 
       {:ok, manifest} = Manifest.get("s1", name)
@@ -77,7 +108,7 @@ defmodule Cranium.ManifestTest do
 
   describe "complete/2" do
     test "sets status to complete", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.complete("s1", name)
 
       {:ok, manifest} = Manifest.get("s1", name)
@@ -91,7 +122,7 @@ defmodule Cranium.ManifestTest do
 
   describe "get_segment_text/3" do
     test "returns text content for utterance segment", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_utterance("s1", 0, "Hello world", name)
 
       assert {:ok, "Hello world"} = Manifest.get_segment_text("s1", 0, name)
@@ -102,12 +133,12 @@ defmodule Cranium.ManifestTest do
     end
 
     test "returns :not_found for missing segment index", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       assert :not_found = Manifest.get_segment_text("s1", 99, name)
     end
 
     test "returns :not_found for cue segment", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_cue("s1", 0, :image, %{}, name)
       assert :not_found = Manifest.get_segment_text("s1", 0, name)
     end
@@ -115,7 +146,7 @@ defmodule Cranium.ManifestTest do
 
   describe "mixed segment types" do
     test "utterances and cues interleave correctly", %{name: name} do
-      :ok = Manifest.init_stream("s1", "conv1", name)
+      :ok = Manifest.init_stream("s1", "conv1", name: name)
       :ok = Manifest.add_utterance("s1", 0, "Before the image", name)
       :ok = Manifest.add_cue("s1", 1, :image, %{url: "img.png"}, name)
       :ok = Manifest.add_utterance("s1", 2, "After the image", name)
