@@ -310,7 +310,9 @@ caching; they're stored as conversation context, which we keep anyway.
 
 #### HTTP Transport
 
-Three endpoints serve the manifest:
+##### Output (Manifest)
+
+Three endpoints serve the segment manifest:
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -320,6 +322,63 @@ Three endpoints serve the manifest:
 
 Client loop: submit → poll manifest → consume new segments → repeat until
 `status: "complete"`.
+
+##### Input Protocol
+
+Input and output are symmetric: both are append-only, numbered, eventually
+sealed. The output manifest is a journal of segments the server appends; the
+input protocol is a journal of chunks the client appends.
+
+The design borrows from broadcast remote-contribution models (Source-Connect,
+Comrex). The client always captures locally — the local recording is the
+source of truth. Streaming to the server is an optimization (enables early
+transcription), not the delivery mechanism. If the stream is clean, the seal
+triggers processing immediately. If chunks were lost, the client backfills
+from its local cache.
+
+```
+Client                            Server
+  |                                 |
+  |-- POST /v1/input/start -------->|  → {take_id, stream_id}
+  |                                 |
+  |-- PUT /v1/input/:id/0 --------->|  (audio chunk, best-effort)
+  |-- PUT /v1/input/:id/1 --------->|
+  |-- PUT /v1/input/:id/2 ---X      |  (lost)
+  |-- PUT /v1/input/:id/3 --------->|
+  |                                 |
+  |-- POST /v1/input/:id/done ----->|  → {missing: [2]}
+  |                                 |
+  |-- PUT /v1/input/:id/2 --------->|  → 2xx → server triggers inference
+  |                                 |
+  |-- GET /v1/streams/:sid/manifest |  (polling, segments appearing)
+```
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /v1/input/start` | Open a take. Returns `take_id` + `stream_id`. Params: `conversation_id`, `disposition`. |
+| `PUT /v1/input/:id/:seq` | Append a numbered audio chunk. Best-effort — server acks but missing chunks are recoverable. |
+| `POST /v1/input/:id/done` | Seal the take. Returns `{missing: [...]}` — empty list means all chunks received, inference starts. |
+
+The `stream_id` returned on `/start` is the same one used to poll the output
+manifest. The client doesn't need a second round-trip after backfilling — once
+it sees 2xx on the last missing chunk, it starts polling the manifest. The
+server detects completeness and triggers inference autonomously.
+
+**Happy path**: all chunks land during streaming → `/done` returns
+`{missing: []}` → inference already starting → poll manifest. Same effective
+latency as an atomic POST.
+
+**Degraded path**: some chunks lost → `/done` returns gap list → client
+re-sends from local cache → inference starts on final 2xx.
+
+**Text input**: continues to use `POST /v1/submit` directly — text is small,
+atomic, and cheap to retry. The chunked protocol is for audio where upload
+size and streaming STT make it worthwhile.
+
+**Future transport upgrade**: the chunk protocol is transport-agnostic. The
+initial implementation uses HTTP, but the semantics (numbered datagrams with
+backfill) map directly to QUIC unreliable datagrams if sub-100ms transport
+latency becomes necessary for real-time voice.
 
 ## Design Decisions
 
@@ -405,18 +464,18 @@ When multiple links connect to the same conversation:
 
 ### Next Steps
 
-1. ~~Stream initialization~~ — done. Full `stream_start → chunk → stream_end` protocol.
-2. ~~Vertical slice~~ — done. Real Anthropic SSE streaming through Agent → Egress.
-   Testable from `iex -S mix`.
-3. **TTS integration** — wire Egress Synthesizer to Kokoro HTTP endpoint, produce
-   audio segments per stream_id
-4. **STT integration** — wire Ingress Transcriber to stt.gisi.network, accept audio
-   input
-5. **Segment manifest + HTTP transport** — Plug + Bandit with submit/manifest/segment
-   endpoints, TTS cache GenServer, disposition-driven eager warming
-6. **Persistence** — Ecto schemas for conversation history, multi-turn context
-7. **Hearth integration** — point Hearth at cranium-v2 HTTP API
-8. **Epoch lifecycle** — clear/handoff/saturation tracking
+1. ~~Stream initialization~~ — done.
+2. ~~Vertical slice~~ — done.
+3. ~~TTS integration~~ — done.
+4. ~~STT integration~~ — done.
+5. ~~Segment manifest + HTTP transport~~ — done.
+6. ~~Persistence~~ — done. Ecto schemas, multi-turn context, full pipeline wired.
+7. ~~Hearth integration~~ — done.
+8. **Epoch lifecycle** — wire `!clear` to handoff generation, saturation tracking
+9. **Agent tool execution** — handle tool_use stop reason, execute tools, re-enter
+   inference loop. Requires ToolRouter registration and ToolExecutor dispatch.
+10. **Input protocol** — chunked audio upload with take/seal/backfill semantics.
+    See Input Protocol section above.
 
 ## Development
 
