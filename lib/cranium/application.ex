@@ -28,6 +28,9 @@ defmodule Cranium.Application do
       Cranium.Store.Repo,
       Cranium.Store,
 
+      # Manifest registry (segment playlist for active streams)
+      Cranium.Manifest,
+
       # Pipeline stages
       Cranium.Ingress,
       Cranium.Context,
@@ -38,13 +41,17 @@ defmodule Cranium.Application do
 
       # Epoch management
       {Registry, keys: :unique, name: Cranium.Epoch.Registry},
-      {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one}
+      {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one},
 
-      # Transports — uncomment when implemented
-      # Cranium.Transport.Matrix,
+      # HTTP transport
+      {Bandit, plug: Cranium.Transport.HTTP, port: http_port()}
     ]
 
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp http_port do
+    Application.get_env(:cranium, :http_port, 4000)
   end
 end

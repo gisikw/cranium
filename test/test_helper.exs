@@ -1,6 +1,9 @@
 Application.ensure_all_started(:mox)
 Application.ensure_all_started(:req)
 
+# Start services needed by tests when running with --no-start
+Cranium.Manifest.start_link(name: Cranium.Manifest)
+
 ExUnit.start()
 
 # Only configure Ecto sandbox when the Repo is started

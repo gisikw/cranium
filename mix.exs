@@ -32,6 +32,10 @@ defmodule Cranium.MixProject do
       # HTTP client
       {:req, "~> 0.5"},
 
+      # HTTP server
+      {:bandit, "~> 1.6"},
+      {:plug, "~> 1.16"},
+
       # JSON
       {:jason, "~> 1.4"},
 
@@ -39,8 +43,7 @@ defmodule Cranium.MixProject do
       {:telemetry, "~> 1.3"},
 
       # Test
-      {:mox, "~> 1.2", only: :test},
-      {:plug, "~> 1.14", only: :test}
+      {:mox, "~> 1.2", only: :test}
     ]
   end
 
