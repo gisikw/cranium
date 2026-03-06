@@ -32,8 +32,11 @@ defmodule Cranium.Backend.TTS.Kokoro do
     format = Keyword.get(opts, :format, "mp3")
 
     payload = %{text: text, voice: voice, format: format}
+    plug = Keyword.get(opts, :plug)
 
-    case Req.post(url, json: payload) do
+    req_opts = [json: payload] ++ if(plug, do: [plug: plug], else: [])
+
+    case Req.post(url, req_opts) do
       {:ok, %{status: 200, body: audio}} when is_binary(audio) ->
         {:ok, audio}
 
@@ -46,6 +49,6 @@ defmodule Cranium.Backend.TTS.Kokoro do
   end
 
   defp tts_url do
-    Application.get_env(:cranium, :backends)[:tts_url] || "http://localhost:8788/synthesize"
+    Application.get_env(:cranium, :backends)[:tts_url] || "https://tts.example.com/synthesize"
   end
 end

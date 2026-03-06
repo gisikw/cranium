@@ -1,3 +1,6 @@
+Application.ensure_all_started(:mox)
+Application.ensure_all_started(:req)
+
 ExUnit.start()
 
 # Only configure Ecto sandbox when the Repo is started

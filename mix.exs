@@ -39,7 +39,8 @@ defmodule Cranium.MixProject do
       {:telemetry, "~> 1.3"},
 
       # Test
-      {:mox, "~> 1.2", only: :test}
+      {:mox, "~> 1.2", only: :test},
+      {:plug, "~> 1.14", only: :test}
     ]
   end
 

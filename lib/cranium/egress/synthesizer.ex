@@ -2,8 +2,10 @@ defmodule Cranium.Egress.Synthesizer do
   @moduledoc """
   Routes text chunks through the TTS backend for voice mode.
 
-  Takes a list of text chunks and synthesizes each to audio. Markers
-  pass through without synthesis.
+  Takes a list of paragraph-level text chunks (from Chunker) and synthesizes
+  each to audio in `:voice` mode. In other modes, text chunks pass through
+  as `%{type: :text, data: text}` without TTS. Markers always pass through
+  unchanged.
 
   The TTS backend is configured at the application level and implements
   the `Cranium.Backend.TTS` behaviour.
@@ -12,7 +14,8 @@ defmodule Cranium.Egress.Synthesizer do
   require Logger
 
   @spec process([term()], map()) :: {:ok, [term()]}
-  def process(chunks, _context) do
+  def process(chunks, context) do
+    mode = Map.get(context, :mode)
     backend = backend_module()
 
     results =
@@ -20,7 +23,7 @@ defmodule Cranium.Egress.Synthesizer do
         %{type: :marker} = marker ->
           marker
 
-        text when is_binary(text) ->
+        text when is_binary(text) and mode == :voice ->
           case backend.synthesize(text, []) do
             {:ok, audio} ->
               %{type: :audio, data: audio, text: text}
@@ -30,6 +33,9 @@ defmodule Cranium.Egress.Synthesizer do
               # Fall back to text on TTS failure
               %{type: :text, data: text}
           end
+
+        text when is_binary(text) ->
+          %{type: :text, data: text}
       end)
 
     {:ok, results}

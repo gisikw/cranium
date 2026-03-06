@@ -2,16 +2,17 @@ defmodule Cranium.Egress.Chunker do
   @moduledoc """
   Segments streaming output into deliverable units.
 
-  In voice mode, chunks at sentence boundaries for natural TTS pacing
-  (50-100 word target per chunk). In text mode, chunks at paragraph
-  breaks for readable streaming updates.
+  In voice mode, chunks at paragraph boundaries (`\\n\\n`) with a 30-word
+  minimum for the first chunk and 100-word minimum for subsequent chunks,
+  giving Kokoro TTS enough context for good prosody. In text mode, chunks
+  at paragraph breaks for readable streaming updates.
 
   Also handles markers — these pass through without modification as
   positional cues for the transport.
   """
 
-  @voice_target_words 75
-  @voice_min_words 20
+  @voice_first_words 30
+  @voice_rest_words 100
 
   @spec process(term(), map()) :: {:ok, [term()]}
   def process(output, context) when is_binary(output) do
@@ -44,9 +45,12 @@ defmodule Cranium.Egress.Chunker do
   # --- Private ---
 
   defp chunk_text(text, :voice) do
-    text
-    |> String.split(~r/(?<=[.!?])\s+/)
-    |> chunk_by_word_count(@voice_target_words, @voice_min_words)
+    paragraphs =
+      text
+      |> String.split(~r/\n\n+/)
+      |> Enum.reject(&(String.trim(&1) == ""))
+
+    chunk_by_paragraph(paragraphs, @voice_first_words, @voice_rest_words)
   end
 
   defp chunk_text(text, :text) do
@@ -55,35 +59,29 @@ defmodule Cranium.Egress.Chunker do
     |> Enum.reject(&(String.trim(&1) == ""))
   end
 
-  defp chunk_by_word_count(sentences, target, min) do
-    {chunks, current} =
-      Enum.reduce(sentences, {[], ""}, fn sentence, {chunks, current} ->
-        combined = if current == "", do: sentence, else: current <> " " <> sentence
-        word_count = combined |> String.split() |> length()
+  # Accumulate paragraphs until word count >= threshold, then emit.
+  # First chunk uses first_threshold; subsequent chunks use rest_threshold.
+  # Always flush remaining paragraphs as a final chunk.
+  defp chunk_by_paragraph(paragraphs, first_threshold, rest_threshold) do
+    {chunks, current_paras, _threshold} =
+      Enum.reduce(paragraphs, {[], [], first_threshold}, fn para, {chunks, acc, threshold} ->
+        acc = acc ++ [para]
+        word_count = acc |> Enum.join("\n\n") |> String.split() |> length()
 
-        if word_count >= target do
-          {[combined | chunks], ""}
+        if word_count >= threshold do
+          {[Enum.join(acc, "\n\n") | chunks], [], rest_threshold}
         else
-          {chunks, combined}
+          {chunks, acc, threshold}
         end
       end)
 
-    # Don't leave a tiny remainder — merge with last chunk
-    case {current, chunks} do
-      {"", chunks} ->
+    # Flush any remaining paragraphs
+    case {current_paras, chunks} do
+      {[], _} ->
         Enum.reverse(chunks)
 
-      {remainder, [last | rest]} ->
-        word_count = remainder |> String.split() |> length()
-
-        if word_count < min do
-          Enum.reverse([last <> " " <> remainder | rest])
-        else
-          Enum.reverse([remainder, last | rest])
-        end
-
-      {remainder, chunks} ->
-        Enum.reverse([remainder | chunks])
+      {remainder, _} ->
+        Enum.reverse([Enum.join(remainder, "\n\n") | chunks])
     end
   end
 end
