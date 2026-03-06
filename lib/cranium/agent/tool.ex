@@ -9,5 +9,6 @@ defmodule Cranium.Agent.Tool do
 
   @callback execute(input :: map(), opts :: keyword()) :: {:ok, String.t()} | {:error, term()}
   @callback name() :: String.t()
+  @callback schema() :: map()
   @optional_callbacks [name: 0]
 end

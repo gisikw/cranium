@@ -143,7 +143,8 @@ defmodule Cranium.Agent do
     send(egress_pid, {:stream_start, stream_id, metadata})
 
     # Start the LLM backend stream
-    opts = [system: system, max_tokens: Map.get(context, :max_tokens, 8192)]
+    tools = Cranium.Agent.ToolRouter.tool_definitions()
+    opts = [system: system, max_tokens: Map.get(context, :max_tokens, 8192), tools: tools]
 
     result = run_inference(state, egress_pid, stream_id, messages, opts)
 
@@ -181,10 +182,13 @@ defmodule Cranium.Agent do
   # --- Inference Loop ---
 
   defp run_inference(state, egress_pid, stream_id, messages, opts) do
+    state = %{state | messages: messages, tool_calls_pending: []}
+
     case state.llm_backend.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        result = receive_loop(state, egress_pid, stream_id, ref)
+        result = receive_loop(state, egress_pid, stream_id, ref, opts)
+        # Demonitor only if receive_loop didn't already (tool_use path does its own)
         Process.demonitor(ref, [:flush])
         result
 
@@ -193,30 +197,27 @@ defmodule Cranium.Agent do
     end
   end
 
-  defp receive_loop(state, egress_pid, stream_id, ref) do
+  defp receive_loop(state, egress_pid, stream_id, ref, opts) do
     receive do
       {:llm_text, text} ->
         send(egress_pid, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
-        receive_loop(state, egress_pid, stream_id, ref)
+        receive_loop(state, egress_pid, stream_id, ref, opts)
 
-      {:llm_tool_use, _tool_call} ->
-        # TODO: Route through ToolRouter → ToolExecutor/MarkerEmitter
-        # For now, log and continue (no tool execution in vertical slice)
-        Logger.info("Tool call received (not yet implemented)")
-        receive_loop(state, egress_pid, stream_id, ref)
+      {:llm_tool_use, tool_call} ->
+        state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
+        receive_loop(state, egress_pid, stream_id, ref, opts)
 
       {:llm_usage, usage} ->
         merged = merge_usage(state.usage, usage)
-        receive_loop(%{state | usage: merged}, egress_pid, stream_id, ref)
+        receive_loop(%{state | usage: merged}, egress_pid, stream_id, ref, opts)
 
       {:llm_stop, "end_turn"} ->
         {:ok, state}
 
       {:llm_stop, "tool_use"} ->
-        # TODO: Execute tools, append results, re-enter inference
-        Logger.info("Tool use stop (not yet implemented)")
-        {:ok, state}
+        Process.demonitor(ref, [:flush])
+        execute_tools_and_continue(state, egress_pid, stream_id, opts)
 
       {:llm_stop, {:error, _status, _body} = error} ->
         {:error, error}
@@ -238,6 +239,62 @@ defmodule Cranium.Agent do
       120_000 ->
         {:error, :timeout}
     end
+  end
+
+  defp execute_tools_and_continue(state, egress_pid, stream_id, opts) do
+    alias Cranium.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
+
+    tool_calls = Enum.reverse(state.tool_calls_pending)
+
+    Logger.info("Executing #{length(tool_calls)} tool call(s)")
+
+    # Build assistant content blocks (text + tool_use)
+    assistant_content = build_assistant_content(state.partial_output, tool_calls)
+
+    # Execute each tool call and collect results
+    tool_results =
+      Enum.map(tool_calls, fn tool_call ->
+        result =
+          case ToolRouter.route(tool_call) do
+            {:marker, marker_type, input} ->
+              {result_text, marker} = MarkerEmitter.handle(marker_type, input)
+              send(egress_pid, {:chunk, stream_id, {:marker, marker}})
+              result_text
+
+            {:execute, module, input} ->
+              case ToolExecutor.execute(module, input) do
+                {:ok, text} -> ToolExecutor.truncate_result(text)
+                {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+              end
+
+            {:unknown, name} ->
+              ~s({"error": "unknown tool: #{name}"})
+          end
+
+        %{role: "user", content: [%{type: "tool_result", tool_use_id: tool_call.id, content: result}]}
+      end)
+
+    # Append assistant message + tool results to conversation
+    assistant_msg = %{role: "assistant", content: assistant_content}
+    updated_messages = state.messages ++ [assistant_msg | tool_results]
+
+    # Clear pending state and re-enter inference
+    state = %{state | partial_output: [], tool_calls_pending: []}
+    run_inference(state, egress_pid, stream_id, updated_messages, opts)
+  end
+
+  defp build_assistant_content(partial_output, tool_calls) do
+    text = partial_output |> Enum.reverse() |> Enum.join()
+
+    text_blocks =
+      if text != "", do: [%{type: "text", text: text}], else: []
+
+    tool_blocks =
+      Enum.map(tool_calls, fn tc ->
+        %{type: "tool_use", id: tc.id, name: tc.name, input: tc.input}
+      end)
+
+    text_blocks ++ tool_blocks
   end
 
   defp merge_usage(existing, new) do
