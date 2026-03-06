@@ -55,6 +55,10 @@ defmodule Cranium.Application do
     ]
 
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
+
+    # Register built-in tools
+    Cranium.Agent.ToolRouter.register("bash", Cranium.Agent.Tools.Bash)
+
     Supervisor.start_link(children, opts)
   end
 
