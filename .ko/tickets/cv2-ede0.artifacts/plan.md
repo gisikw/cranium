@@ -47,8 +47,8 @@ Then write `test/cranium/backend/whisper_test.exs` following the Kokoro test pat
 
 ## Open Questions
 
-1. **Multipart field name**: V1 uses `"file"` as the form field name with the filename derived from the file path. For the v2 API (in-memory binary), the filename will need a placeholder (e.g. `"audio.ogg"` or `"audio"`). Is there a specific filename the endpoint expects, or is any value acceptable?
+None. All resolved:
 
-2. **Audio format assumption**: The endpoint likely returns plain text or JSON. V1 parses JSON `{"text": "..."}`. The current Elixir code also expects JSON. If the endpoint ever returns plain text, `Req` will not auto-parse it. Assuming JSON is correct based on v1.
-
-3. **Req multipart support**: Confirmed — `req ~> 0.5` supports `:form_multipart` with `[field: {binary, filename: "name", content_type: "..."}]` tuple syntax. No extra deps needed.
+1. **Multipart filename**: Use `"audio"` (bare, no extension). Ticket author confirmed: let endpoint infer format from binary content.
+2. **Response format**: JSON `{"text": "..."}` based on v1. Confirmed correct.
+3. **Req multipart support**: Confirmed — `req ~> 0.5` supports `:form_multipart` with `[field: {binary, filename: "name", content_type: "..."}]` tuple syntax.

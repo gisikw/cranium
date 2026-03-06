@@ -27,3 +27,9 @@ POST audio to stt.gisi.network/transcribe. Check ~/Projects/cranium/ (v1 source,
 - Cranium.Backend.STT.Whisper.transcribe(audio_binary) returns {:ok, "transcribed text"}
 - Ingress correctly routes audio events through transcription
 - Tests for the backend (mock HTTP)
+
+## Notes
+
+**2026-03-06 00:02:32 UTC:** Question: What filename should be used for the audio file in the multipart form-data request to stt.gisi.network?
+Answer: Simple placeholder 'audio' (Recommended)
+Use a bare filename without extension; let the endpoint infer audio format from binary content

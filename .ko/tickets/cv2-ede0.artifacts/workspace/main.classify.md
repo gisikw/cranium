@@ -10,4 +10,4 @@ Erlang/OTP 28
 {"disposition": "route", "workflow": "task"}
 ```
 
-This ticket describes **what to build**: implementing STT integration by wiring the Transcriber stub to an HTTP endpoint with clear specifications, implementation steps, and acceptance criteria. The work is well-scoped and ready to code.
+This is a **task**: The ticket describes specific code to build (Whisper STT backend implementation and Transcriber wiring) with clear acceptance criteria and implementation guidance. No diagnosis or investigation is needed—the requirements are explicit.
