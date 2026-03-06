@@ -29,3 +29,13 @@ Nothing strictly, but integrates with Egress (which populates it) and HTTP trans
 - Manifest.get returns JSON-serializable map matching README spec
 - Manifest.complete sets status to :complete
 - Tests for all operations
+
+## Notes
+
+**2026-03-06 00:03:40 UTC:** Question: Should the audio rendition include a `duration` field, and if so, how should it be populated before TTS synthesis completes?
+Answer: Omit duration field (Recommended)
+Audio renditions don't include duration initially; updated via API after TTS synthesis if needed
+
+**2026-03-06 00:03:40 UTC:** Question: How should `conversation_id` be passed to the Manifest?
+Answer: Explicit init_stream call (Recommended)
+Add `init_stream(stream_id, conversation_id)` for Egress to call on stream start

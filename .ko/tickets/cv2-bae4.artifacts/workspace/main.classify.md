@@ -10,4 +10,4 @@ Erlang/OTP 28
 {"disposition": "route", "workflow": "task"}
 ```
 
-This ticket describes **what to build**: a new GenServer with four specific API methods (`add_utterance`, `add_cue`, `complete`, `get`), defined data structures, and JSON serialization. The design is already decided (documented in README.md), dependencies are clear, and acceptance criteria are testable. The expected output is committed code with tests.
+This ticket clearly asks for implementation of a specific feature: a `Cranium.Manifest` GenServer with defined API and behavior. The design is already complete (referenced in README), and the ticket prescribes exactly what to build with clear acceptance criteria. The expected output is committed code.

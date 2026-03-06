@@ -1,24 +1,10 @@
 ---
 id: cv2-ede0
-status: blocked
+status: open
 deps: []
 created: 2026-03-05T22:55:49Z
 type: task
 priority: 2
-plan-questions:
-  - id: q1
-    question: "What filename should be used for the audio file in the multipart form-data request to stt.gisi.network?"
-    context: "The endpoint expects multipart/form-data with a 'file' field. V1 uses actual file paths, but v2 works with in-memory audio binaries. The plan suggests a placeholder like 'audio', but needs confirmation on what the endpoint expects."
-    options:
-      - label: "Simple placeholder 'audio' (Recommended)"
-        value: simple_audio
-        description: "Use a bare filename without extension; let the endpoint infer audio format from binary content"
-      - label: "Extension-based 'audio.ogg'"
-        value: extension_ogg
-        description: "Use a filename with .ogg extension to hint at audio format"
-      - label: "Verify from endpoint docs"
-        value: verify_docs
-        description: "Check endpoint documentation or stt.gisi.network for specific filename requirements"
 ---
 # STT integration: wire Ingress Transcriber to stt.gisi.network HTTP endpoint, accept audio input and transcribe to text
 
@@ -41,3 +27,9 @@ POST audio to stt.gisi.network/transcribe. Check ~/Projects/cranium/ (v1 source,
 - Cranium.Backend.STT.Whisper.transcribe(audio_binary) returns {:ok, "transcribed text"}
 - Ingress correctly routes audio events through transcription
 - Tests for the backend (mock HTTP)
+
+## Notes
+
+**2026-03-06 00:02:32 UTC:** Question: What filename should be used for the audio file in the multipart form-data request to stt.gisi.network?
+Answer: Simple placeholder 'audio' (Recommended)
+Use a bare filename without extension; let the endpoint infer audio format from binary content

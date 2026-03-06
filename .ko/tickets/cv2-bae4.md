@@ -5,33 +5,6 @@ deps: []
 created: 2026-03-05T22:55:49Z
 type: task
 priority: 2
-plan-questions:
-  - id: q1
-    question: "Should the audio rendition include a `duration` field, and if so, how should it be populated before TTS synthesis completes?"
-    context: "The README shows `"duration": 1.2` on audio renditions, but audio is served lazily from TTS cache. Duration won't be known until synthesis finishes. If the manifest needs post-synthesis updates, an `update_segment/3` API would be required."
-    options:
-      - label: "Omit duration field (Recommended)"
-        value: omit_duration
-        description: "Audio renditions don't include duration initially; updated via API after TTS synthesis if needed"
-      - label: "Include duration as null"
-        value: null_duration
-        description: "Audio renditions include `"duration": null` initially, replaced with actual value after synthesis"
-      - label: "Add update API"
-        value: update_api
-        description: "Implement an explicit `update_segment/3` function to modify segments after creation"
-  - id: q2
-    question: "How should `conversation_id` be passed to the Manifest?"
-    context: "The ticket API signatures don't include `conversation_id` in `add_utterance/add_cue`. The plan assumes first-call initialization or nil default, but a cleaner design might use an explicit `init_stream` call that Egress invokes with metadata from `stream_metadata`."
-    options:
-      - label: "Explicit init_stream call (Recommended)"
-        value: init_stream_api
-        description: "Add `init_stream(stream_id, conversation_id)` for Egress to call on stream start"
-      - label: "Optional param on first call"
-        value: first_call_param
-        description: "Pass `conversation_id` to the first `add_utterance` call; no separate init"
-      - label: "Defaults to nil"
-        value: nil_default
-        description: "Conversation_id defaults to nil; no explicit initialization needed"
 ---
 # Segment manifest design: define manifest format for multimedia responses (renditions, cues, growing playlist)
 
@@ -56,3 +29,232 @@ Nothing strictly, but integrates with Egress (which populates it) and HTTP trans
 - Manifest.get returns JSON-serializable map matching README spec
 - Manifest.complete sets status to :complete
 - Tests for all operations
+
+## Notes
+
+**2026-03-06 00:03:40 UTC:** Question: Should the audio rendition include a `duration` field, and if so, how should it be populated before TTS synthesis completes?
+Answer: Omit duration field (Recommended)
+Audio renditions don't include duration initially; updated via API after TTS synthesis if needed
+
+**2026-03-06 00:03:40 UTC:** Question: How should `conversation_id` be passed to the Manifest?
+Answer: Explicit init_stream call (Recommended)
+Add `init_stream(stream_id, conversation_id)` for Egress to call on stream start
+
+**2026-03-06 00:07:50 UTC:** ko: FAIL at node 'verify' — node 'verify' failed after 3 attempts: command failed: exit status 2
+warning: Git tree '/home/dev/Projects/cranium-v2' is dirty
+cranium-v2 dev shell
+  mix test     — run tests
+  mix compile  — compile
+  iex -S mix   — interactive shell
+  just         — list recipes
+
+Elixir Elixir 1.18.4 (compiled with Erlang/OTP 27)
+Erlang/OTP 28
+Running ExUnit with seed: 734650, max_cases: 24
+
+...
+
+  1) test synthesize/2 returns {:error, _} on connection error (Cranium.Backend.KokoroTest)
+     test/cranium/backend/kokoro_test.exs:30
+     ** (exit) exited in: GenServer.call(Req.Test.Ownership, {:get_and_update, #PID<0.260.0>, CraniumKokoroTest, #Function<3.28971161/1 in Req.Test.stub/2>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     code: Req.Test.stub(@plug_name, fn conn ->
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (req 0.5.17) lib/req/test/ownership.ex:59: Req.Test.Ownership.get_and_update/5
+       (req 0.5.17) lib/req/test.ex:541: Req.Test.stub/2
+       test/cranium/backend/kokoro_test.exs:31: (test)
+
+
+
+  2) test synthesize/2 returns {:ok, audio_binary} on HTTP 200 (Cranium.Backend.KokoroTest)
+     test/cranium/backend/kokoro_test.exs:9
+     ** (exit) exited in: GenServer.call(Req.Test.Ownership, {:get_and_update, #PID<0.272.0>, CraniumKokoroTest, #Function<3.28971161/1 in Req.Test.stub/2>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     code: Req.Test.stub(@plug_name, fn conn ->
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (req 0.5.17) lib/req/test/ownership.ex:59: Req.Test.Ownership.get_and_update/5
+       (req 0.5.17) lib/req/test.ex:541: Req.Test.stub/2
+       test/cranium/backend/kokoro_test.exs:12: (test)
+
+
+
+  3) test synthesize/2 returns {:error, {:http_error, 503, _}} on non-200 (Cranium.Backend.KokoroTest)
+     test/cranium/backend/kokoro_test.exs:21
+     ** (exit) exited in: GenServer.call(Req.Test.Ownership, {:get_and_update, #PID<0.273.0>, CraniumKokoroTest, #Function<3.28971161/1 in Req.Test.stub/2>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     code: Req.Test.stub(@plug_name, fn conn ->
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (req 0.5.17) lib/req/test/ownership.ex:59: Req.Test.Ownership.get_and_update/5
+       (req 0.5.17) lib/req/test.ex:541: Req.Test.stub/2
+       test/cranium/backend/kokoro_test.exs:22: (test)
+
+...........................................
+
+  4) test process/2 in :text mode text chunk passes through as %{type: :text} without calling TTS (Cranium.Egress.SynthesizerTest)
+     test/cranium/egress/synthesizer_test.exs:41
+     ** (exit) exited in: GenServer.call({:global, Mox.Server}, {:set_owner_to_manual_cleanup, #PID<0.327.0>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (mox 1.2.0) lib/mox.ex:816: Mox.verify_on_exit!/1
+       test/cranium/egress/synthesizer_test.exs:1: Cranium.Egress.SynthesizerTest.__ex_unit__/2
+
+
+
+  5) test process/2 in :voice mode TTS failure falls back to {:type, :text, data: text} (Cranium.Egress.SynthesizerTest)
+     test/cranium/egress/synthesizer_test.exs:29
+     ** (exit) exited in: GenServer.call({:global, Mox.Server}, {:set_owner_to_manual_cleanup, #PID<0.328.0>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (mox 1.2.0) lib/mox.ex:816: Mox.verify_on_exit!/1
+       test/cranium/egress/synthesizer_test.exs:1: Cranium.Egress.SynthesizerTest.__ex_unit__/2
+
+
+
+  6) test process/2 in :text mode markers pass through unchanged (Cranium.Egress.SynthesizerTest)
+     test/cranium/egress/synthesizer_test.exs:48
+     ** (exit) exited in: GenServer.call({:global, Mox.Server}, {:set_owner_to_manual_cleanup, #PID<0.329.0>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (mox 1.2.0) lib/mox.ex:816: Mox.verify_on_exit!/1
+       test/cranium/egress/synthesizer_test.exs:1: Cranium.Egress.SynthesizerTest.__ex_unit__/2
+
+
+
+  7) test process/2 in :voice mode text chunk is synthesized and returned as audio (Cranium.Egress.SynthesizerTest)
+     test/cranium/egress/synthesizer_test.exs:11
+     ** (exit) exited in: GenServer.call({:global, Mox.Server}, {:set_owner_to_manual_cleanup, #PID<0.330.0>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (mox 1.2.0) lib/mox.ex:816: Mox.verify_on_exit!/1
+       test/cranium/egress/synthesizer_test.exs:1: Cranium.Egress.SynthesizerTest.__ex_unit__/2
+
+
+
+  8) test process/2 in :voice mode markers pass through unchanged without calling TTS (Cranium.Egress.SynthesizerTest)
+     test/cranium/egress/synthesizer_test.exs:22
+     ** (exit) exited in: GenServer.call({:global, Mox.Server}, {:set_owner_to_manual_cleanup, #PID<0.331.0>}, 5000)
+         ** (EXIT) no process: the process is not alive or there's no process currently associated with the given name, possibly because its application isn't started
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1121: GenServer.call/3
+       (mox 1.2.0) lib/mox.ex:816: Mox.verify_on_exit!/1
+       test/cranium/egress/synthesizer_test.exs:1: Cranium.Egress.SynthesizerTest.__ex_unit__/2
+
+
+00:07:50.884 [info] Manifest registry started
+
+00:07:50.886 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+00:07:50.887 [info] Manifest registry started
+
+
+  9) test save_handoff/get_latest_handoff returns the latest handoff when multiple exist (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:63
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 10) test upsert_epoch inserts then updates, resulting in a single row with updated fields (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:41
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 11) test append_message/get_messages returns empty list when no messages exist (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:33
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 12) test save_summary/get_all_summaries returns all summaries across conversations ordered by most recent (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:80
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 13) test upsert_epoch returns :not_found when epoch does not exist (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:56
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 14) test append_message/get_messages inserts messages and retrieves them in insertion order (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:7
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 15) test append_message/get_messages respects the limit option (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:20
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+
+
+ 16) test save_handoff/get_latest_handoff returns :not_found when no handoffs exist (CraniumTest.StoreTest)
+     test/cranium/store_test.exs:73
+     ** (MatchError) no match of right hand side value: {:error, {%RuntimeError{message: "could not lookup Ecto repo Cranium.Store.Repo because it was not started or it does not exist"}, [{Ecto.Repo.Registry, :lookup, 1, [file: ~c"lib/ecto/repo/registry.ex", line: 22, error_info: %{module: Exception}]}, {Ecto.Adapters.SQL.Sandbox, :lookup_meta!, 1, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 640]}, {Ecto.Adapters.SQL.Sandbox, :checkout, 2, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 544]}, {Ecto.Adapters.SQL.Sandbox, :"-start_owner!/2-fun-0-", 3, [file: ~c"lib/ecto/adapters/sql/sandbox.ex", line: 454]}, {Agent.Server, :init, 1, [file: ~c"lib/agent/server.ex", line: 8]}, {:gen_server, :init_it, 2, [file: ~c"gen_server.erl", line: 2229]}, {:gen_server, :init_it, 6, [file: ~c"gen_server.erl", line: 2184]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+     stacktrace:
+       (ecto_sql 3.13.5) lib/ecto/adapters/sql/sandbox.ex:451: Ecto.Adapters.SQL.Sandbox.start_owner!/2
+       (cranium 0.1.0) test/support/data_case.ex:11: CraniumTest.DataCase.__ex_unit_setup_0/1
+       (cranium 0.1.0) test/support/data_case.ex:1: CraniumTest.DataCase.__ex_unit__/2
+       test/cranium/store_test.exs:1: CraniumTest.StoreTest.__ex_unit__/2
+
+..........
+Finished in 0.1 seconds (0.1s async, 0.02s sync)
+72 tests, 16 failures
+
