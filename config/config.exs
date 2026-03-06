@@ -17,6 +17,7 @@ config :cranium, :pipeline,
   summary_interval: 10,
   saturation_warn_threshold: 50,
   saturation_bucket_size: 5,
+  max_context_tokens: 200_000,
   time_gap_threshold_seconds: 1800
 
 config :logger, :console,

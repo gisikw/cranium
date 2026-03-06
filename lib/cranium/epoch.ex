@@ -26,7 +26,8 @@ defmodule Cranium.Epoch do
     :agent_pid,
     status: :idle,
     stream_id: nil,
-    started_at: nil
+    started_at: nil,
+    turn_count: 0
   ]
 
   @type t :: %__MODULE__{
@@ -36,7 +37,8 @@ defmodule Cranium.Epoch do
           agent_pid: pid() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
-          started_at: DateTime.t() | nil
+          started_at: DateTime.t() | nil,
+          turn_count: non_neg_integer()
         }
 
   # --- Public API ---
@@ -97,6 +99,15 @@ defmodule Cranium.Epoch do
     GenServer.cast(pid, :cancel)
   end
 
+  @doc false
+  @spec compute_saturation(map()) :: float()
+  def compute_saturation(usage) do
+    max_context_tokens =
+      Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000
+
+    min(usage.input_tokens / max_context_tokens, 1.0)
+  end
+
   # --- GenServer Implementation ---
 
   def start_link(opts) do
@@ -121,6 +132,8 @@ defmodule Cranium.Epoch do
       transport_meta: Keyword.get(opts, :transport_meta, %{}),
       started_at: DateTime.utc_now()
     }
+
+    Cranium.Store.upsert_epoch(conversation_id, %{status: "active", turn_count: 0})
 
     {:ok, state}
   end
@@ -172,16 +185,35 @@ defmodule Cranium.Epoch do
     egress_pid = Process.whereis(Cranium.Egress)
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
+    Cranium.Store.upsert_epoch(state.conversation_id, %{status: "inferring"})
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
 
-    # 5. Persist assistant response
-    case result do
-      {:ok, %{output: output}} when output != "" ->
-        Cranium.Store.append_message(state.conversation_id, %{role: :assistant, content: output})
+    # 5. Persist assistant response and track saturation
+    state =
+      case result do
+        {:ok, %{output: output, usage: usage}} ->
+          if output != "" do
+            Cranium.Store.append_message(state.conversation_id, %{
+              role: :assistant,
+              content: output
+            })
+          end
 
-      _ ->
-        :ok
-    end
+          saturation = compute_saturation(usage)
+          new_count = state.turn_count + 1
+
+          Cranium.Store.upsert_epoch(state.conversation_id, %{
+            status: "active",
+            saturation: saturation,
+            turn_count: new_count
+          })
+
+          %{state | turn_count: new_count}
+
+        _ ->
+          Cranium.Store.upsert_epoch(state.conversation_id, %{status: "active"})
+          state
+      end
 
     state = %{state | status: :idle, stream_id: nil, agent_pid: nil}
     {:reply, result, state}
