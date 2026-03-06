@@ -130,12 +130,40 @@ defmodule Cranium.Epoch do
     state = %{state | status: :processing, stream_id: Cranium.Stage.new_stream_id()}
     Logger.info("Processing message", stage: :epoch)
 
-    # Build minimal context from the message.
-    # Full pipeline: Ingress → Context → Agent → Egress
-    # Vertical slice: build context directly, run Agent → Egress
-    context = build_context(message, state)
+    msg_map = normalize_message(message)
+    text = msg_map[:text] || ""
 
-    # Start a fresh Agent for this invocation
+    # 1. Persist user message
+    Cranium.Store.append_message(state.conversation_id, %{role: :user, content: text})
+
+    # 2. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
+    normalized = %{
+      conversation_id: state.conversation_id,
+      text: text,
+      attachments: Map.get(msg_map, :attachments, [])
+    }
+
+    pipeline_ctx = %{
+      identity: msg_map[:system] || "",
+      projects_dir: "~/Projects",
+      mode: Map.get(msg_map, :mode, :text),
+      history_window: 50,
+      now: DateTime.utc_now()
+    }
+
+    {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
+
+    # 3. Map pipeline output to Agent context
+    context = %{
+      system: enriched[:system_prompt],
+      messages: enriched[:messages],
+      mode: Map.get(msg_map, :mode, :text),
+      conversation_id: state.conversation_id,
+      stream_id: msg_map[:stream_id] || state.stream_id,
+      disposition: Map.get(msg_map, :disposition, ["text"])
+    }
+
+    # 4. Run inference
     {:ok, agent_pid} = Cranium.Agent.start_link(
       conversation_id: state.conversation_id,
       epoch_pid: self()
@@ -144,8 +172,16 @@ defmodule Cranium.Epoch do
     egress_pid = Process.whereis(Cranium.Egress)
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
-    # Run inference (blocking — Agent.infer is synchronous)
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
+
+    # 5. Persist assistant response
+    case result do
+      {:ok, %{output: output}} when output != "" ->
+        Cranium.Store.append_message(state.conversation_id, %{role: :assistant, content: output})
+
+      _ ->
+        :ok
+    end
 
     state = %{state | status: :idle, stream_id: nil, agent_pid: nil}
     {:reply, result, state}
@@ -183,20 +219,16 @@ defmodule Cranium.Epoch do
 
   # --- Private ---
 
-  defp build_context(message, state) when is_binary(message) do
-    build_context(%{text: message}, state)
-  end
+  defp normalize_message(message) when is_binary(message), do: %{text: message}
 
-  defp build_context(message, state) when is_map(message) do
-    text = Map.get(message, :text) || Map.get(message, "text") || ""
-
+  defp normalize_message(message) when is_map(message) do
     %{
+      text: Map.get(message, :text) || Map.get(message, "text") || "",
       system: Map.get(message, :system) || Map.get(message, "system"),
-      messages: [%{role: "user", content: text}],
-      mode: :text,
-      conversation_id: state.conversation_id,
       stream_id: Map.get(message, :stream_id),
-      disposition: Map.get(message, :disposition, ["text"])
+      disposition: Map.get(message, :disposition, ["text"]),
+      mode: Map.get(message, :mode, :text),
+      attachments: Map.get(message, :attachments, [])
     }
   end
 end
