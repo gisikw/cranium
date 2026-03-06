@@ -40,17 +40,19 @@ defmodule Cranium.Transport.HTTP do
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Manifest.init_stream(stream_id, conversation_id)
 
+    Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
+
     # Run inference asynchronously — client polls the manifest
     Task.start(fn ->
       case Cranium.Epoch.submit(epoch_pid, message) do
         {:ok, result} ->
-          # Populate manifest with the result as a single utterance
           output = result.output || ""
           Cranium.Manifest.add_utterance(stream_id, 0, output)
           Cranium.Manifest.complete(stream_id)
+          Logger.info("Complete: stream=#{stream_id} segments=1 output=#{inspect(String.slice(output, 0..80))}", transport: :http)
 
         {:error, reason} ->
-          Logger.error("Submit failed: #{inspect(reason)}", transport: :http)
+          Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
           Cranium.Manifest.complete(stream_id)
       end
     end)
@@ -63,11 +65,13 @@ defmodule Cranium.Transport.HTTP do
   get "/v1/streams/:id/manifest" do
     case Cranium.Manifest.get(id) do
       {:ok, manifest} ->
+        Logger.debug("Manifest poll: stream=#{id} status=#{manifest["status"]} segments=#{length(manifest["segments"])}", transport: :http)
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(200, Jason.encode!(manifest))
 
       :not_found ->
+        Logger.debug("Manifest poll: stream=#{id} not_found", transport: :http)
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(404, Jason.encode!(%{"error" => "stream not found"}))
