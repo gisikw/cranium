@@ -146,6 +146,9 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		"CRANIUM_SESSION_ID=" + sessionID,
 		"KO_EVENT_LOG=" + eventLogPath,
 	}
+	if strings.HasPrefix(roomName, "audio-") {
+		env = append(env, "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1", "MAX_THINKING_TOKENS=0")
+	}
 	workDir := b.dataDir
 	if plan.WorkDir != "" {
 		workDir = plan.WorkDir
