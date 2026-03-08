@@ -114,7 +114,7 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 			chunks = append(chunks, audioPath)
 
 			if len(chunks) > 1 {
-				combinedPath := audioPath + ".combined.wav"
+				combinedPath := audioPath + ".combined.mp3"
 				log.Printf("Concatenating %d audio chunks for room %s", len(chunks), roomID)
 				if err := concatAudioFiles(chunks, combinedPath); err != nil {
 					log.Printf("Failed to concatenate audio chunks: %v", err)

@@ -74,9 +74,10 @@ func transcribeAudio(sttURL, filePath string) (string, error) {
 	return result.Text, nil
 }
 
-// concatAudioFiles joins multiple audio files into a single WAV using ffmpeg's
-// concat demuxer. Returns the path to the combined file. Caller is responsible
-// for cleaning up both the output file and the input chunks.
+// concatAudioFiles joins multiple audio files into a single MP3 using ffmpeg's
+// concat demuxer. Encodes to MP3 VBR quality 5 (~130 kbps) to keep file size
+// small for the transcription upload. Caller is responsible for cleaning up
+// both the output file and the input chunks.
 func concatAudioFiles(paths []string, outPath string) error {
 	// Build ffmpeg concat file list
 	var list strings.Builder
@@ -91,7 +92,7 @@ func concatAudioFiles(paths []string, outPath string) error {
 	defer os.Remove(listPath)
 
 	cmd := exec.Command("ffmpeg", "-y", "-f", "concat", "-safe", "0",
-		"-i", listPath, "-c", "copy", outPath)
+		"-i", listPath, "-codec:a", "libmp3lame", "-qscale:a", "5", outPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg concat: %w\n%s", err, string(out))
