@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -66,7 +67,10 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 		message = formatImagePrompt(imagePath, content.GetCaption())
 	}
 
-	// Handle audio messages: download, transcribe via STT, forward text
+	// Handle audio messages: download, transcribe via STT, forward text.
+	// Supports chunked uploads: client sends voice.wav (intermediate) and
+	// voice_last.wav (final). Intermediate chunks accumulate; the final
+	// chunk triggers concatenation and transcription of the full recording.
 	if content.MsgType == event.MsgAudio {
 		if b.sttURL == "" {
 			log.Printf("Audio message received but no stt_url configured — ignoring")
@@ -79,8 +83,60 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 			b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to download audio: %v", err))
 			return
 		}
-		log.Printf("Transcribing audio from %s via %s", audioPath, b.sttURL)
-		transcription, err := transcribeAudio(b.sttURL, audioPath)
+
+		origName := content.GetFileName()
+		isChunk := origName == "voice.wav"
+		isFinalChunk := origName == "voice_last.wav"
+
+		if isChunk {
+			// Intermediate chunk — accumulate and wait for more
+			existing, _ := b.audioChunks.Load(roomID)
+			var chunks []string
+			if existing != nil {
+				chunks = existing.([]string)
+			}
+			chunks = append(chunks, audioPath)
+			b.audioChunks.Store(roomID, chunks)
+			log.Printf("Accumulated audio chunk %d for room %s: %s", len(chunks), roomID, audioPath)
+			return
+		}
+
+		// Determine the file to transcribe
+		transcribePath := audioPath
+
+		if isFinalChunk {
+			// Final chunk — collect all accumulated chunks + this one, concatenate
+			existing, _ := b.audioChunks.LoadAndDelete(roomID)
+			var chunks []string
+			if existing != nil {
+				chunks = existing.([]string)
+			}
+			chunks = append(chunks, audioPath)
+
+			if len(chunks) > 1 {
+				combinedPath := audioPath + ".combined.wav"
+				log.Printf("Concatenating %d audio chunks for room %s", len(chunks), roomID)
+				if err := concatAudioFiles(chunks, combinedPath); err != nil {
+					log.Printf("Failed to concatenate audio chunks: %v", err)
+					b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to concatenate audio: %v", err))
+					// Clean up chunk files on failure
+					for _, p := range chunks[:len(chunks)-1] {
+						os.Remove(p)
+					}
+					return
+				}
+				// Clean up individual chunk files
+				for _, p := range chunks {
+					os.Remove(p)
+				}
+				transcribePath = combinedPath
+			}
+			// Single chunk (only voice_last.wav, no preceding voice.wav) —
+			// just transcribe it directly, transcribePath is already audioPath
+		}
+
+		log.Printf("Transcribing audio from %s via %s", transcribePath, b.sttURL)
+		transcription, err := transcribeAudio(b.sttURL, transcribePath)
 		if err != nil {
 			log.Printf("Failed to transcribe audio: %v", err)
 			b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to transcribe audio: %v", err))

@@ -133,6 +133,11 @@ type Bridge struct {
 	typingReadDelay  time.Duration // delay before sending read receipt (default 800ms)
 	typingStartDelay time.Duration // delay between read receipt and typing=true (default 200ms)
 
+	// Audio chunk accumulation for multi-part voice messages.
+	// Maps room ID → slice of saved file paths. Chunks named "voice.wav"
+	// accumulate here; "voice_last.wav" triggers concat + transcription.
+	audioChunks sync.Map // map[id.RoomID][]string
+
 	// Graceful drain support
 	draining          atomic.Bool
 	activeInvocations sync.WaitGroup

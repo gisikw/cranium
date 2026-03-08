@@ -8,7 +8,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -70,4 +72,29 @@ func transcribeAudio(sttURL, filePath string) (string, error) {
 	}
 
 	return result.Text, nil
+}
+
+// concatAudioFiles joins multiple audio files into a single WAV using ffmpeg's
+// concat demuxer. Returns the path to the combined file. Caller is responsible
+// for cleaning up both the output file and the input chunks.
+func concatAudioFiles(paths []string, outPath string) error {
+	// Build ffmpeg concat file list
+	var list strings.Builder
+	for _, p := range paths {
+		fmt.Fprintf(&list, "file '%s'\n", p)
+	}
+
+	listPath := outPath + ".txt"
+	if err := os.WriteFile(listPath, []byte(list.String()), 0644); err != nil {
+		return fmt.Errorf("write concat list: %w", err)
+	}
+	defer os.Remove(listPath)
+
+	cmd := exec.Command("ffmpeg", "-y", "-f", "concat", "-safe", "0",
+		"-i", listPath, "-c", "copy", outPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg concat: %w\n%s", err, string(out))
+	}
+	return nil
 }
