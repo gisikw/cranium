@@ -146,10 +146,9 @@ defmodule Cranium.Epoch do
     msg_map = normalize_message(message)
     text = msg_map[:text] || ""
 
-    # 1. Persist user message
-    Cranium.Store.append_message(state.conversation_id, %{role: :user, content: text})
-
-    # 2. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
+    # 1. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
+    #    Note: persist AFTER assembly so HistoryManager doesn't fetch the current
+    #    message from history (it appends the enriched version with system-reminders).
     normalized = %{
       conversation_id: state.conversation_id,
       text: text,
@@ -157,7 +156,7 @@ defmodule Cranium.Epoch do
     }
 
     pipeline_ctx = %{
-      identity: msg_map[:system] || "",
+      identity: msg_map[:system],
       projects_dir: "~/Projects",
       mode: Map.get(msg_map, :mode, :text),
       history_window: 50,
@@ -165,6 +164,9 @@ defmodule Cranium.Epoch do
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
+
+    # 2. Persist raw user message (after context assembly, before inference)
+    Cranium.Store.append_message(state.conversation_id, %{role: :user, content: text})
 
     # 3. Map pipeline output to Agent context
     context = %{

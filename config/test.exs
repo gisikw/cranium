@@ -12,4 +12,6 @@ config :cranium, :backends,
   tts: Cranium.Backend.TTS.Mock,
   llm: Cranium.Backend.LLM.Mock
 
+config :cranium, :http_port, 4099
+
 config :logger, level: :warning

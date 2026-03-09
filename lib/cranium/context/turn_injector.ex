@@ -8,6 +8,8 @@ defmodule Cranium.Context.TurnInjector do
 
   ## Injections
 
+  - **Handoff** — on the first turn of a fresh epoch, inject the handoff
+    from the previous epoch (if one exists) as a `<room-handoff>` block
   - **Time-gap reminder** — if >30 minutes since last invocation, inject
     elapsed time, current time, and optionally the cross-conversation
     landscape
@@ -51,12 +53,28 @@ defmodule Cranium.Context.TurnInjector do
   @spec build_injections(map(), map()) :: [String.t()]
   def build_injections(message, context) do
     []
+    |> maybe_add_handoff(message, context)
     |> maybe_add_time_gap(message, context)
     |> maybe_add_saturation(message, context)
     |> maybe_add_interrupted(message, context)
     |> maybe_add_resume(message, context)
     |> Enum.reverse()
   end
+
+  defp maybe_add_handoff(injections, %{is_fresh: true} = message, _context) do
+    case Cranium.Store.get_latest_handoff(message.conversation_id) do
+      {:ok, content} ->
+        reminder =
+          "<room-handoff>\n#{content}\n</room-handoff>"
+
+        [reminder | injections]
+
+      :not_found ->
+        injections
+    end
+  end
+
+  defp maybe_add_handoff(injections, _message, _context), do: injections
 
   defp maybe_add_time_gap(injections, _message, context) do
     last_invoked = get_in(context, [:epoch, :last_invoked_at])
