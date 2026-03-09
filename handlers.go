@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -69,8 +68,8 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 
 	// Handle audio messages: download, transcribe via STT, forward text.
 	// Supports chunked uploads: client sends voice.wav (intermediate) and
-	// voice_last.wav (final). Intermediate chunks accumulate; the final
-	// chunk triggers concatenation and transcription of the full recording.
+	// voice_last.wav (final). Each chunk fires off transcription immediately;
+	// the final chunk collects all results and joins the text for Claude.
 	if content.MsgType == event.MsgAudio {
 		if b.sttURL == "" {
 			log.Printf("Audio message received but no stt_url configured — ignoring")
@@ -89,59 +88,57 @@ func (b *Bridge) handleMessage(ctx context.Context, evt *event.Event) {
 		isFinalChunk := origName == "voice_last.wav"
 
 		if isChunk {
-			// Intermediate chunk — accumulate and wait for more
+			// Intermediate chunk — fire off transcription and accumulate the future
+			ch := transcribeAudioAsync(b.sttURL, audioPath)
 			existing, _ := b.audioChunks.Load(roomID)
-			var chunks []string
+			var pending []chan transcriptionResult
 			if existing != nil {
-				chunks = existing.([]string)
+				pending = existing.([]chan transcriptionResult)
 			}
-			chunks = append(chunks, audioPath)
-			b.audioChunks.Store(roomID, chunks)
-			log.Printf("Accumulated audio chunk %d for room %s: %s", len(chunks), roomID, audioPath)
+			pending = append(pending, ch)
+			b.audioChunks.Store(roomID, pending)
+			log.Printf("Fired async transcription for chunk %d in room %s: %s", len(pending), roomID, audioPath)
 			return
 		}
 
-		// Determine the file to transcribe
-		transcribePath := audioPath
+		var transcription string
 
 		if isFinalChunk {
-			// Final chunk — collect all accumulated chunks + this one, concatenate
-			existing, _ := b.audioChunks.LoadAndDelete(roomID)
-			var chunks []string
-			if existing != nil {
-				chunks = existing.([]string)
-			}
-			chunks = append(chunks, audioPath)
+			// Final chunk — fire its transcription, then collect all results in order
+			finalCh := transcribeAudioAsync(b.sttURL, audioPath)
 
-			if len(chunks) > 1 {
-				combinedPath := audioPath + ".combined.mp3"
-				log.Printf("Concatenating %d audio chunks for room %s", len(chunks), roomID)
-				if err := concatAudioFiles(chunks, combinedPath); err != nil {
-					log.Printf("Failed to concatenate audio chunks: %v", err)
-					b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to concatenate audio: %v", err))
-					// Clean up chunk files on failure
-					for _, p := range chunks[:len(chunks)-1] {
-						os.Remove(p)
-					}
+			existing, _ := b.audioChunks.LoadAndDelete(roomID)
+			var pending []chan transcriptionResult
+			if existing != nil {
+				pending = existing.([]chan transcriptionResult)
+			}
+			pending = append(pending, finalCh)
+
+			log.Printf("Collecting %d transcription results for room %s", len(pending), roomID)
+			var parts []string
+			for i, ch := range pending {
+				result := <-ch
+				if result.Err != nil {
+					log.Printf("Transcription chunk %d failed: %v", i, result.Err)
+					b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to transcribe audio chunk %d: %v", i+1, result.Err))
 					return
 				}
-				// Clean up individual chunk files
-				for _, p := range chunks {
-					os.Remove(p)
+				if result.Text != "" {
+					parts = append(parts, result.Text)
 				}
-				transcribePath = combinedPath
 			}
-			// Single chunk (only voice_last.wav, no preceding voice.wav) —
-			// just transcribe it directly, transcribePath is already audioPath
+			transcription = strings.Join(parts, " ")
+		} else {
+			// Non-chunked audio (e.g. Element voice message) — transcribe synchronously
+			log.Printf("Transcribing audio from %s via %s", audioPath, b.sttURL)
+			transcription, err = transcribeAudio(b.sttURL, audioPath)
+			if err != nil {
+				log.Printf("Failed to transcribe audio: %v", err)
+				b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to transcribe audio: %v", err))
+				return
+			}
 		}
 
-		log.Printf("Transcribing audio from %s via %s", transcribePath, b.sttURL)
-		transcription, err := transcribeAudio(b.sttURL, transcribePath)
-		if err != nil {
-			log.Printf("Failed to transcribe audio: %v", err)
-			b.sendMessage(ctx, roomID, fmt.Sprintf("Failed to transcribe audio: %v", err))
-			return
-		}
 		if transcription != "" {
 			b.sendThreadReply(ctx, roomID, evt.ID, formatTranscriptEcho(transcription))
 		}

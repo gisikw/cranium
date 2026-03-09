@@ -134,9 +134,9 @@ type Bridge struct {
 	typingStartDelay time.Duration // delay between read receipt and typing=true (default 200ms)
 
 	// Audio chunk accumulation for multi-part voice messages.
-	// Maps room ID → slice of saved file paths. Chunks named "voice.wav"
-	// accumulate here; "voice_last.wav" triggers concat + transcription.
-	audioChunks sync.Map // map[id.RoomID][]string
+	// Each chunk fires off transcription immediately; results are collected
+	// when voice_last.wav arrives.
+	audioChunks sync.Map // map[id.RoomID][]chan transcriptionResult
 
 	// Graceful drain support
 	draining          atomic.Bool

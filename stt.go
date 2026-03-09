@@ -8,9 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -74,28 +72,21 @@ func transcribeAudio(sttURL, filePath string) (string, error) {
 	return result.Text, nil
 }
 
-// concatAudioFiles joins multiple audio files into a single MP3 using ffmpeg's
-// concat demuxer. Encodes to MP3 VBR quality 5 (~130 kbps) to keep file size
-// small for the transcription upload. Caller is responsible for cleaning up
-// both the output file and the input chunks.
-func concatAudioFiles(paths []string, outPath string) error {
-	// Build ffmpeg concat file list
-	var list strings.Builder
-	for _, p := range paths {
-		fmt.Fprintf(&list, "file '%s'\n", p)
-	}
+// transcriptionResult carries the outcome of an async transcription.
+type transcriptionResult struct {
+	Text string
+	Err  error
+}
 
-	listPath := outPath + ".txt"
-	if err := os.WriteFile(listPath, []byte(list.String()), 0644); err != nil {
-		return fmt.Errorf("write concat list: %w", err)
-	}
-	defer os.Remove(listPath)
-
-	cmd := exec.Command("ffmpeg", "-y", "-f", "concat", "-safe", "0",
-		"-i", listPath, "-codec:a", "libmp3lame", "-qscale:a", "5", outPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ffmpeg concat: %w\n%s", err, string(out))
-	}
-	return nil
+// transcribeAudioAsync fires off a transcription in a goroutine and returns
+// a channel that will receive the result. The audio file is cleaned up after
+// transcription completes.
+func transcribeAudioAsync(sttURL, filePath string) chan transcriptionResult {
+	ch := make(chan transcriptionResult, 1)
+	go func() {
+		text, err := transcribeAudio(sttURL, filePath)
+		os.Remove(filePath)
+		ch <- transcriptionResult{Text: text, Err: err}
+	}()
+	return ch
 }
