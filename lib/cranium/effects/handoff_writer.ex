@@ -9,32 +9,27 @@ defmodule Cranium.Effects.HandoffWriter do
   - Open threads / incomplete work
   - Any context the next epoch should know
 
-  The handoff is stored via Store and injected into the next epoch's
-  system prompt by PromptBuilder.
+  The handoff is stored via Store and injected as a turn-level
+  `<room-handoff>` block by TurnInjector on the first turn of the
+  next epoch.
 
   ## Generation
 
-  The handoff prompt asks the model to summarize the conversation without
-  tools, in a concise format. This is a separate inference call that
-  doesn't affect the main epoch's context window.
+  The handoff prompt is loaded from an external file (Flatnotes) so it
+  can be iterated on without code changes. A minimal fallback is used
+  if the file is missing. This is a separate inference call that doesn't
+  affect the main epoch's context window.
   """
 
   require Logger
 
-  @handoff_prompt """
-  Summarize this conversation for the next epoch. Include:
-  - What was being worked on
-  - Key decisions made
-  - Open threads or incomplete work
-  - Any context the next epoch should have
-
-  Be concise (under 500 words). Write in past tense. Use markdown.
-  """
+  @handoff_prompt_path "/home/dev/Projects/exocortex/notes/Handoff Instructions.md"
 
   @spec generate(String.t()) :: :ok | {:error, term()}
   def generate(conversation_id) do
     Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
+    prompt = load_prompt()
     backend = Application.get_env(:cranium, :backends)[:llm]
 
     {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 100)
@@ -44,7 +39,7 @@ defmodule Cranium.Effects.HandoffWriter do
         %{"role" => to_string(msg[:role] || "user"), "content" => msg[:content] || ""}
       end)
 
-    messages = messages ++ [%{"role" => "user", "content" => @handoff_prompt}]
+    messages = messages ++ [%{"role" => "user", "content" => prompt}]
 
     case backend.stream_chat(messages, system: "", tools: []) do
       {:ok, stream_pid} ->
@@ -66,6 +61,21 @@ defmodule Cranium.Effects.HandoffWriter do
         )
 
         {:error, reason}
+    end
+  end
+
+  defp load_prompt do
+    case File.read(@handoff_prompt_path) do
+      {:ok, content} ->
+        String.trim(content)
+
+      {:error, reason} ->
+        Logger.warning("Failed to load handoff prompt, using fallback",
+          path: @handoff_prompt_path,
+          reason: reason
+        )
+
+        "Summarize this conversation for the next epoch. Be concise (under 500 words). Write in past tense. Use markdown."
     end
   end
 
