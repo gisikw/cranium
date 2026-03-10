@@ -68,22 +68,42 @@ defmodule Cranium.Transport.HTTP do
 
     Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
 
-    # Run inference asynchronously — Egress handles manifest population
-    # and TTS warming incrementally. Task just schedules cleanup.
-    Task.start(fn ->
-      case Cranium.Epoch.submit(epoch_pid, message) do
-        {:ok, _result} ->
-          Cranium.TTS.Cache.schedule_cleanup(stream_id)
+    # Check for commands before dispatching to inference
+    case text do
+      "!clear" ->
+        Cranium.Epoch.clear(epoch_pid)
+        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
+        Cranium.Manifest.complete(stream_id)
 
-        {:error, reason} ->
-          Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
-          Cranium.Manifest.complete(stream_id)
-      end
-    end)
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "clear"}))
 
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
+      "!cancel" ->
+        Cranium.Epoch.cancel(epoch_pid)
+        Cranium.Manifest.complete(stream_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "cancel"}))
+
+      _ ->
+        # Run inference asynchronously
+        Task.start(fn ->
+          case Cranium.Epoch.submit(epoch_pid, message) do
+            {:ok, _result} ->
+              Cranium.TTS.Cache.schedule_cleanup(stream_id)
+
+            {:error, reason} ->
+              Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
+              Cranium.Manifest.complete(stream_id)
+          end
+        end)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
+    end
   end
 
   get "/v1/streams/:id/manifest" do
@@ -221,6 +241,25 @@ defmodule Cranium.Transport.HTTP do
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(400, Jason.encode!(%{"error" => "missing or invalid last_seq"}))
+    end
+  end
+
+  post "/v1/clear" do
+    conversation_id = conn.body_params["conversation_id"] || "default"
+
+    case Cranium.Epoch.lookup(conversation_id) do
+      {:ok, pid} ->
+        Cranium.Epoch.clear(pid)
+        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
+
+      :not_found ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(404, Jason.encode!(%{"error" => "no active epoch"}))
     end
   end
 
