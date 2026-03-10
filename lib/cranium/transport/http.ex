@@ -206,6 +206,11 @@ defmodule Cranium.Transport.HTTP do
                     conn
                     |> put_resp_content_type("application/json")
                     |> send_resp(404, Jason.encode!(%{"error" => "take not found"}))
+
+                  {:error, :already_complete} ->
+                    conn
+                    |> put_resp_content_type("application/json")
+                    |> send_resp(409, Jason.encode!(%{"error" => "take already complete"}))
                 end
 
               {:error, reason} ->
