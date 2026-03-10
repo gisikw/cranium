@@ -147,8 +147,8 @@ defmodule Cranium.Input.TakeRegistry do
     received = MapSet.new(Map.keys(chunks))
 
     if MapSet.equal?(expected, received) do
-      audio = chunks |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)) |> IO.iodata_to_binary()
-      {:complete, %{audio: audio, stream_id: take.stream_id, conversation_id: take.conversation_id, disposition: take.disposition}}
+      text = chunks |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)) |> Enum.join(" ")
+      {:complete, %{text: text, stream_id: take.stream_id, conversation_id: take.conversation_id, disposition: take.disposition}}
     else
       :incomplete
     end

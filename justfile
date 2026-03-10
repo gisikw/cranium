@@ -51,3 +51,6 @@ nuke-conversation conversation_id:
 # Restart the cranium-v2 systemd service
 restart:
     fort ratched systemd '{"unit":"cranium-v2","action":"restart"}'
+
+stop:
+    fort ratched systemd '{"unit":"cranium-v2","action":"stop"}'
