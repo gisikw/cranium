@@ -44,7 +44,7 @@ defmodule Cranium.Application do
       Cranium.Egress,
 
       # Async effects (handoffs, summaries)
-      {DynamicSupervisor, name: Cranium.Effects.Supervisor, strategy: :one_for_one},
+      {Task.Supervisor, name: Cranium.Effects.Supervisor},
 
       # Epoch management
       {Registry, keys: :unique, name: Cranium.Epoch.Registry},
