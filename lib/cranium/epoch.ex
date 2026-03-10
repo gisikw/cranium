@@ -122,15 +122,24 @@ defmodule Cranium.Epoch do
   @impl true
   def init(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
-
     Logger.metadata(conversation_id: conversation_id)
-    Logger.info("Epoch started")
 
-    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+    {epoch_id, turn_count} =
+      case Cranium.Store.get_epoch(conversation_id) do
+        {:ok, %{id: id, status: status, turn_count: tc}} when status != "cleared" ->
+          Logger.info("Epoch resumed", epoch_id: id, turn_count: tc)
+          {id, tc}
+
+        _ ->
+          {:ok, id} = Cranium.Store.create_epoch(conversation_id)
+          Logger.info("Epoch started", epoch_id: id)
+          {id, 0}
+      end
 
     state = %__MODULE__{
       conversation_id: conversation_id,
       epoch_id: epoch_id,
+      turn_count: turn_count,
       transport: Keyword.get(opts, :transport),
       transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
