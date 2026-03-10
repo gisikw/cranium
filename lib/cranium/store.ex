@@ -45,16 +45,21 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:get_epoch, conversation_id})
   end
 
-  @spec upsert_epoch(String.t(), map()) :: :ok
-  def upsert_epoch(conversation_id, attrs) do
-    GenServer.call(__MODULE__, {:upsert_epoch, conversation_id, attrs})
+  @spec create_epoch(String.t(), map()) :: {:ok, String.t()}
+  def create_epoch(conversation_id, attrs \\ %{}) do
+    GenServer.call(__MODULE__, {:create_epoch, conversation_id, attrs})
+  end
+
+  @spec update_epoch(String.t(), map()) :: :ok
+  def update_epoch(epoch_id, attrs) do
+    GenServer.call(__MODULE__, {:update_epoch, epoch_id, attrs})
   end
 
   # Message operations
 
-  @spec append_message(String.t(), map()) :: :ok
-  def append_message(conversation_id, message) do
-    GenServer.call(__MODULE__, {:append_message, conversation_id, message})
+  @spec append_message(String.t(), String.t(), map()) :: :ok
+  def append_message(conversation_id, epoch_id, message) do
+    GenServer.call(__MODULE__, {:append_message, conversation_id, epoch_id, message})
   end
 
   @spec get_messages(String.t(), keyword()) :: {:ok, [map()]}
@@ -97,7 +102,13 @@ defmodule Cranium.Store do
   @impl true
   def handle_call({:get_epoch, conversation_id}, _from, state) do
     result =
-      case Repo.get_by(Epoch, conversation_id: conversation_id) do
+      from(e in Epoch,
+        where: e.conversation_id == ^conversation_id,
+        order_by: [desc: e.inserted_at],
+        limit: 1
+      )
+      |> Repo.one()
+      |> case do
         nil -> :not_found
         epoch -> {:ok, epoch_to_map(epoch)}
       end
@@ -106,29 +117,32 @@ defmodule Cranium.Store do
   end
 
   @impl true
-  def handle_call({:upsert_epoch, conversation_id, attrs}, _from, state) do
+  def handle_call({:create_epoch, conversation_id, attrs}, _from, state) do
+    epoch =
+      %Epoch{}
+      |> Epoch.changeset(Map.put(attrs, :conversation_id, conversation_id))
+      |> Repo.insert!()
+
+    {:reply, {:ok, epoch.id}, state}
+  end
+
+  @impl true
+  def handle_call({:update_epoch, epoch_id, attrs}, _from, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case Repo.get_by(Epoch, conversation_id: conversation_id) do
-      nil ->
-        %Epoch{}
-        |> Epoch.changeset(Map.put(attrs, :conversation_id, conversation_id))
-        |> Repo.insert!()
-
-      existing ->
-        existing
-        |> Epoch.changeset(Map.put(attrs, :updated_at, now))
-        |> Repo.update!()
-    end
+    Repo.get!(Epoch, epoch_id)
+    |> Epoch.changeset(Map.put(attrs, :updated_at, now))
+    |> Repo.update!()
 
     {:reply, :ok, state}
   end
 
   @impl true
-  def handle_call({:append_message, conversation_id, message}, _from, state) do
+  def handle_call({:append_message, conversation_id, epoch_id, message}, _from, state) do
     %Message{}
     |> Message.changeset(%{
       conversation_id: conversation_id,
+      epoch_id: epoch_id,
       role: to_string(message[:role] || "user"),
       content: message[:content] || ""
     })
@@ -140,13 +154,13 @@ defmodule Cranium.Store do
   @impl true
   def handle_call({:get_messages, conversation_id, opts}, _from, state) do
     limit = Keyword.get(opts, :limit)
-    since = Keyword.get(opts, :since)
+    epoch_id = Keyword.get(opts, :epoch_id)
 
     base = from(m in Message, where: m.conversation_id == ^conversation_id)
 
     base =
-      case since do
-        %DateTime{} = ts -> from(m in base, where: m.inserted_at >= ^ts)
+      case epoch_id do
+        id when is_binary(id) -> from(m in base, where: m.epoch_id == ^id)
         _ -> base
       end
 
@@ -223,6 +237,7 @@ defmodule Cranium.Store do
 
   defp epoch_to_map(%Epoch{} = e) do
     %{
+      id: e.id,
       conversation_id: e.conversation_id,
       status: e.status,
       system_prompt: e.system_prompt,

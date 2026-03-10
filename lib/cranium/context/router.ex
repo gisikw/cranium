@@ -19,11 +19,18 @@ defmodule Cranium.Context.Router do
     working_dir = resolve_project_dir(conversation_id, projects_dir)
     epoch_state = Cranium.Store.get_epoch(conversation_id)
 
+    is_fresh =
+      case epoch_state do
+        :not_found -> true
+        {:ok, %{turn_count: 0}} -> true
+        _ -> false
+      end
+
     enriched =
       Map.merge(message, %{
         working_dir: working_dir,
         epoch_state: epoch_state,
-        is_fresh: epoch_state == :not_found
+        is_fresh: is_fresh
       })
 
     {:ok, enriched}

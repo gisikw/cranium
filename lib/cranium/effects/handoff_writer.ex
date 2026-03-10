@@ -25,14 +25,14 @@ defmodule Cranium.Effects.HandoffWriter do
 
   @handoff_prompt_path "/home/dev/Projects/exocortex/notes/Handoff Instructions.md"
 
-  @spec generate(String.t()) :: :ok | {:error, term()}
-  def generate(conversation_id) do
+  @spec generate(String.t(), String.t()) :: :ok | {:error, term()}
+  def generate(conversation_id, epoch_id) do
     Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
     prompt = load_prompt()
     backend = Application.get_env(:cranium, :backends)[:llm]
 
-    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 100)
+    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 100, epoch_id: epoch_id)
 
     messages =
       Enum.map(history, fn msg ->

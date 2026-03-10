@@ -32,13 +32,13 @@ defmodule Cranium.Effects do
 
   Spawns a Task under the Effects supervisor. Returns immediately.
   """
-  @spec generate_handoff(String.t()) :: :ok
-  def generate_handoff(conversation_id) do
+  @spec generate_handoff(String.t(), String.t()) :: :ok
+  def generate_handoff(conversation_id, epoch_id) do
     Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
       Cranium.Effects.Supervisor,
-      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id) end,
+      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id) end,
       restart: :temporary
     )
 

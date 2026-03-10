@@ -6,6 +6,7 @@ defmodule Cranium.Store.Message do
 
   schema "messages" do
     field :conversation_id, :string
+    field :epoch_id, :binary_id
     field :role, :string
     field :content, :string
 
@@ -14,7 +15,7 @@ defmodule Cranium.Store.Message do
 
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:conversation_id, :role, :content])
+    |> cast(attrs, [:conversation_id, :epoch_id, :role, :content])
     |> validate_required([:conversation_id, :role, :content])
   end
 end

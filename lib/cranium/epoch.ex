@@ -21,23 +21,23 @@ defmodule Cranium.Epoch do
 
   defstruct [
     :conversation_id,
+    :epoch_id,
     :transport,
     :transport_meta,
     :agent_pid,
     status: :idle,
     stream_id: nil,
-    started_at: nil,
     turn_count: 0
   ]
 
   @type t :: %__MODULE__{
           conversation_id: String.t(),
+          epoch_id: String.t() | nil,
           transport: module() | nil,
           transport_meta: map() | nil,
           agent_pid: pid() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
-          started_at: DateTime.t() | nil,
           turn_count: non_neg_integer()
         }
 
@@ -126,14 +126,14 @@ defmodule Cranium.Epoch do
     Logger.metadata(conversation_id: conversation_id)
     Logger.info("Epoch started")
 
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
     state = %__MODULE__{
       conversation_id: conversation_id,
+      epoch_id: epoch_id,
       transport: Keyword.get(opts, :transport),
-      transport_meta: Keyword.get(opts, :transport_meta, %{}),
-      started_at: DateTime.utc_now()
+      transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
-
-    Cranium.Store.upsert_epoch(conversation_id, %{status: "active", turn_count: 0})
 
     {:ok, state}
   end
@@ -161,13 +161,13 @@ defmodule Cranium.Epoch do
       mode: Map.get(msg_map, :mode, :text),
       history_window: 50,
       now: DateTime.utc_now(),
-      epoch_started_at: state.started_at
+      epoch_id: state.epoch_id
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
 
     # 2. Persist raw user message (after context assembly, before inference)
-    Cranium.Store.append_message(state.conversation_id, %{role: :user, content: text})
+    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{role: :user, content: text})
 
     # 3. Map pipeline output to Agent context
     context = %{
@@ -188,7 +188,7 @@ defmodule Cranium.Epoch do
     egress_pid = Process.whereis(Cranium.Egress)
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
-    Cranium.Store.upsert_epoch(state.conversation_id, %{status: "inferring"})
+    Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
 
     # 5. Persist assistant response and track saturation
@@ -196,7 +196,7 @@ defmodule Cranium.Epoch do
       case result do
         {:ok, %{output: output, usage: usage}} ->
           if output != "" do
-            Cranium.Store.append_message(state.conversation_id, %{
+            Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
               role: :assistant,
               content: output
             })
@@ -205,7 +205,7 @@ defmodule Cranium.Epoch do
           saturation = compute_saturation(usage)
           new_count = state.turn_count + 1
 
-          Cranium.Store.upsert_epoch(state.conversation_id, %{
+          Cranium.Store.update_epoch(state.epoch_id, %{
             status: "active",
             saturation: saturation,
             turn_count: new_count
@@ -214,7 +214,7 @@ defmodule Cranium.Epoch do
           %{state | turn_count: new_count}
 
         _ ->
-          Cranium.Store.upsert_epoch(state.conversation_id, %{status: "active"})
+          Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
           state
       end
 
@@ -230,9 +230,11 @@ defmodule Cranium.Epoch do
   def handle_call(:clear, _from, state) do
     Logger.info("Clearing epoch", stage: :epoch)
 
-    Cranium.Effects.generate_handoff(state.conversation_id)
+    Cranium.Store.update_epoch(state.epoch_id, %{status: "cleared"})
+    Cranium.Effects.generate_handoff(state.conversation_id, state.epoch_id)
 
-    state = %{state | status: :idle, stream_id: nil, started_at: DateTime.utc_now(), turn_count: 0}
+    {:ok, new_epoch_id} = Cranium.Store.create_epoch(state.conversation_id)
+    state = %{state | status: :idle, stream_id: nil, epoch_id: new_epoch_id, turn_count: 0}
     {:reply, :ok, state}
   end
 

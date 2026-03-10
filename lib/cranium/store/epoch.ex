@@ -18,6 +18,5 @@ defmodule Cranium.Store.Epoch do
     epoch
     |> cast(attrs, [:conversation_id, :status, :system_prompt, :turn_count, :saturation])
     |> validate_required([:conversation_id])
-    |> unique_constraint(:conversation_id)
   end
 end
