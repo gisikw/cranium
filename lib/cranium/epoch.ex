@@ -160,7 +160,8 @@ defmodule Cranium.Epoch do
       projects_dir: "~/Projects",
       mode: Map.get(msg_map, :mode, :text),
       history_window: 50,
-      now: DateTime.utc_now()
+      now: DateTime.utc_now(),
+      epoch_started_at: state.started_at
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
@@ -231,7 +232,7 @@ defmodule Cranium.Epoch do
 
     Cranium.Effects.generate_handoff(state.conversation_id)
 
-    state = %{state | status: :idle, stream_id: nil}
+    state = %{state | status: :idle, stream_id: nil, started_at: DateTime.utc_now(), turn_count: 0}
     {:reply, :ok, state}
   end
 

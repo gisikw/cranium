@@ -140,24 +140,23 @@ defmodule Cranium.Store do
   @impl true
   def handle_call({:get_messages, conversation_id, opts}, _from, state) do
     limit = Keyword.get(opts, :limit)
+    since = Keyword.get(opts, :since)
+
+    base = from(m in Message, where: m.conversation_id == ^conversation_id)
+
+    base =
+      case since do
+        %DateTime{} = ts -> from(m in base, where: m.inserted_at >= ^ts)
+        _ -> base
+      end
 
     messages =
       if limit do
-        # Get the N most recent messages, then re-sort chronologically
-        recent =
-          from(m in Message,
-            where: m.conversation_id == ^conversation_id,
-            order_by: [desc: m.inserted_at, desc: m.id],
-            limit: ^limit
-          )
-
+        recent = from(m in base, order_by: [desc: m.inserted_at, desc: m.id], limit: ^limit)
         from(m in subquery(recent), order_by: [asc: m.inserted_at, asc: m.id])
         |> Repo.all()
       else
-        from(m in Message,
-          where: m.conversation_id == ^conversation_id,
-          order_by: [asc: m.inserted_at, asc: m.id]
-        )
+        from(m in base, order_by: [asc: m.inserted_at, asc: m.id])
         |> Repo.all()
       end
 

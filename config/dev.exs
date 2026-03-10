@@ -16,4 +16,4 @@ if api_key = System.get_env("ANTHROPIC_API_KEY") do
     stt_url: System.get_env("STT_URL")
 end
 
-config :logger, level: :debug
+config :logger, level: :info

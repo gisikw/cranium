@@ -31,8 +31,9 @@ defmodule Cranium.Context.HistoryManager do
   def process(message, context) do
     conversation_id = message.conversation_id
     window = Map.get(context, :history_window, @default_window)
+    since = Map.get(context, :epoch_started_at)
 
-    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: window)
+    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: window, since: since)
 
     api_messages =
       history

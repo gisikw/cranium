@@ -37,6 +37,17 @@ db-reset:
 migrate name:
     mix ecto.gen.migration {{name}}
 
+# Seed a handoff for a conversation from a file
+seed-handoff conversation_id file:
+    mix seed_handoff {{conversation_id}} {{file}}
+
+# Delete all messages, epochs, and handoffs for a conversation
+nuke-conversation conversation_id:
+    psql -U postgres cranium_dev -c "DELETE FROM messages WHERE conversation_id = '{{conversation_id}}';"
+    psql -U postgres cranium_dev -c "DELETE FROM epochs WHERE conversation_id = '{{conversation_id}}';"
+    psql -U postgres cranium_dev -c "DELETE FROM handoffs WHERE conversation_id = '{{conversation_id}}';"
+    psql -U postgres cranium_dev -c "DELETE FROM summaries WHERE conversation_id = '{{conversation_id}}';"
+
 # Restart the cranium-v2 systemd service
 restart:
     fort ratched systemd '{"unit":"cranium-v2","action":"restart"}'
