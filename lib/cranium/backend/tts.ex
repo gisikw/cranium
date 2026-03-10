@@ -28,7 +28,7 @@ defmodule Cranium.Backend.TTS.Kokoro do
   @impl true
   def synthesize(text, opts) do
     url = Keyword.get(opts, :url) || tts_url()
-    voice = Keyword.get(opts, :voice, "af_heart")
+    voice = Keyword.get(opts, :voice, "af_bella")
     format = Keyword.get(opts, :format, "mp3")
 
     payload = %{text: text, voice: voice, format: format}

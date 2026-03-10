@@ -58,7 +58,7 @@ defmodule Cranium.Backend.LLM.Anthropic do
   alias Cranium.Backend.SSE
 
   @api_url "https://api.anthropic.com/v1/messages"
-  @default_model "claude-haiku-4-5-20251001"
+  @default_model "claude-opus-4-6"
   @default_max_tokens 8192
 
   @impl true
@@ -178,7 +178,8 @@ defmodule Cranium.Backend.LLM.Anthropic do
 
   defp dispatch_event(_caller, %{event: "content_block_start", data: data}, tool_acc) do
     case Jason.decode(data) do
-      {:ok, %{"index" => idx, "content_block" => %{"type" => "tool_use", "id" => id, "name" => name}}} ->
+      {:ok,
+       %{"index" => idx, "content_block" => %{"type" => "tool_use", "id" => id, "name" => name}}} ->
         Map.put(tool_acc, idx, %{id: id, name: name, input_json: ""})
 
       _ ->
@@ -211,10 +212,11 @@ defmodule Cranium.Backend.LLM.Anthropic do
       {:ok, %{"index" => idx}} ->
         case Map.pop(tool_acc, idx) do
           {%{id: id, name: name, input_json: json}, new_acc} ->
-            input = case Jason.decode(json) do
-              {:ok, parsed} -> parsed
-              _ -> %{}
-            end
+            input =
+              case Jason.decode(json) do
+                {:ok, parsed} -> parsed
+                _ -> %{}
+              end
 
             send(caller, {:llm_tool_use, %{id: id, name: name, input: input}})
             new_acc

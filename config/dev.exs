@@ -11,7 +11,7 @@ config :cranium, Cranium.Store.Repo,
 if api_key = System.get_env("ANTHROPIC_API_KEY") do
   config :cranium, :backends,
     anthropic_api_key: api_key,
-    anthropic_model: System.get_env("ANTHROPIC_MODEL") || "claude-haiku-4-5-20251001",
+    anthropic_model: System.get_env("ANTHROPIC_MODEL") || "claude-opus-4-6",
     tts_url: System.get_env("TTS_URL"),
     stt_url: System.get_env("STT_URL")
 end
