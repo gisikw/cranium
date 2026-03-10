@@ -4,8 +4,11 @@ defmodule Cranium.Context.PromptBuilder do
 
   Uses the identity document passed in via `context.identity` (e.g., from
   the transport layer). Falls back to loading EXO.md from disk when no
-  identity is provided. Kept as a dedicated module for future dynamic
-  prompt assembly (handoffs, cross-conversation landscape, etc.).
+  identity is provided.
+
+  On fresh epochs, appends the handoff from the previous epoch as a
+  `<room-handoff>` block. The handoff is identity — who you were last
+  session — not per-turn context, so it lives in the system prompt.
   """
 
   require Logger
@@ -14,7 +17,15 @@ defmodule Cranium.Context.PromptBuilder do
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
-    system_prompt = resolve_identity(context)
+    identity = resolve_identity(context)
+    handoff = resolve_handoff(message)
+
+    system_prompt =
+      case handoff do
+        nil -> identity
+        content -> identity <> "\n\n<room-handoff>\n" <> content <> "\n</room-handoff>"
+      end
+
     {:ok, Map.put(message, :system_prompt, system_prompt)}
   end
 
@@ -38,4 +49,13 @@ defmodule Cranium.Context.PromptBuilder do
         ""
     end
   end
+
+  defp resolve_handoff(%{is_fresh: true, conversation_id: cid}) do
+    case Cranium.Store.get_latest_handoff(cid) do
+      {:ok, content} -> content
+      :not_found -> nil
+    end
+  end
+
+  defp resolve_handoff(_message), do: nil
 end

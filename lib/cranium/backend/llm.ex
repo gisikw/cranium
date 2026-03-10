@@ -85,7 +85,8 @@ defmodule Cranium.Backend.LLM.Anthropic do
         model: model,
         max_tokens: max_tokens,
         messages: messages,
-        stream: true
+        stream: true,
+        cache_control: %{type: "ephemeral", ttl: "1h"}
       }
       |> maybe_add(:system, system)
       |> maybe_add(:tools, tools)

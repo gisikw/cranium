@@ -9,9 +9,9 @@ defmodule Cranium.Effects.HandoffWriter do
   - Open threads / incomplete work
   - Any context the next epoch should know
 
-  The handoff is stored via Store and injected as a turn-level
-  `<room-handoff>` block by TurnInjector on the first turn of the
-  next epoch.
+  The handoff is stored via Store and appended to the system prompt
+  by PromptBuilder as a `<room-handoff>` block on the first turn of
+  the next epoch.
 
   ## Generation
 
@@ -46,6 +46,12 @@ defmodule Cranium.Effects.HandoffWriter do
         case collect_text(stream_pid) do
           {:ok, text} ->
             Cranium.Store.save_handoff(conversation_id, text)
+
+            Logger.info("Handoff complete",
+              conversation_id: conversation_id,
+              stage: :effects,
+              length: String.length(text)
+            )
 
           {:error, reason} ->
             Logger.error("Handoff generation failed: #{inspect(reason)}",

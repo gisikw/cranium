@@ -30,7 +30,13 @@ defmodule Cranium.Agent.ToolExecutor do
 
   @spec execute(module(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def execute(module, input, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    timeout =
+      cond do
+        Keyword.has_key?(opts, :timeout) -> Keyword.get(opts, :timeout)
+        function_exported?(module, :timeout, 0) -> module.timeout()
+        true -> @default_timeout
+      end
+
     label = if function_exported?(module, :name, 0), do: module.name(), else: inspect(module)
     Logger.info("Executing tool: #{label}", stage: :agent)
 

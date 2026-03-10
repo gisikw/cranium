@@ -155,7 +155,9 @@ defmodule Cranium.Agent do
         Logger.info("Inference complete",
           output_length: length(final_state.partial_output),
           input_tokens: final_state.usage[:input_tokens],
-          output_tokens: final_state.usage[:output_tokens]
+          output_tokens: final_state.usage[:output_tokens],
+          cache_read: final_state.usage[:cache_read_input_tokens],
+          cache_write: final_state.usage[:cache_creation_input_tokens]
         )
 
         reply = %{
@@ -300,7 +302,12 @@ defmodule Cranium.Agent do
   defp merge_usage(existing, new) do
     %{
       input_tokens: (existing[:input_tokens] || 0) + (new[:input_tokens] || 0),
-      output_tokens: (existing[:output_tokens] || 0) + (new[:output_tokens] || 0)
+      output_tokens: (existing[:output_tokens] || 0) + (new[:output_tokens] || 0),
+      cache_creation_input_tokens:
+        (existing[:cache_creation_input_tokens] || 0) +
+          (new[:cache_creation_input_tokens] || 0),
+      cache_read_input_tokens:
+        (existing[:cache_read_input_tokens] || 0) + (new[:cache_read_input_tokens] || 0)
     }
   end
 
