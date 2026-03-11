@@ -33,7 +33,7 @@ defmodule Cranium.Agent.Tools.Subagent do
     # so we still get the real exit code.
     wrapper = "exec claude #{Enum.map_join(args, " ", &shell_escape/1)} </dev/null"
 
-    case System.cmd("sh", ["-c", wrapper], stderr_to_stdout: true, env: [{"CLAUDECODE", nil}]) do
+    case System.cmd("sh", ["-c", wrapper], stderr_to_stdout: true, env: [{"CLAUDECODE", nil}, {"ANTHROPIC_API_KEY", nil}]) do
       {output, 0} ->
         Logger.info("Subagent completed", exit_code: 0, output_bytes: byte_size(output))
         {:ok, extract_result(output)}
