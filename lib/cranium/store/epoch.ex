@@ -10,13 +10,23 @@ defmodule Cranium.Store.Epoch do
     field :system_prompt, :string
     field :turn_count, :integer, default: 0
     field :saturation, :float, default: 0.0
+    field :handoff, :string
+    field :last_reminder_bucket, :integer, default: 0
 
     timestamps(type: :utc_datetime)
   end
 
   def changeset(epoch, attrs) do
     epoch
-    |> cast(attrs, [:conversation_id, :status, :system_prompt, :turn_count, :saturation])
+    |> cast(attrs, [
+      :conversation_id,
+      :status,
+      :system_prompt,
+      :turn_count,
+      :saturation,
+      :handoff,
+      :last_reminder_bucket
+    ])
     |> validate_required([:conversation_id])
   end
 end

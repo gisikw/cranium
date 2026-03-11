@@ -45,7 +45,7 @@ defmodule Cranium.Effects.HandoffWriter do
       {:ok, stream_pid} ->
         case collect_text(stream_pid) do
           {:ok, text} ->
-            Cranium.Store.save_handoff(conversation_id, text)
+            Cranium.Store.save_handoff(epoch_id, text)
 
             Logger.info("Handoff complete",
               conversation_id: conversation_id,

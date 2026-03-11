@@ -18,7 +18,7 @@ defmodule Cranium.Store do
 
   - **Epochs** — per-conversation state (status, saturation, turn count)
   - **Messages** — conversation history (role, content)
-  - **Handoffs** — conversation handoff documents for epoch continuity
+  - **Handoffs** — stored as a text field on the epoch row
   - **Summaries** — cross-conversation awareness cache
   """
 
@@ -28,7 +28,7 @@ defmodule Cranium.Store do
 
   import Ecto.Query
 
-  alias Cranium.Store.{Repo, Epoch, Message, Handoff, Summary}
+  alias Cranium.Store.{Repo, Epoch, Message, Summary}
 
   defstruct locks: %{}
 
@@ -70,13 +70,20 @@ defmodule Cranium.Store do
   # Handoff operations
 
   @spec save_handoff(String.t(), String.t()) :: :ok
-  def save_handoff(conversation_id, content) do
-    GenServer.call(__MODULE__, {:save_handoff, conversation_id, content})
+  def save_handoff(epoch_id, content) do
+    GenServer.call(__MODULE__, {:save_handoff, epoch_id, content})
   end
 
   @spec get_latest_handoff(String.t()) :: {:ok, String.t()} | :not_found
   def get_latest_handoff(conversation_id) do
     GenServer.call(__MODULE__, {:get_latest_handoff, conversation_id})
+  end
+
+  # Message timestamp queries
+
+  @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
+  def get_last_message_at(epoch_id) do
+    GenServer.call(__MODULE__, {:get_last_message_at, epoch_id})
   end
 
   # Summary operations
@@ -179,10 +186,10 @@ defmodule Cranium.Store do
   end
 
   @impl true
-  def handle_call({:save_handoff, conversation_id, content}, _from, state) do
-    %Handoff{}
-    |> Handoff.changeset(%{conversation_id: conversation_id, content: content})
-    |> Repo.insert!()
+  def handle_call({:save_handoff, epoch_id, content}, _from, state) do
+    Repo.get!(Epoch, epoch_id)
+    |> Epoch.changeset(%{handoff: content})
+    |> Repo.update!()
 
     {:reply, :ok, state}
   end
@@ -190,15 +197,31 @@ defmodule Cranium.Store do
   @impl true
   def handle_call({:get_latest_handoff, conversation_id}, _from, state) do
     result =
-      from(h in Handoff,
-        where: h.conversation_id == ^conversation_id,
-        order_by: [desc: h.inserted_at],
+      from(e in Epoch,
+        where: e.conversation_id == ^conversation_id and not is_nil(e.handoff),
+        order_by: [desc: e.inserted_at],
         limit: 1
       )
       |> Repo.one()
       |> case do
         nil -> :not_found
-        handoff -> {:ok, handoff.content}
+        epoch -> {:ok, epoch.handoff}
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:get_last_message_at, epoch_id}, _from, state) do
+    result =
+      from(m in Message,
+        where: m.epoch_id == ^epoch_id,
+        select: max(m.inserted_at)
+      )
+      |> Repo.one()
+      |> case do
+        nil -> :not_found
+        ts -> {:ok, ts}
       end
 
     {:reply, result, state}
@@ -243,6 +266,8 @@ defmodule Cranium.Store do
       system_prompt: e.system_prompt,
       turn_count: e.turn_count,
       saturation: e.saturation,
+      handoff: e.handoff,
+      last_reminder_bucket: e.last_reminder_bucket,
       inserted_at: e.inserted_at,
       updated_at: e.updated_at
     }

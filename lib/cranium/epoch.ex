@@ -27,7 +27,9 @@ defmodule Cranium.Epoch do
     :agent_pid,
     status: :idle,
     stream_id: nil,
-    turn_count: 0
+    turn_count: 0,
+    saturation: 0.0,
+    last_reminder_bucket: 0
   ]
 
   @type t :: %__MODULE__{
@@ -38,7 +40,9 @@ defmodule Cranium.Epoch do
           agent_pid: pid() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
-          turn_count: non_neg_integer()
+          turn_count: non_neg_integer(),
+          saturation: float(),
+          last_reminder_bucket: non_neg_integer()
         }
 
   # --- Public API ---
@@ -124,22 +128,25 @@ defmodule Cranium.Epoch do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     Logger.metadata(conversation_id: conversation_id)
 
-    {epoch_id, turn_count} =
+    {epoch_id, turn_count, saturation, last_reminder_bucket} =
       case Cranium.Store.get_epoch(conversation_id) do
-        {:ok, %{id: id, status: status, turn_count: tc}} when status != "cleared" ->
+        {:ok, %{id: id, status: status, turn_count: tc, saturation: sat, last_reminder_bucket: lrb}}
+        when status != "cleared" ->
           Logger.info("Epoch resumed", epoch_id: id, turn_count: tc)
-          {id, tc}
+          {id, tc, sat || 0.0, lrb || 0}
 
         _ ->
           {:ok, id} = Cranium.Store.create_epoch(conversation_id)
           Logger.info("Epoch started", epoch_id: id)
-          {id, 0}
+          {id, 0, 0.0, 0}
       end
 
     state = %__MODULE__{
       conversation_id: conversation_id,
       epoch_id: epoch_id,
       turn_count: turn_count,
+      saturation: saturation,
+      last_reminder_bucket: last_reminder_bucket,
       transport: Keyword.get(opts, :transport),
       transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
@@ -154,6 +161,13 @@ defmodule Cranium.Epoch do
 
     msg_map = normalize_message(message)
     text = msg_map[:text] || ""
+
+    # Derive last_invoked_at from most recent message timestamp
+    last_invoked_at =
+      case Cranium.Store.get_last_message_at(state.epoch_id) do
+        {:ok, ts} -> ts
+        :not_found -> nil
+      end
 
     # 1. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
     #    Note: persist AFTER assembly so HistoryManager doesn't fetch the current
@@ -170,13 +184,19 @@ defmodule Cranium.Epoch do
       mode: Map.get(msg_map, :mode, :text),
       history_window: 50,
       now: DateTime.utc_now(),
-      epoch_id: state.epoch_id
+      epoch_id: state.epoch_id,
+      epoch: %{
+        last_invoked_at: last_invoked_at,
+        saturation: state.saturation * 100,
+        last_reminder_bucket: state.last_reminder_bucket
+      }
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
 
-    # 2. Persist raw user message (after context assembly, before inference)
-    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{role: :user, content: text})
+    # 2. Persist enriched user message (includes system-reminders from TurnInjector)
+    enriched_text = enriched[:text] || text
+    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{role: :user, content: enriched_text})
 
     # 3. Map pipeline output to Agent context
     context = %{
@@ -213,14 +233,21 @@ defmodule Cranium.Epoch do
 
           saturation = compute_saturation(usage)
           new_count = state.turn_count + 1
+          saturation_pct = saturation * 100
+          new_bucket = div(trunc(saturation_pct), 5) * 5
 
           Cranium.Store.update_epoch(state.epoch_id, %{
             status: "active",
             saturation: saturation,
-            turn_count: new_count
+            turn_count: new_count,
+            last_reminder_bucket: new_bucket
           })
 
-          %{state | turn_count: new_count}
+          %{state |
+            turn_count: new_count,
+            saturation: saturation,
+            last_reminder_bucket: new_bucket
+          }
 
         _ ->
           Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
@@ -243,7 +270,16 @@ defmodule Cranium.Epoch do
     Cranium.Effects.generate_handoff(state.conversation_id, state.epoch_id)
 
     {:ok, new_epoch_id} = Cranium.Store.create_epoch(state.conversation_id)
-    state = %{state | status: :idle, stream_id: nil, epoch_id: new_epoch_id, turn_count: 0}
+
+    state = %{state |
+      status: :idle,
+      stream_id: nil,
+      epoch_id: new_epoch_id,
+      turn_count: 0,
+      saturation: 0.0,
+      last_reminder_bucket: 0
+    }
+
     {:reply, :ok, state}
   end
 
