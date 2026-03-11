@@ -1,6 +1,6 @@
 ---
 id: cv2-a7b0
-status: blocked
+status: closed
 deps: []
 created: 2026-03-11T15:39:56Z
 type: task
