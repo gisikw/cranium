@@ -82,6 +82,15 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		}
 	}
 
+	// Scan for first-mention glossary terms (only on resumed sessions where we have a session ID)
+	var glossContext string
+	if !isFreshSession && sessionID != "" {
+		glossContext = scanGloss(sessionID, message)
+		if glossContext != "" {
+			log.Printf("Gloss matched terms for session %s", sessionID)
+		}
+	}
+
 	// Build pure invocation plan
 	plan := buildInvocationPlan(SessionContext{
 		SessionID:          sessionID,
@@ -97,6 +106,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		Now:                b.now(),
 		ProjectDir:         projectDir,
 		SystemPromptContent: b.systemPromptContent,
+		GlossContext:       glossContext,
 	})
 
 	// Apply side effects from the plan
@@ -147,7 +157,7 @@ func (b *Bridge) invokeClaude(ctx context.Context, roomID id.RoomID, message str
 		"KO_EVENT_LOG=" + eventLogPath,
 	}
 	if strings.HasPrefix(roomName, "audio-") {
-		env = append(env, "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1", "MAX_THINKING_TOKENS=0")
+		env = append(env, "CLAUDE_CODE_EFFORT_LEVEL=low")
 	}
 	workDir := b.dataDir
 	if plan.WorkDir != "" {

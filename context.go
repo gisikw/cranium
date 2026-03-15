@@ -152,6 +152,7 @@ type SessionContext struct {
 	Now                time.Time
 	ProjectDir         string // ~/Projects/<slug> if it exists as a directory
 	SystemPromptContent string // contents of identity file, always injected via --append-system-prompt
+	GlossContext       string // formatted gloss summaries for first-mention term injection
 }
 
 // buildInvocationPlan is a pure function that makes all invocation decisions.
@@ -179,6 +180,11 @@ func buildInvocationPlan(ctx SessionContext) InvocationPlan {
 	if !isFreshSession && ctx.InterruptedContext != "" {
 		interruptedReminder := fmt.Sprintf("Your previous turn was interrupted by the user (stop emoji). Here's what you were doing when stopped:\n\n%s\n\nThe user stopped you — pick up from here or ask what they'd like instead.", ctx.InterruptedContext)
 		prompt = prependSystemReminder(interruptedReminder, prompt)
+	}
+
+	// For existing sessions: inject gloss context for first-mention terms
+	if !isFreshSession && ctx.GlossContext != "" {
+		prompt = formatGlossContext(ctx.GlossContext) + "\n\n" + prompt
 	}
 
 	// For existing sessions: inject saturation reminder if threshold crossed
