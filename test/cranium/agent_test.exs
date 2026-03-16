@@ -7,6 +7,7 @@ defmodule Cranium.AgentTest do
   setup :verify_on_exit!
 
   setup do
+    stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
     egress = self()
     {:ok, egress: egress}
   end

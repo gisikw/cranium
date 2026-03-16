@@ -7,10 +7,13 @@ config :cranium, Cranium.Store.Repo,
   hostname: "localhost"
 
 # Backend configuration — swap implementations here
+# To use Claude Code CLI instead of direct API, change llm to:
+#   llm: Cranium.Backend.LLM.ClaudeCode
 config :cranium, :backends,
   stt: Cranium.Backend.STT.Whisper,
   tts: Cranium.Backend.TTS.Kokoro,
-  llm: Cranium.Backend.LLM.Anthropic
+  llm: Cranium.Backend.LLM.Anthropic,
+  claude_code_path: "claude"
 
 # Tool registry — tools are registered at runtime via ToolRouter.register/2
 config :cranium, :tools, []

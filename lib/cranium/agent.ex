@@ -53,6 +53,7 @@ defmodule Cranium.Agent do
     :epoch_pid,
     :stream_id,
     :llm_backend,
+    :cc_session_id,
     status: :idle,
     messages: [],
     tool_calls_pending: [],
@@ -65,6 +66,7 @@ defmodule Cranium.Agent do
           epoch_pid: pid() | nil,
           stream_id: String.t() | nil,
           llm_backend: module(),
+          cc_session_id: String.t() | nil,
           status: :idle | :inferring | :tool_use | :cancelled,
           messages: list(),
           tool_calls_pending: list(),
@@ -142,9 +144,19 @@ defmodule Cranium.Agent do
 
     send(egress_pid, {:stream_start, stream_id, metadata})
 
-    # Start the LLM backend stream
-    tools = Cranium.Agent.ToolRouter.tool_definitions()
-    opts = [system: system, max_tokens: Map.get(context, :max_tokens, 8192), tools: tools]
+    # Start the LLM backend stream — skip tool definitions for managed-loop backends
+    tools =
+      if state.llm_backend.manages_tool_loop?(),
+        do: [],
+        else: Cranium.Agent.ToolRouter.tool_definitions()
+
+    opts = [
+      system: system,
+      max_tokens: Map.get(context, :max_tokens, 8192),
+      tools: tools,
+      cc_session_id: context[:cc_session_id],
+      working_dir: context[:working_dir]
+    ]
 
     result = run_inference(state, egress_pid, stream_id, messages, opts)
 
@@ -164,7 +176,8 @@ defmodule Cranium.Agent do
           stream_id: stream_id,
           status: :complete,
           output: final_state.partial_output |> Enum.reverse() |> Enum.join(),
-          usage: final_state.usage
+          usage: final_state.usage,
+          cc_session_id: final_state.cc_session_id
         }
 
         {:reply, {:ok, reply}, %{final_state | status: :idle, stream_id: nil}}
@@ -207,12 +220,30 @@ defmodule Cranium.Agent do
         receive_loop(state, egress_pid, stream_id, ref, opts)
 
       {:llm_tool_use, tool_call} ->
-        state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
-        receive_loop(state, egress_pid, stream_id, ref, opts)
+        if state.llm_backend.manages_tool_loop?() do
+          # CC path: only marker tool calls come through, handle inline
+          case Cranium.Agent.ToolRouter.route(tool_call) do
+            {:marker, marker_type, input} ->
+              {_result, marker} = Cranium.Agent.MarkerEmitter.handle(marker_type, input)
+              send(egress_pid, {:chunk, stream_id, {:marker, marker}})
+
+            _ ->
+              :ok
+          end
+
+          receive_loop(state, egress_pid, stream_id, ref, opts)
+        else
+          # Anthropic path: accumulate for batch execution
+          state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
+          receive_loop(state, egress_pid, stream_id, ref, opts)
+        end
 
       {:llm_usage, usage} ->
         merged = merge_usage(state.usage, usage)
         receive_loop(%{state | usage: merged}, egress_pid, stream_id, ref, opts)
+
+      {:cc_session, session_id} ->
+        receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, ref, opts)
 
       {:llm_stop, "end_turn"} ->
         {:ok, state}

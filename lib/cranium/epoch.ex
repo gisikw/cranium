@@ -25,6 +25,7 @@ defmodule Cranium.Epoch do
     :transport,
     :transport_meta,
     :agent_pid,
+    :cc_session_id,
     status: :idle,
     stream_id: nil,
     turn_count: 0,
@@ -38,6 +39,7 @@ defmodule Cranium.Epoch do
           transport: module() | nil,
           transport_meta: map() | nil,
           agent_pid: pid() | nil,
+          cc_session_id: String.t() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
           turn_count: non_neg_integer(),
@@ -205,7 +207,9 @@ defmodule Cranium.Epoch do
       mode: Map.get(msg_map, :mode, :text),
       conversation_id: state.conversation_id,
       stream_id: msg_map[:stream_id] || state.stream_id,
-      disposition: Map.get(msg_map, :disposition, ["text"])
+      disposition: Map.get(msg_map, :disposition, ["text"]),
+      cc_session_id: state.cc_session_id,
+      working_dir: enriched[:working_dir] || Map.get(msg_map, :working_dir)
     }
 
     # 4. Run inference
@@ -220,10 +224,10 @@ defmodule Cranium.Epoch do
     Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
 
-    # 5. Persist assistant response and track saturation
+    # 5. Persist assistant response, track saturation, capture CC session ID
     state =
       case result do
-        {:ok, %{output: output, usage: usage}} ->
+        {:ok, %{output: output, usage: usage} = agent_result} ->
           if output != "" do
             Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
               role: :assistant,
@@ -243,10 +247,13 @@ defmodule Cranium.Epoch do
             last_reminder_bucket: new_bucket
           })
 
+          cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
+
           %{state |
             turn_count: new_count,
             saturation: saturation,
-            last_reminder_bucket: new_bucket
+            last_reminder_bucket: new_bucket,
+            cc_session_id: cc_session_id
           }
 
         _ ->
@@ -277,7 +284,8 @@ defmodule Cranium.Epoch do
       epoch_id: new_epoch_id,
       turn_count: 0,
       saturation: 0.0,
-      last_reminder_bucket: 0
+      last_reminder_bucket: 0,
+      cc_session_id: nil
     }
 
     {:reply, :ok, state}

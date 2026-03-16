@@ -1,0 +1,260 @@
+defmodule Cranium.Backend.LLM.ClaudeCode do
+  @moduledoc """
+  Claude Code CLI backend.
+
+  Runs `claude -p` as a subprocess via `Port.open/2`, streaming its
+  `--output-format stream-json` output through `CCStreamParser` and
+  sending tagged messages to the caller.
+
+  ## Modes
+
+  - **Resume mode**: When `opts[:cc_session_id]` is present, resumes an
+    existing CC session. The user text is piped via stdin, system prompt
+    via `--append-system-prompt-file`, and MCP markers via `--mcp-config`.
+
+  - **One-shot mode**: When no session ID, runs a fresh disposable session.
+    All messages are concatenated into a single prompt. No MCP, no resume.
+    Used for Effects (handoffs, summaries).
+  """
+
+  @behaviour Cranium.Backend.LLM
+
+  require Logger
+
+  alias Cranium.Backend.LLM.{CCStreamParser, CCMcpServer}
+
+  @impl true
+  def manages_tool_loop?, do: true
+
+  @impl true
+  def stream_chat(messages, opts) do
+    caller = self()
+
+    pid =
+      spawn_link(fn ->
+        try do
+          do_stream(caller, messages, opts)
+        after
+          cleanup_temp_files(Process.get(:temp_files, []))
+        end
+      end)
+
+    {:ok, pid}
+  end
+
+  defp do_stream(caller, messages, opts) do
+    cc_session_id = Keyword.get(opts, :cc_session_id)
+    system = Keyword.get(opts, :system)
+    working_dir = Keyword.get(opts, :working_dir)
+
+    {cmd, temp_files} =
+      if cc_session_id do
+        build_resume_cmd(messages, system, cc_session_id, opts)
+      else
+        build_oneshot_cmd(messages, system, opts)
+      end
+
+    Process.put(:temp_files, temp_files)
+
+    Logger.info("CC backend: mode=#{if cc_session_id, do: "resume", else: "oneshot"}")
+
+    port_opts = [:binary, :exit_status, {:args, ["-c", cmd]}]
+
+    port_opts =
+      if working_dir && File.dir?(working_dir) do
+        [{:cd, String.to_charlist(working_dir)} | port_opts]
+      else
+        port_opts
+      end
+
+    port = Port.open({:spawn_executable, sh_path()}, port_opts)
+    marker_tools = CCStreamParser.default_marker_tools()
+    receive_port_output(port, caller, marker_tools, "")
+  end
+
+  defp receive_port_output(port, caller, marker_tools, buffer) do
+    receive do
+      {^port, {:data, data}} ->
+        buffer = buffer <> data
+        {lines, rest} = split_lines(buffer)
+
+        Enum.each(lines, fn line ->
+          case CCStreamParser.parse_line(line, marker_tools) do
+            {:ok, messages} ->
+              Enum.each(messages, fn msg -> send(caller, msg) end)
+
+            :skip ->
+              :ok
+          end
+        end)
+
+        receive_port_output(port, caller, marker_tools, rest)
+
+      {^port, {:exit_status, 0}} ->
+        # Process any remaining buffer
+        if String.trim(buffer) != "" do
+          case CCStreamParser.parse_line(buffer, marker_tools) do
+            {:ok, messages} -> Enum.each(messages, fn msg -> send(caller, msg) end)
+            :skip -> :ok
+          end
+        end
+
+        :ok
+
+      {^port, {:exit_status, status}} ->
+        Logger.error("Claude Code exited with status #{status}")
+        send(caller, {:llm_stop, {:error, {:exit_status, status}}})
+    after
+      300_000 ->
+        Port.close(port)
+        send(caller, {:llm_stop, {:error, :timeout}})
+    end
+  end
+
+  defp build_resume_cmd(messages, system, session_id, opts) do
+    temp_files = []
+
+    # Write system prompt to temp file
+    {system_file, temp_files} =
+      if system && system != "" do
+        path = write_temp_file("cranium_system_", system)
+        {path, [path | temp_files]}
+      else
+        {nil, temp_files}
+      end
+
+    # Write MCP config
+    {mcp_file, temp_files} =
+      case CCMcpServer.write_config() do
+        {:ok, path} -> {path, [path | temp_files]}
+        {:error, _} -> {nil, temp_files}
+      end
+
+    # Extract user text from messages (last user message)
+    user_text = extract_user_text(messages)
+
+    # Build command with heredoc stdin
+    args = [
+      claude_path(),
+      "-p",
+      "--resume", session_id,
+      "--output-format", "stream-json",
+      "--verbose"
+    ]
+
+    args = args ++ permission_args(opts)
+    args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
+    args = if mcp_file, do: args ++ ["--mcp-config", mcp_file], else: args
+
+    escaped_text = escape_heredoc(user_text)
+    cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_text}\nCRANIUM_EOF"
+
+    {cmd, temp_files}
+  end
+
+  defp build_oneshot_cmd(messages, system, opts) do
+    temp_files = []
+
+    # Write system prompt to temp file
+    {system_file, temp_files} =
+      if system && system != "" do
+        path = write_temp_file("cranium_system_", system)
+        {path, [path | temp_files]}
+      else
+        {nil, temp_files}
+      end
+
+    # Concatenate all messages into a single prompt
+    prompt = messages_to_prompt(messages)
+
+    args = [
+      claude_path(),
+      "-p",
+      "--output-format", "stream-json",
+      "--verbose"
+    ]
+
+    args = args ++ permission_args(opts)
+    args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
+
+    escaped_prompt = escape_heredoc(prompt)
+    cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_prompt}\nCRANIUM_EOF"
+
+    {cmd, temp_files}
+  end
+
+  defp extract_user_text(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value("", fn
+      %{role: "user", content: content} when is_binary(content) -> content
+      %{"role" => "user", "content" => content} when is_binary(content) -> content
+      _ -> nil
+    end)
+  end
+
+  defp messages_to_prompt(messages) do
+    messages
+    |> Enum.map(fn
+      %{role: role, content: content} -> "#{role}: #{content}"
+      %{"role" => role, "content" => content} -> "#{role}: #{content}"
+      other when is_binary(other) -> other
+    end)
+    |> Enum.join("\n\n")
+  end
+
+  defp permission_args(opts) do
+    if Keyword.get(opts, :bypass_permissions, true) do
+      ["--permission-mode", "bypassPermissions"]
+    else
+      []
+    end
+  end
+
+  defp split_lines(buffer) do
+    case String.split(buffer, "\n") do
+      [single] -> {[], single}
+      parts ->
+        {lines, [rest]} = Enum.split(parts, -1)
+        {lines, rest}
+    end
+  end
+
+  defp write_temp_file(prefix, content) do
+    path = Path.join(System.tmp_dir!(), prefix <> random_hex(8))
+    File.write!(path, content)
+    path
+  end
+
+  defp cleanup_temp_files(paths) do
+    Enum.each(paths, fn path ->
+      File.rm(path)
+    end)
+  end
+
+  defp random_hex(bytes) do
+    :crypto.strong_rand_bytes(bytes) |> Base.encode16(case: :lower)
+  end
+
+  defp shell_escape(arg) do
+    if String.contains?(arg, [" ", "'", "\"", "\\", "$", "`"]) do
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    else
+      arg
+    end
+  end
+
+  defp escape_heredoc(text) do
+    # Replace any occurrence of CRANIUM_EOF on its own line to prevent
+    # premature heredoc termination
+    String.replace(text, ~r/^CRANIUM_EOF$/m, "CRANIUM_EO\\F")
+  end
+
+  defp claude_path do
+    Application.get_env(:cranium, :backends)[:claude_code_path] || "claude"
+  end
+
+  defp sh_path do
+    System.find_executable("sh") || "/bin/sh"
+  end
+end

@@ -127,10 +127,19 @@ Stages choose: `{:buffer, state}` (accumulate) or `{:forward, data, state}` (pas
 {:llm_tool_use, %{id, name, input}}  # tool call
 {:llm_usage, %{input_tokens, output_tokens}}
 {:llm_stop, reason}            # "end_turn" | "tool_use" | {:error, ...}
+{:cc_session, session_id}      # CC backend only: session ID for resume
 ```
 
 Backends configured in `config/config.exs` under `:cranium, :backends`.
 Agent resolves its backend via `Application.get_env(:cranium, :backends)[:llm]`.
+
+Two LLM backends available:
+- `Cranium.Backend.LLM.Anthropic` — direct API, Agent manages tool loop
+- `Cranium.Backend.LLM.ClaudeCode` — CLI subprocess, CC manages tool loop
+
+The `manages_tool_loop?/0` callback lets the Agent branch on capability
+without referencing specific implementations. When true, only MCP marker
+tool calls are forwarded; CC handles all other tools internally.
 
 ### Context Map
 
