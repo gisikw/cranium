@@ -22,8 +22,8 @@ defmodule Cranium.Backend.LLM.CCMcpServer do
     config = %{
       "mcpServers" => %{
         "cranium-markers" => %{
-          "command" => python_path(),
-          "args" => [server_script_path()]
+          "command" => server_script_path(),
+          "args" => []
         }
       }
     }
@@ -36,22 +36,18 @@ defmodule Cranium.Backend.LLM.CCMcpServer do
     end
   end
 
-  @doc "Absolute path to the marker_server.py script."
+  @doc "Absolute path to the marker_server.sh script."
   @spec server_script_path() :: String.t()
   def server_script_path do
     # app_dir points to _build which may not have priv copied;
     # fall back to source tree
-    build_path = Application.app_dir(:cranium, "priv/mcp/marker_server.py")
+    build_path = Application.app_dir(:cranium, "priv/mcp/marker_server.sh")
 
     if File.exists?(build_path) do
       build_path
     else
-      Path.join([File.cwd!(), "priv", "mcp", "marker_server.py"])
+      Path.join([File.cwd!(), "priv", "mcp", "marker_server.sh"])
     end
-  end
-
-  defp python_path do
-    System.find_executable("python3") || "python3"
   end
 
   defp random_hex(bytes) do

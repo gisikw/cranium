@@ -32,9 +32,12 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     pid =
       spawn_link(fn ->
+        Process.flag(:trap_exit, true)
+
         try do
           do_stream(caller, messages, opts)
         after
+          kill_port_process_group()
           cleanup_temp_files(Process.get(:temp_files, []))
         end
       end)
@@ -68,6 +71,13 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       end
 
     port = Port.open({:spawn_executable, sh_path()}, port_opts)
+
+    # Track the port's OS PID for process group cleanup on cancel
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> Process.put(:port_os_pid, os_pid)
+      _ -> :ok
+    end
+
     marker_tools = CCStreamParser.default_marker_tools()
     receive_port_output(port, caller, marker_tools, "")
   end
@@ -224,6 +234,23 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     path = Path.join(System.tmp_dir!(), prefix <> random_hex(8))
     File.write!(path, content)
     path
+  end
+
+  defp kill_port_process_group do
+    case Process.get(:port_os_pid) do
+      nil ->
+        :ok
+
+      os_pid ->
+        # Send SIGTERM to the shell's process group. The heredoc pipe
+        # (cat <<EOF | claude -p) creates children under sh; killing just
+        # the shell may leave them orphaned. Negative PID targets the
+        # entire process group.
+        System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 
   defp cleanup_temp_files(paths) do

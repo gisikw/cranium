@@ -171,6 +171,43 @@ defmodule Cranium.AgentTest do
       assert "show" in names
     end
 
+    test "cancel terminates LLM process mid-inference", %{egress: egress} do
+      test_pid = self()
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "Starting..."})
+            # Notify test that streaming has begun so it can send cancel
+            send(test_pid, :llm_streaming)
+            # Block indefinitely — cancel should terminate us
+            Process.sleep(:infinity)
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-cancel"}
+
+      # Run infer in a separate process so we can send cancel
+      task =
+        Task.async(fn ->
+          Cranium.Agent.infer(agent, context, egress)
+        end)
+
+      # Wait for LLM to start streaming, then cancel
+      assert_receive :llm_streaming, 2000
+      GenServer.cast(agent, :cancel)
+
+      # Should return with cancelled error
+      result = Task.await(task, 5000)
+      assert {:error, :cancelled} = result
+    end
+
     test "accumulates usage across tool use rounds", %{egress: egress} do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->

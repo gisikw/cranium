@@ -130,17 +130,17 @@ defmodule Cranium.Epoch do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     Logger.metadata(conversation_id: conversation_id)
 
-    {epoch_id, turn_count, saturation, last_reminder_bucket} =
+    {epoch_id, turn_count, saturation, last_reminder_bucket, cc_session_id} =
       case Cranium.Store.get_epoch(conversation_id) do
-        {:ok, %{id: id, status: status, turn_count: tc, saturation: sat, last_reminder_bucket: lrb}}
+        {:ok, %{id: id, status: status, turn_count: tc, saturation: sat, last_reminder_bucket: lrb, cc_session_id: ccid}}
         when status != "cleared" ->
           Logger.info("Epoch resumed", epoch_id: id, turn_count: tc)
-          {id, tc, sat || 0.0, lrb || 0}
+          {id, tc, sat || 0.0, lrb || 0, ccid}
 
         _ ->
           {:ok, id} = Cranium.Store.create_epoch(conversation_id)
           Logger.info("Epoch started", epoch_id: id)
-          {id, 0, 0.0, 0}
+          {id, 0, 0.0, 0, nil}
       end
 
     state = %__MODULE__{
@@ -149,6 +149,7 @@ defmodule Cranium.Epoch do
       turn_count: turn_count,
       saturation: saturation,
       last_reminder_bucket: last_reminder_bucket,
+      cc_session_id: cc_session_id,
       transport: Keyword.get(opts, :transport),
       transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
@@ -182,7 +183,7 @@ defmodule Cranium.Epoch do
 
     pipeline_ctx = %{
       identity: msg_map[:system],
-      projects_dir: "~/Projects",
+      projects_dir: Application.get_env(:cranium, :projects_dir, "~/Projects"),
       mode: Map.get(msg_map, :mode, :text),
       history_window: 50,
       now: DateTime.utc_now(),
@@ -240,14 +241,15 @@ defmodule Cranium.Epoch do
           saturation_pct = saturation * 100
           new_bucket = div(trunc(saturation_pct), 5) * 5
 
+          cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
+
           Cranium.Store.update_epoch(state.epoch_id, %{
             status: "active",
             saturation: saturation,
             turn_count: new_count,
-            last_reminder_bucket: new_bucket
+            last_reminder_bucket: new_bucket,
+            cc_session_id: cc_session_id
           })
-
-          cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
 
           %{state |
             turn_count: new_count,

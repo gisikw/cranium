@@ -12,6 +12,7 @@ defmodule Cranium.Store.Epoch do
     field :saturation, :float, default: 0.0
     field :handoff, :string
     field :last_reminder_bucket, :integer, default: 0
+    field :cc_session_id, :string
 
     timestamps(type: :utc_datetime)
   end
@@ -25,7 +26,8 @@ defmodule Cranium.Store.Epoch do
       :turn_count,
       :saturation,
       :handoff,
-      :last_reminder_bucket
+      :last_reminder_bucket,
+      :cc_session_id
     ])
     |> validate_required([:conversation_id])
   end

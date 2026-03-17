@@ -202,7 +202,7 @@ defmodule Cranium.Agent do
     case state.llm_backend.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        result = receive_loop(state, egress_pid, stream_id, ref, opts)
+        result = receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
         # Demonitor only if receive_loop didn't already (tool_use path does its own)
         Process.demonitor(ref, [:flush])
         result
@@ -212,12 +212,12 @@ defmodule Cranium.Agent do
     end
   end
 
-  defp receive_loop(state, egress_pid, stream_id, ref, opts) do
+  defp receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts) do
     receive do
       {:llm_text, text} ->
         send(egress_pid, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
-        receive_loop(state, egress_pid, stream_id, ref, opts)
+        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
 
       {:llm_tool_use, tool_call} ->
         if state.llm_backend.manages_tool_loop?() do
@@ -231,19 +231,19 @@ defmodule Cranium.Agent do
               :ok
           end
 
-          receive_loop(state, egress_pid, stream_id, ref, opts)
+          receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
         else
           # Anthropic path: accumulate for batch execution
           state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
-          receive_loop(state, egress_pid, stream_id, ref, opts)
+          receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
         end
 
       {:llm_usage, usage} ->
         merged = merge_usage(state.usage, usage)
-        receive_loop(%{state | usage: merged}, egress_pid, stream_id, ref, opts)
+        receive_loop(%{state | usage: merged}, egress_pid, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
-        receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, ref, opts)
+        receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, llm_pid, ref, opts)
 
       {:llm_stop, "end_turn"} ->
         {:ok, state}
@@ -261,6 +261,13 @@ defmodule Cranium.Agent do
       {:llm_stop, other} ->
         Logger.warning("Unexpected stop reason", reason: inspect(other))
         {:ok, state}
+
+      # Cancel: kill the LLM streaming process to terminate the port
+      {:"$gen_cast", :cancel} ->
+        Logger.info("Agent cancelled, terminating LLM process")
+        Process.unlink(llm_pid)
+        Process.exit(llm_pid, :shutdown)
+        {:error, :cancelled}
 
       {:DOWN, ^ref, :process, _pid, :normal} ->
         # LLM process exited normally — might not have sent :llm_stop

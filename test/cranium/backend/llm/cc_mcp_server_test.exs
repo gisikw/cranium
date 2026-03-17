@@ -23,50 +23,59 @@ defmodule Cranium.Backend.LLM.CCMcpServerTest do
       assert Map.has_key?(server, "command")
       assert Map.has_key?(server, "args")
       assert is_list(server["args"])
-      assert length(server["args"]) == 1
     end
   end
 
   describe "server_script_path/0" do
-    test "returns a path ending in marker_server.py" do
+    test "returns a path ending in marker_server.sh" do
       path = CCMcpServer.server_script_path()
-      assert String.ends_with?(path, "priv/mcp/marker_server.py")
+      assert String.ends_with?(path, "priv/mcp/marker_server.sh")
     end
   end
 
-  describe "marker_server.py integration" do
-    @describetag :python3
-    test "responds to initialize and tools/list" do
-      python = System.find_executable("python3") || System.find_executable("python")
+  describe "marker_server.sh integration" do
+    test "responds to initialize, tools/list, and tools/call" do
+      script = CCMcpServer.server_script_path()
+      assert File.exists?(script), "marker_server.sh not found at #{script}"
 
-      if python == nil do
-        IO.puts("Skipping: python3 not found")
-      else
-        script = CCMcpServer.server_script_path()
-        assert File.exists?(script), "marker_server.py not found at #{script}"
+      init_request = Jason.encode!(%{jsonrpc: "2.0", id: 1, method: "initialize", params: %{}})
+      list_request = Jason.encode!(%{jsonrpc: "2.0", id: 2, method: "tools/list", params: %{}})
+      call_request = Jason.encode!(%{jsonrpc: "2.0", id: 3, method: "tools/call", params: %{name: "show", arguments: %{url: "test.png"}}})
+      notification = Jason.encode!(%{jsonrpc: "2.0", method: "notifications/initialized"})
 
-        init_request = Jason.encode!(%{jsonrpc: "2.0", id: 1, method: "initialize", params: %{}})
-        list_request = Jason.encode!(%{jsonrpc: "2.0", id: 2, method: "tools/list", params: %{}})
-        input = "#{init_request}\n#{list_request}\n"
+      # Pipe input via printf since System.cmd doesn't support stdin
+      escaped = Enum.map_join(
+        [init_request, notification, list_request, call_request],
+        "\\n",
+        &String.replace(&1, "\"", "\\\"")
+      )
 
-        {output, 0} = System.cmd(python, [script], input: input, stderr_to_stdout: true)
+      {output, 0} = System.cmd("sh", ["-c", "printf '#{escaped}\\n' | bash #{script}"],
+        stderr_to_stdout: true
+      )
 
-        lines = String.split(String.trim(output), "\n")
-        assert length(lines) == 2
+      lines = String.split(String.trim(output), "\n")
+      assert length(lines) == 3, "Expected 3 responses (notification skipped), got #{length(lines)}: #{inspect(lines)}"
 
-        {:ok, init_resp} = Jason.decode(Enum.at(lines, 0))
-        assert init_resp["id"] == 1
-        assert init_resp["result"]["protocolVersion"]
+      {:ok, init_resp} = Jason.decode(Enum.at(lines, 0))
+      assert init_resp["id"] == 1
+      assert init_resp["result"]["protocolVersion"] == "2024-11-05"
+      assert init_resp["result"]["serverInfo"]["name"] == "cranium-markers"
 
-        {:ok, list_resp} = Jason.decode(Enum.at(lines, 1))
-        assert list_resp["id"] == 2
-        tools = list_resp["result"]["tools"]
-        assert length(tools) == 3
-        tool_names = Enum.map(tools, & &1["name"])
-        assert "show" in tool_names
-        assert "show_code" in tool_names
-        assert "play_audio" in tool_names
-      end
+      {:ok, list_resp} = Jason.decode(Enum.at(lines, 1))
+      assert list_resp["id"] == 2
+      tools = list_resp["result"]["tools"]
+      assert length(tools) == 3
+      tool_names = Enum.map(tools, & &1["name"])
+      assert "show" in tool_names
+      assert "show_code" in tool_names
+      assert "play_audio" in tool_names
+
+      {:ok, call_resp} = Jason.decode(Enum.at(lines, 2))
+      assert call_resp["id"] == 3
+      [content_block] = call_resp["result"]["content"]
+      assert content_block["type"] == "text"
+      assert {:ok, %{"success" => true}} = Jason.decode(content_block["text"])
     end
   end
 end

@@ -268,6 +268,7 @@ defmodule Cranium.Store do
       saturation: e.saturation,
       handoff: e.handoff,
       last_reminder_bucket: e.last_reminder_bucket,
+      cc_session_id: e.cc_session_id,
       inserted_at: e.inserted_at,
       updated_at: e.updated_at
     }
