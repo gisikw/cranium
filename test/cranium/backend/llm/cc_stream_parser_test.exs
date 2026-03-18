@@ -103,13 +103,12 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
       line = Jason.encode!(%{
         type: "result",
         subtype: "success",
-        result: %{
-          usage: %{
-            input_tokens: 1500,
-            output_tokens: 300,
-            cache_creation_input_tokens: 100,
-            cache_read_input_tokens: 50
-          }
+        result: "Some response text",
+        usage: %{
+          input_tokens: 1500,
+          output_tokens: 300,
+          cache_creation_input_tokens: 100,
+          cache_read_input_tokens: 50
         }
       })
 

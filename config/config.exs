@@ -12,7 +12,7 @@ config :cranium, Cranium.Store.Repo,
 config :cranium, :backends,
   stt: Cranium.Backend.STT.Whisper,
   tts: Cranium.Backend.TTS.Kokoro,
-  llm: Cranium.Backend.LLM.Anthropic,
+  llm: Cranium.Backend.LLM.ClaudeCode,
   claude_code_path: "claude"
 
 # Tool registry — tools are registered at runtime via ToolRouter.register/2

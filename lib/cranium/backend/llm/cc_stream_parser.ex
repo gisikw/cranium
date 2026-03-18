@@ -79,7 +79,7 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
     messages = []
 
     messages =
-      case get_in(event, ["result", "usage"]) do
+      case event["usage"] do
         %{} = usage -> [{:llm_usage, normalize_usage(usage)} | messages]
         _ -> messages
       end

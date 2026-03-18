@@ -14,7 +14,7 @@ defmodule Cranium.Backend.LLM.ClaudeCodeTest do
       # Simulate CC output by echoing stream-json lines
       init_line = Jason.encode!(%{type: "system", subtype: "init", session_id: "test-sess-001", tools: []})
       text_line = Jason.encode!(%{type: "assistant", message: %{content: [%{type: "text", text: "Hello from CC"}]}})
-      result_line = Jason.encode!(%{type: "result", subtype: "success", result: %{usage: %{input_tokens: 100, output_tokens: 25}}})
+      result_line = Jason.encode!(%{type: "result", subtype: "success", result: "Hello from CC", usage: %{input_tokens: 100, output_tokens: 25}})
 
       # We'll use a script that echoes these lines instead of actual claude
       script = "echo '#{init_line}'\necho '#{text_line}'\necho '#{result_line}'"
@@ -47,7 +47,7 @@ defmodule Cranium.Backend.LLM.ClaudeCodeTest do
           %{type: "tool_use", id: "m1", name: "mcp__cranium-markers__show", input: %{url: "img.png"}}
         ]}
       })
-      result_line = Jason.encode!(%{type: "result", subtype: "success", result: %{usage: %{input_tokens: 50, output_tokens: 10}}})
+      result_line = Jason.encode!(%{type: "result", subtype: "success", result: "Check this out:", usage: %{input_tokens: 50, output_tokens: 10}})
 
       script = "echo '#{marker_line}'\necho '#{result_line}'"
       script_path = write_temp_script(script)
@@ -88,7 +88,7 @@ defmodule Cranium.Backend.LLM.ClaudeCodeTest do
     end
 
     test "cleans up temp files after streaming" do
-      result_line = Jason.encode!(%{type: "result", subtype: "success", result: %{usage: %{input_tokens: 0, output_tokens: 0}}})
+      result_line = Jason.encode!(%{type: "result", subtype: "success", result: "", usage: %{input_tokens: 0, output_tokens: 0}})
       script_path = write_temp_script("echo '#{result_line}'")
 
       backends = Application.get_env(:cranium, :backends, [])

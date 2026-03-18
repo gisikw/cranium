@@ -61,7 +61,14 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     Logger.info("CC backend: mode=#{if cc_session_id, do: "resume", else: "oneshot"}")
 
-    port_opts = [:binary, :exit_status, {:args, ["-c", cmd]}]
+    # Unset ANTHROPIC_API_KEY so CC uses its subscription login instead
+    # of falling through to direct API mode.
+    port_opts = [
+      :binary,
+      :exit_status,
+      {:args, ["-c", cmd]},
+      {:env, [{~c"ANTHROPIC_API_KEY", false}]}
+    ]
 
     port_opts =
       if working_dir && File.dir?(working_dir) do
