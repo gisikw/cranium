@@ -8,9 +8,10 @@ defmodule Cranium.Context.TurnInjector do
 
   ## Injections
 
+  - **Landscape** — cross-conversation awareness. Injected on turn 1
+    (full) and on idle return (delta since last injection).
   - **Time-gap reminder** — if >30 minutes since last invocation, inject
-    elapsed time, current time, and optionally the cross-conversation
-    landscape
+    elapsed time and current time
   - **Saturation warning** — rising-edge detection at 5% bucket boundaries
     above 50% context utilization
   - **Interrupted context** — if the previous invocation was cancelled,
@@ -32,30 +33,47 @@ defmodule Cranium.Context.TurnInjector do
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
-    injections = build_injections(message, context)
+    {injections, landscape_injected} = build_injections(message, context)
 
-    case injections do
-      [] ->
-        {:ok, message}
+    message =
+      case injections do
+        [] ->
+          message
 
-      _ ->
-        prefix = Enum.join(injections, "\n\n")
-        text = prefix <> "\n" <> (message[:text] || "")
-        {:ok, %{message | text: text}}
-    end
+        _ ->
+          prefix = Enum.join(injections, "\n\n")
+          text = prefix <> "\n" <> (message[:text] || "")
+          %{message | text: text}
+      end
+
+    message =
+      if landscape_injected,
+        do: Map.put(message, :landscape_injected, true),
+        else: message
+
+    {:ok, message}
   end
 
   @doc """
-  Build the list of injections for this turn. Pure function.
+  Build the list of injections for this turn.
+
+  Returns `{injections, landscape_injected}` where the boolean signals
+  to the Epoch that `last_landscape_at` should be updated.
   """
-  @spec build_injections(map(), map()) :: [String.t()]
+  @spec build_injections(map(), map()) :: {[String.t()], boolean()}
   def build_injections(message, context) do
-    []
-    |> maybe_add_time_gap(message, context)
-    |> maybe_add_saturation(message, context)
-    |> maybe_add_interrupted(message, context)
-    |> maybe_add_resume(message, context)
-    |> Enum.reverse()
+    {landscape_block, landscape_injected} = resolve_landscape(message, context)
+
+    injections =
+      []
+      |> maybe_add_time_gap(message, context)
+      |> maybe_prepend(landscape_block)
+      |> maybe_add_saturation(message, context)
+      |> maybe_add_interrupted(message, context)
+      |> maybe_add_resume(message, context)
+      |> Enum.reverse()
+
+    {injections, landscape_injected}
   end
 
   defp maybe_add_time_gap(injections, _message, context) do
@@ -159,4 +177,47 @@ defmodule Cranium.Context.TurnInjector do
   defp saturation_advice(_pct) do
     "Context is past halfway. Be mindful of scope — avoid starting large new tasks."
   end
+
+  # --- Landscape ---
+
+  defp resolve_landscape(message, context) do
+    now = context_now(context)
+
+    cond do
+      message[:is_fresh] ->
+        case Cranium.Context.Landscape.build(message[:conversation_id], now: now) do
+          nil -> {nil, false}
+          block -> {block, true}
+        end
+
+      time_gap_elapsed?(context) ->
+        last_landscape = get_in(context, [:epoch, :last_landscape_at])
+
+        case Cranium.Context.Landscape.build(message[:conversation_id],
+               since: last_landscape,
+               now: now
+             ) do
+          nil -> {nil, false}
+          block -> {block, true}
+        end
+
+      true ->
+        {nil, false}
+    end
+  end
+
+  defp time_gap_elapsed?(context) do
+    last_invoked = get_in(context, [:epoch, :last_invoked_at])
+    now = context_now(context)
+
+    case last_invoked do
+      nil -> false
+      ts -> DateTime.diff(now, ts, :second) >= @time_gap_threshold_seconds
+    end
+  end
+
+  defp maybe_prepend(injections, nil), do: injections
+  defp maybe_prepend(injections, block), do: [block | injections]
+
+  defp context_now(context), do: Map.get(context, :now, DateTime.utc_now())
 end

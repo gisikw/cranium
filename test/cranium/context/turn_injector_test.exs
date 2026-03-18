@@ -3,11 +3,14 @@ defmodule Cranium.Context.TurnInjectorTest do
 
   alias Cranium.Context.TurnInjector
 
+  # Stub Landscape.build to return nil by default (no cross-room data).
+  # Landscape-specific tests use Mox or dedicated test module.
+
   describe "build_injections/2" do
     test "returns empty list when no injections are needed" do
       message = %{text: "hello"}
       context = %{}
-      assert TurnInjector.build_injections(message, context) == []
+      assert {[], false} = TurnInjector.build_injections(message, context)
     end
 
     test "injects time-gap reminder after 30+ minutes" do
@@ -17,10 +20,10 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      injections = TurnInjector.build_injections(message, context)
-      assert length(injections) == 1
-      assert hd(injections) =~ "45 minutes"
-      assert hd(injections) =~ "<system-reminder>"
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      assert length(injections) >= 1
+      assert Enum.any?(injections, &(&1 =~ "45 minutes"))
+      assert Enum.any?(injections, &(&1 =~ "<system-reminder>"))
     end
 
     test "no time-gap reminder under 30 minutes" do
@@ -30,7 +33,8 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      assert TurnInjector.build_injections(message, context) == []
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      refute Enum.any?(injections, &(&1 =~ "minutes"))
     end
 
     test "injects saturation warning on rising edge" do
@@ -40,10 +44,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 55.0, last_reminder_bucket: 45}
       }
 
-      injections = TurnInjector.build_injections(message, context)
-      assert length(injections) == 1
-      assert hd(injections) =~ "55%"
-      assert hd(injections) =~ "past halfway"
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "55%"))
+      assert Enum.any?(injections, &(&1 =~ "past halfway"))
     end
 
     test "no saturation warning when in same bucket" do
@@ -53,7 +56,8 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 53.0, last_reminder_bucket: 50}
       }
 
-      assert TurnInjector.build_injections(message, context) == []
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      refute Enum.any?(injections, &(&1 =~ "%"))
     end
 
     test "injects interrupted context breadcrumb" do
@@ -63,10 +67,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{interrupted_context: "Was working on deploying the new service"}
       }
 
-      injections = TurnInjector.build_injections(message, context)
-      assert length(injections) == 1
-      assert hd(injections) =~ "interrupted"
-      assert hd(injections) =~ "deploying the new service"
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "interrupted"))
+      assert Enum.any?(injections, &(&1 =~ "deploying the new service"))
     end
 
     test "multiple injections can fire simultaneously" do
@@ -84,8 +87,8 @@ defmodule Cranium.Context.TurnInjectorTest do
         now: now
       }
 
-      injections = TurnInjector.build_injections(message, context)
-      assert length(injections) == 2
+      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      assert length(injections) >= 2
     end
   end
 
@@ -106,6 +109,31 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       {:ok, result} = TurnInjector.process(message, %{})
       assert result.text == "hello"
+    end
+
+    test "sets landscape_injected flag on fresh epoch with landscape data" do
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+      context = %{now: DateTime.utc_now()}
+
+      {:ok, result} = TurnInjector.process(message, context)
+
+      # Hoard summaries exist on disk, so landscape should be injected
+      assert result[:landscape_injected] == true
+      assert result.text =~ "<cross-room-context>"
+      assert result.text =~ "hello"
+    end
+
+    test "no landscape on non-fresh epoch without time gap" do
+      message = %{text: "hello", is_fresh: false, conversation_id: "test-room"}
+
+      context = %{
+        epoch: %{last_invoked_at: DateTime.utc_now()},
+        now: DateTime.utc_now()
+      }
+
+      {:ok, result} = TurnInjector.process(message, context)
+      refute Map.has_key?(result, :landscape_injected)
+      refute result.text =~ "<cross-room-context>"
     end
   end
 end

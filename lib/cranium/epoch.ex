@@ -26,6 +26,7 @@ defmodule Cranium.Epoch do
     :transport_meta,
     :agent_pid,
     :cc_session_id,
+    :last_landscape_at,
     status: :idle,
     stream_id: nil,
     turn_count: 0,
@@ -40,6 +41,7 @@ defmodule Cranium.Epoch do
           transport_meta: map() | nil,
           agent_pid: pid() | nil,
           cc_session_id: String.t() | nil,
+          last_landscape_at: DateTime.t() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
           turn_count: non_neg_integer(),
@@ -198,11 +200,18 @@ defmodule Cranium.Epoch do
       epoch: %{
         last_invoked_at: last_invoked_at,
         saturation: state.saturation * 100,
-        last_reminder_bucket: state.last_reminder_bucket
+        last_reminder_bucket: state.last_reminder_bucket,
+        last_landscape_at: state.last_landscape_at
       }
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
+
+    # Track landscape injection for delta filtering on subsequent idle returns
+    state =
+      if enriched[:landscape_injected],
+        do: %{state | last_landscape_at: DateTime.utc_now()},
+        else: state
 
     # 2. Persist enriched user message (includes system-reminders from TurnInjector)
     enriched_text = enriched[:text] || text
@@ -302,7 +311,8 @@ defmodule Cranium.Epoch do
       turn_count: 0,
       saturation: 0.0,
       last_reminder_bucket: 0,
-      cc_session_id: nil
+      cc_session_id: nil,
+      last_landscape_at: nil
     }
 
     {:reply, :ok, state}

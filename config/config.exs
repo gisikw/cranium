@@ -20,7 +20,8 @@ config :cranium, :tools, []
 
 # Paths
 config :cranium, :paths,
-  handoffs: "/home/dev/Projects/hoard/handoffs"
+  handoffs: "/home/dev/Projects/hoard/handoffs",
+  summaries: "/home/dev/Projects/hoard/summaries"
 
 # Pipeline tuning
 config :cranium, :pipeline,
