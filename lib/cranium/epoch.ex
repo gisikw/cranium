@@ -111,7 +111,13 @@ defmodule Cranium.Epoch do
     max_context_tokens =
       Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000
 
-    min(usage.input_tokens / max_context_tokens, 1.0)
+    # Total context = uncached + newly cached + cache hits
+    total =
+      (usage[:input_tokens] || 0) +
+        (usage[:cache_creation_input_tokens] || 0) +
+        (usage[:cache_read_input_tokens] || 0)
+
+    min(total / max_context_tokens, 1.0)
   end
 
   # --- GenServer Implementation ---
@@ -250,6 +256,14 @@ defmodule Cranium.Epoch do
             last_reminder_bucket: new_bucket,
             cc_session_id: cc_session_id
           })
+
+          # Push saturation to the manifest so clients can surface it
+          if stream_id = agent_result[:stream_id] do
+            Cranium.Manifest.set_metadata(stream_id, %{
+              "saturation" => Float.round(saturation, 3),
+              "turn_count" => new_count
+            })
+          end
 
           %{state |
             turn_count: new_count,

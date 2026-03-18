@@ -53,6 +53,11 @@ defmodule Cranium.Manifest do
     GenServer.call(name, {:complete, stream_id})
   end
 
+  @doc "Attach metadata (e.g. saturation, usage) to a stream manifest."
+  def set_metadata(stream_id, metadata, name \\ __MODULE__) when is_map(metadata) do
+    GenServer.call(name, {:set_metadata, stream_id, metadata})
+  end
+
   @doc "Get the manifest for a stream. Returns {:ok, manifest} or :not_found."
   def get(stream_id, name \\ __MODULE__) do
     GenServer.call(name, {:get, stream_id})
@@ -128,6 +133,19 @@ defmodule Cranium.Manifest do
   end
 
   @impl true
+  def handle_call({:set_metadata, stream_id, metadata}, _from, state) do
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, manifest} ->
+        manifest = Map.update(manifest, :metadata, metadata, &Map.merge(&1, metadata))
+        streams = Map.put(state.streams, stream_id, manifest)
+        {:reply, :ok, %{state | streams: streams}}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
   def handle_call({:complete, stream_id}, _from, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, manifest} ->
@@ -170,11 +188,16 @@ defmodule Cranium.Manifest do
   defp to_json_manifest(manifest) do
     disposition = Map.get(manifest, :disposition, ["text"])
 
-    %{
+    base = %{
       "stream_id" => manifest.stream_id,
       "status" => to_string(manifest.status),
       "segments" => Enum.map(manifest.segments, &to_json_segment(&1, manifest.stream_id, disposition))
     }
+
+    case Map.get(manifest, :metadata) do
+      nil -> base
+      meta -> Map.put(base, "metadata", meta)
+    end
   end
 
   defp to_json_segment(%{type: :utterance} = seg, stream_id, disposition) do

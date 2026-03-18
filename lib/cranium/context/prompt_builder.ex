@@ -13,7 +13,7 @@ defmodule Cranium.Context.PromptBuilder do
 
   require Logger
 
-  @default_identity_path "/home/dev/Projects/exocortex/notes/EXO.md"
+  @default_identity_path "/home/dev/Projects/hoard/prompts/EXO.md"
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do

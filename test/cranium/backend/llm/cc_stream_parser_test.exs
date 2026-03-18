@@ -49,7 +49,7 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
         CCStreamParser.parse_line(line)
     end
 
-    test "skips native CC tool calls" do
+    test "emits cc_tool_use for native CC tool calls" do
       line = Jason.encode!(%{
         type: "assistant",
         message: %{content: [%{
@@ -60,7 +60,8 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
         }]}
       })
 
-      assert :skip = CCStreamParser.parse_line(line)
+      assert {:ok, [{:cc_tool_use, %{id: "tool_2", name: "Read", input: %{"file_path" => "/tmp/test"}}}]} =
+        CCStreamParser.parse_line(line)
     end
 
     test "skips unrecognized MCP tools" do
@@ -131,6 +132,30 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
     end
   end
 
+  describe "parse_line/2 — CC tool results" do
+    test "extracts tool result with file info" do
+      line = Jason.encode!(%{
+        type: "user",
+        message: %{role: "user", content: [%{tool_use_id: "toolu_abc", type: "tool_result", content: "ratched\n"}]},
+        tool_use_result: %{type: "text", file: %{filePath: "/etc/hostname", content: "ratched\n"}}
+      })
+
+      assert {:ok, [{:cc_tool_result, %{tool_use_id: "toolu_abc", content: "Read /etc/hostname"}}]} =
+        CCStreamParser.parse_line(line)
+    end
+
+    test "extracts tool result with plain text content" do
+      line = Jason.encode!(%{
+        type: "user",
+        message: %{role: "user", content: [%{tool_use_id: "toolu_def", type: "tool_result", content: "ok"}]},
+        tool_use_result: %{type: "text", content: "command output here"}
+      })
+
+      assert {:ok, [{:cc_tool_result, %{tool_use_id: "toolu_def", content: "command output here"}}]} =
+        CCStreamParser.parse_line(line)
+    end
+  end
+
   describe "parse_line/2 — edge cases" do
     test "skips empty lines" do
       assert :skip = CCStreamParser.parse_line("")
@@ -141,8 +166,8 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
       assert :skip = CCStreamParser.parse_line("{not json")
     end
 
-    test "skips user-type events (CC internal tool results)" do
-      line = Jason.encode!(%{type: "user", message: %{content: "tool result"}})
+    test "skips user events without tool_use_result" do
+      line = Jason.encode!(%{type: "user", message: %{content: "plain text"}})
       assert :skip = CCStreamParser.parse_line(line)
     end
 

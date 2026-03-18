@@ -105,7 +105,7 @@ defmodule Cranium.Egress do
   end
 
   @impl GenServer
-  def handle_info({:chunk, stream_id, chunk}, state) do
+  def handle_info({:chunk, stream_id, chunk}, state) when is_binary(chunk) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
         text = stream.text <> chunk
@@ -115,6 +115,18 @@ defmodule Cranium.Egress do
 
         stream = %{stream | text: leftover, segment_index: new_index}
         {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  @impl GenServer
+  def handle_info({:chunk, stream_id, {cue_type, data}}, state) do
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, stream} ->
+        Cranium.Manifest.add_cue(stream_id, stream.segment_index, cue_type, data)
+        {:noreply, state}
 
       :error ->
         {:noreply, state}

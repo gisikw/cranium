@@ -8,6 +8,8 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
 
   - `{:llm_text, text}` — text content
   - `{:llm_tool_use, %{id, name, input}}` — MCP marker tool call
+  - `{:cc_tool_use, %{id, name, input}}` — native CC tool call (informational)
+  - `{:cc_tool_result, %{tool_use_id, content}}` — CC tool result (informational)
   - `{:llm_usage, map()}` — token usage
   - `{:llm_stop, reason}` — inference complete
   - `{:cc_session, session_id}` — CC session ID (first event)
@@ -17,12 +19,14 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   Claude Code prefixes MCP tools as `mcp__<server>__<tool>`. With our
   server named `cranium-markers`, `show` becomes `mcp__cranium-markers__show`.
   The parser strips this prefix and only emits `{:llm_tool_use, ...}` for
-  recognized marker tools. Native CC tool calls are ignored.
+  recognized marker tools. Native CC tool calls emit `{:cc_tool_use, ...}`
+  for observability — they're already executed by CC internally.
 
   ## Line Types
 
   - `{"type":"system","subtype":"init"}` — session init, extract session_id
   - `{"type":"assistant","message":{"content":[...]}}` — content blocks
+  - `{"type":"user","tool_use_result":{...}}` — CC tool results
   - `{"type":"result","subtype":"success"}` — completion with usage
   - Everything else — skipped
   """
@@ -32,6 +36,8 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   @type tagged_message ::
           {:llm_text, String.t()}
           | {:llm_tool_use, map()}
+          | {:cc_tool_use, map()}
+          | {:cc_tool_result, map()}
           | {:llm_usage, map()}
           | {:llm_stop, String.t()}
           | {:cc_session, String.t()}
@@ -89,6 +95,27 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
     {:ok, Enum.reverse(messages)}
   end
 
+  defp parse_event(%{"type" => "user", "tool_use_result" => result, "message" => message}, _marker_tools)
+       when is_map(result) do
+    # CC tool result — tool_use_id lives in message.content[0], result data in tool_use_result
+    tool_use_id =
+      case get_in(message, ["content", Access.at(0), "tool_use_id"]) do
+        id when is_binary(id) -> id
+        _ -> "unknown"
+      end
+
+    # Build a concise summary from tool_use_result
+    content =
+      case result do
+        %{"type" => "text", "file" => %{"filePath" => path}} -> "Read #{path}"
+        %{"type" => "text", "content" => c} when is_binary(c) -> String.slice(c, 0..500)
+        %{"type" => "text"} -> Map.get(result, "content", "")
+        _ -> inspect(result, limit: 200)
+      end
+
+    {:ok, [{:cc_tool_result, %{tool_use_id: tool_use_id, content: content}}]}
+  end
+
   defp parse_event(%{"type" => "result", "subtype" => "error"} = event, _marker_tools) do
     error_msg = get_in(event, ["error", "message"]) || "unknown error"
     {:ok, [{:llm_stop, {:error, error_msg}}]}
@@ -111,8 +138,8 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
         end
 
       :not_mcp ->
-        # Native CC tool call — skip (CC handles these internally)
-        []
+        # Native CC tool call — emit for observability (CC handles execution)
+        [{:cc_tool_use, %{id: id, name: name, input: input}}]
     end
   end
 

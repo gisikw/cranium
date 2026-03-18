@@ -242,6 +242,14 @@ defmodule Cranium.Agent do
         merged = merge_usage(state.usage, usage)
         receive_loop(%{state | usage: merged}, egress_pid, stream_id, llm_pid, ref, opts)
 
+      {:cc_tool_use, tool_data} ->
+        send(egress_pid, {:chunk, stream_id, {:tool_use, tool_data}})
+        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+
+      {:cc_tool_result, result_data} ->
+        send(egress_pid, {:chunk, stream_id, {:tool_result, result_data}})
+        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+
       {:cc_session, session_id} ->
         receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, llm_pid, ref, opts)
 
