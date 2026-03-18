@@ -101,10 +101,21 @@ defmodule Cranium.Epoch do
 
   @doc """
   Cancel active inference.
+
+  Bypasses the Epoch GenServer (which is blocked in handle_call during
+  inference) and sends the cancel directly to the Agent process via
+  a Registry lookup.
   """
-  @spec cancel(pid()) :: :ok
-  def cancel(pid) do
-    GenServer.cast(pid, :cancel)
+  @spec cancel(String.t()) :: :ok | :not_found
+  def cancel(conversation_id) do
+    case Registry.lookup(Cranium.Epoch.Registry, {conversation_id, :agent}) do
+      [{agent_pid, _}] ->
+        GenServer.cast(agent_pid, :cancel)
+        :ok
+
+      [] ->
+        :not_found
+    end
   end
 
   @doc false
@@ -235,11 +246,18 @@ defmodule Cranium.Epoch do
       epoch_pid: self()
     )
 
+    # Register agent_pid so cancel/1 can reach it without going through
+    # this blocked handle_call
+    Registry.register(Cranium.Epoch.Registry, {state.conversation_id, :agent}, agent_pid)
+
     egress_pid = Process.whereis(Cranium.Egress)
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
     Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
+
+    # Unregister agent — inference is done
+    Registry.unregister(Cranium.Epoch.Registry, {state.conversation_id, :agent})
 
     # 5. Persist assistant response, track saturation, capture CC session ID
     state =

@@ -80,7 +80,7 @@ defmodule Cranium.Transport.HTTP do
         |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "clear"}))
 
       "!cancel" ->
-        Cranium.Epoch.cancel(epoch_pid)
+        Cranium.Epoch.cancel(conversation_id)
         Cranium.Manifest.complete(stream_id)
 
         conn

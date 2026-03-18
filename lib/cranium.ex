@@ -47,8 +47,8 @@ defmodule Cranium do
   """
   @spec cancel(String.t()) :: :ok | {:error, term()}
   def cancel(conversation_id) do
-    case Cranium.Epoch.lookup(conversation_id) do
-      {:ok, epoch} -> Cranium.Epoch.cancel(epoch)
+    case Cranium.Epoch.cancel(conversation_id) do
+      :ok -> :ok
       :not_found -> {:error, :no_active_epoch}
     end
   end
