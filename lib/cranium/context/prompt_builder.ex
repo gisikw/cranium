@@ -53,9 +53,32 @@ defmodule Cranium.Context.PromptBuilder do
   defp resolve_handoff(%{is_fresh: true, conversation_id: cid}) do
     case Cranium.Store.get_latest_handoff(cid) do
       {:ok, content} -> content
-      :not_found -> nil
+      :not_found -> resolve_handoff_from_disk(cid)
     end
   end
 
   defp resolve_handoff(_message), do: nil
+
+  defp resolve_handoff_from_disk(conversation_id) do
+    base = Application.get_env(:cranium, :paths)[:handoffs]
+
+    if base do
+      dir = Path.join(base, conversation_id)
+
+      case File.ls(dir) do
+        {:ok, files} ->
+          files
+          |> Enum.filter(&String.ends_with?(&1, ".md"))
+          |> Enum.sort()
+          |> List.last()
+          |> case do
+            nil -> nil
+            file -> File.read!(Path.join(dir, file))
+          end
+
+        {:error, _} ->
+          nil
+      end
+    end
+  end
 end

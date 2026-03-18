@@ -18,6 +18,10 @@ config :cranium, :backends,
 # Tool registry — tools are registered at runtime via ToolRouter.register/2
 config :cranium, :tools, []
 
+# Paths
+config :cranium, :paths,
+  handoffs: "/home/dev/Projects/hoard/handoffs"
+
 # Pipeline tuning
 config :cranium, :pipeline,
   summary_interval: 10,
