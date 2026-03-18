@@ -4,23 +4,17 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
   Every N turns (configured via `:summary_interval`), generates a 2-4
   sentence summary of the conversation's current activity. These summaries
-  are used by PromptBuilder to create the cross-conversation landscape —
-  giving the agent awareness of what's happening in other conversations.
+  are used by the Landscape module to create cross-conversation awareness.
 
   ## Generation
 
-  Uses a lightweight prompt that asks for a concise activity summary.
-  The summary focuses on what's being worked on and recent decisions,
-  not conversation details.
+  Invokes a `/summarize` skill via `--plugin-dir` to control summarization
+  behavior. The skill instructs the model to produce clean, factual
+  summaries without reproducing verbatim text that could trigger prompt
+  injection detection in receiving sessions.
   """
 
   require Logger
-
-  @summary_prompt """
-  Summarize what's currently being worked on in this conversation in 2-4 sentences.
-  Focus on the current task, recent decisions, and any notable context.
-  Write in present tense. Be concise.
-  """
 
   @spec generate(String.t()) :: :ok | {:error, term()}
   def generate(conversation_id) do
@@ -33,14 +27,23 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
     {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 30)
 
-    messages =
-      Enum.map(history, fn msg ->
-        %{"role" => to_string(msg[:role] || "user"), "content" => msg[:content] || ""}
+    # Format history as a transcript and prefix with /summarize to invoke the skill
+    transcript =
+      history
+      |> Enum.map(fn msg ->
+        role = to_string(msg[:role] || "user")
+        content = msg[:content] || ""
+        "#{role}: #{content}"
       end)
+      |> Enum.join("\n\n")
 
-    messages = messages ++ [%{"role" => "user", "content" => @summary_prompt}]
+    prompt = "/summarize\n\n#{transcript}"
 
-    case backend.stream_chat(messages, system: "", tools: []) do
+    messages = [%{"role" => "user", "content" => prompt}]
+
+    opts = [system: "", tools: [], plugin_dir: skills_dir()]
+
+    case backend.stream_chat(messages, opts) do
       {:ok, stream_pid} ->
         case collect_text(stream_pid) do
           {:ok, text} ->
@@ -61,6 +64,10 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
         {:error, reason}
     end
+  end
+
+  defp skills_dir do
+    Application.get_env(:cranium, :paths)[:skills]
   end
 
   defp collect_text(stream_pid) do

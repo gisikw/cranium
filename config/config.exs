@@ -21,7 +21,8 @@ config :cranium, :tools, []
 # Paths
 config :cranium, :paths,
   handoffs: "/home/dev/Projects/hoard/handoffs",
-  summaries: "/home/dev/Projects/hoard/summaries"
+  summaries: "/home/dev/Projects/hoard/summaries",
+  skills: "/home/dev/Projects/cranium-v2/skills"
 
 # Pipeline tuning
 config :cranium, :pipeline,

@@ -194,6 +194,12 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     args = args ++ permission_args(opts)
     args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
 
+    args =
+      case Keyword.get(opts, :plugin_dir) do
+        nil -> args
+        dir -> args ++ ["--plugin-dir", dir]
+      end
+
     escaped_prompt = escape_heredoc(prompt)
     cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_prompt}\nCRANIUM_EOF"
 
