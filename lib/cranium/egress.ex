@@ -125,8 +125,11 @@ defmodule Cranium.Egress do
   def handle_info({:chunk, stream_id, {cue_type, data}}, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
+        # Flush any buffered text before the cue so segment ordering matches stream order
+        stream = flush_text_buffer(stream, stream_id)
         Cranium.Manifest.add_cue(stream_id, stream.segment_index, cue_type, data)
-        {:noreply, state}
+        stream = %{stream | segment_index: stream.segment_index + 1}
+        {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
 
       :error ->
         {:noreply, state}
@@ -153,6 +156,19 @@ defmodule Cranium.Egress do
   end
 
   # --- Private ---
+
+  # Flush any accumulated text as an utterance segment, ignoring word thresholds.
+  # Used before emitting cues to preserve stream ordering.
+  defp flush_text_buffer(stream, stream_id) do
+    remaining = String.trim(stream.text)
+
+    if remaining != "" do
+      emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
+      %{stream | text: "", segment_index: stream.segment_index + 1}
+    else
+      stream
+    end
+  end
 
   @first_batch_words 30
   @subsequent_batch_words 100

@@ -123,6 +123,78 @@ defmodule Cranium.Egress.IncrementalTest do
     end
   end
 
+  describe "cue segment ordering" do
+    test "tool call first (no text) creates cue at index 0, no empty utterance" do
+      sid = "incr-cue-first-#{System.unique_integer([:positive])}"
+      tool_data = %{id: "t1", name: "Read", input: %{"file_path" => "/foo"}}
+
+      simulate_stream(sid, [{:tool_use, tool_data}])
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert manifest["status"] == "complete"
+      assert length(manifest["segments"]) == 1
+
+      [seg] = manifest["segments"]
+      assert seg["type"] == "cue"
+      assert seg["index"] == 0
+    end
+
+    test "tool call before text gets sequential indices" do
+      sid = "incr-cue-then-text-#{System.unique_integer([:positive])}"
+      tool_data = %{id: "t1", name: "Bash", input: %{"command" => "ls"}}
+
+      simulate_stream(sid, [{:tool_use, tool_data}, "Here are the results."])
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 2
+
+      [cue, utt] = manifest["segments"]
+      assert cue["type"] == "cue"
+      assert cue["index"] == 0
+      assert utt["type"] == "utterance"
+      assert utt["index"] == 1
+
+      # Utterance text is fetchable (no 404)
+      {:ok, text} = Manifest.get_segment_text(sid, 1)
+      assert text =~ "results"
+    end
+
+    test "text then tool call flushes buffered text before cue" do
+      sid = "incr-text-then-cue-#{System.unique_integer([:positive])}"
+      tool_data = %{id: "t1", name: "Read", input: %{"file_path" => "/bar"}}
+
+      simulate_stream(sid, ["Some context here.", {:tool_use, tool_data}, "And more after."])
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 3
+
+      [utt0, cue, utt1] = manifest["segments"]
+      assert utt0["type"] == "utterance"
+      assert utt0["index"] == 0
+      assert cue["type"] == "cue"
+      assert cue["index"] == 1
+      assert utt1["type"] == "utterance"
+      assert utt1["index"] == 2
+
+      {:ok, text0} = Manifest.get_segment_text(sid, 0)
+      assert text0 =~ "context"
+      {:ok, text2} = Manifest.get_segment_text(sid, 2)
+      assert text2 =~ "more after"
+    end
+
+    test "multiple consecutive tool calls get sequential indices" do
+      sid = "incr-multi-cue-#{System.unique_integer([:positive])}"
+      t1 = %{id: "t1", name: "Read", input: %{}}
+      t2 = %{id: "t2", name: "Bash", input: %{}}
+
+      simulate_stream(sid, [{:tool_use, t1}, {:tool_result, %{tool_use_id: "t1"}}, {:tool_use, t2}])
+
+      {:ok, manifest} = Manifest.get(sid)
+      indices = Enum.map(manifest["segments"], & &1["index"])
+      assert indices == Enum.uniq(indices), "all segment indices should be unique"
+    end
+  end
+
   describe "disposition-driven TTS warming" do
     test "audio disposition eagerly warms TTS cache for each segment" do
       sid = "incr-tts-#{System.unique_integer([:positive])}"
