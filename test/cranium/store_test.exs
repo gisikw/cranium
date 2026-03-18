@@ -1,11 +1,7 @@
 defmodule CraniumTest.StoreTest do
   use CraniumTest.DataCase, async: false
 
-  # Store is a named GenServer, so we need it running
-  setup do
-    start_supervised!(Cranium.Store)
-    :ok
-  end
+  # Store is started by the application supervisor; DataCase handles DB sandbox.
 
   describe "append_message/get_messages" do
     setup do

@@ -6,12 +6,10 @@ defmodule Cranium.EpochTest do
   setup :set_mox_global
   setup :verify_on_exit!
 
+  # Store, Epoch.Registry, Epoch.Supervisor, and Effects.Supervisor are all
+  # started by the application supervisor. DataCase handles DB sandbox.
   setup do
     stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
-    start_supervised!(Cranium.Store)
-    start_supervised!({Registry, keys: :unique, name: Cranium.Epoch.Registry})
-    start_supervised!({DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one})
-    start_supervised!({Task.Supervisor, name: Cranium.Effects.Supervisor})
     :ok
   end
 
