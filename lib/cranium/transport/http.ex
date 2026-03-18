@@ -94,6 +94,10 @@ defmodule Cranium.Transport.HTTP do
             {:ok, _result} ->
               Cranium.TTS.Cache.schedule_cleanup(stream_id)
 
+            {:error, :cancelled} ->
+              Logger.info("Submit cancelled: stream=#{stream_id}", transport: :http)
+              Cranium.Manifest.cancel(stream_id)
+
             {:error, reason} ->
               Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
               Cranium.Manifest.complete(stream_id)
@@ -303,7 +307,13 @@ defmodule Cranium.Transport.HTTP do
           }
 
           case Cranium.Epoch.submit(epoch_pid, message) do
-            {:ok, _} -> Cranium.TTS.Cache.schedule_cleanup(result.stream_id)
+            {:ok, _} ->
+              Cranium.TTS.Cache.schedule_cleanup(result.stream_id)
+
+            {:error, :cancelled} ->
+              Logger.info("Input submit cancelled: take=#{take_id}", transport: :http)
+              Cranium.Manifest.cancel(result.stream_id)
+
             {:error, reason} ->
               Logger.error("Input submit failed: take=#{take_id} reason=#{inspect(reason)}", transport: :http)
               Cranium.Manifest.complete(result.stream_id)

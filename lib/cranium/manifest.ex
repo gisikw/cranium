@@ -53,6 +53,11 @@ defmodule Cranium.Manifest do
     GenServer.call(name, {:complete, stream_id})
   end
 
+  @doc "Mark a stream as cancelled. Partial segments may exist."
+  def cancel(stream_id, name \\ __MODULE__) do
+    GenServer.call(name, {:cancel, stream_id})
+  end
+
   @doc "Attach metadata (e.g. saturation, usage) to a stream manifest."
   def set_metadata(stream_id, metadata, name \\ __MODULE__) when is_map(metadata) do
     GenServer.call(name, {:set_metadata, stream_id, metadata})
@@ -150,6 +155,19 @@ defmodule Cranium.Manifest do
     case Map.fetch(state.streams, stream_id) do
       {:ok, manifest} ->
         manifest = %{manifest | status: :complete}
+        streams = Map.put(state.streams, stream_id, manifest)
+        {:reply, :ok, %{state | streams: streams}}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:cancel, stream_id}, _from, state) do
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, manifest} ->
+        manifest = %{manifest | status: :cancelled}
         streams = Map.put(state.streams, stream_id, manifest)
         {:reply, :ok, %{state | streams: streams}}
 
