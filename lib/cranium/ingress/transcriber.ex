@@ -20,7 +20,8 @@ defmodule Cranium.Ingress.Transcriber do
 
     case backend.transcribe(audio, []) do
       {:ok, text} ->
-        {:ok, event |> Map.put(:type, :text) |> Map.put(:body, text) |> Map.put(:audio, nil)}
+        body = "[Transcribed from audio]\n#{text}"
+        {:ok, event |> Map.put(:type, :text) |> Map.put(:body, body) |> Map.put(:audio, nil)}
 
       {:error, reason} ->
         Logger.error("Transcription failed: #{inspect(reason)}", stage: :ingress)
