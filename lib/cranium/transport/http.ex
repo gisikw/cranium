@@ -37,7 +37,7 @@ defmodule Cranium.Transport.HTTP do
           case stt.transcribe(audio, []) do
             {:ok, transcribed} ->
               Logger.info("STT: transcribed #{byte_size(audio)} bytes", transport: :http)
-              transcribed
+              "[Transcribed from audio]\n#{transcribed}"
 
             {:error, reason} ->
               Logger.error("STT failed: #{inspect(reason)}", transport: :http)
@@ -290,12 +290,13 @@ defmodule Cranium.Transport.HTTP do
 
   defp trigger_text_inference(result, take_id) do
     Task.start(fn ->
-      Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(result.text, 0..80))}", transport: :http)
+      text = "[Transcribed from audio]\n#{result.text}"
+      Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(text, 0..80))}", transport: :http)
 
       case Cranium.Epoch.start_or_get(result.conversation_id) do
         {:ok, epoch_pid} ->
           message = %{
-            text: result.text,
+            text: text,
             conversation_id: result.conversation_id,
             stream_id: result.stream_id,
             disposition: result.disposition
