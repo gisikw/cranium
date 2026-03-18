@@ -151,7 +151,8 @@ defmodule Cranium.Store do
       conversation_id: conversation_id,
       epoch_id: epoch_id,
       role: to_string(message[:role] || "user"),
-      content: message[:content] || ""
+      content: message[:content] || "",
+      origin: message[:origin]
     })
     |> Repo.insert!()
 

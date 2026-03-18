@@ -16,6 +16,7 @@ defmodule Cranium.Input.TakeRegistry do
       :stream_id,
       :conversation_id,
       :disposition,
+      :origin,
       :last_seq,
       :completed_at,
       :opened_at,
@@ -33,7 +34,8 @@ defmodule Cranium.Input.TakeRegistry do
 
   def open(take_id, stream_id, conversation_id, disposition, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.call(name, {:open, take_id, stream_id, conversation_id, disposition})
+    origin = Keyword.get(opts, :origin)
+    GenServer.call(name, {:open, take_id, stream_id, conversation_id, disposition, origin})
   end
 
   def put_chunk(take_id, seq, data, opts \\ []) do
@@ -57,7 +59,7 @@ defmodule Cranium.Input.TakeRegistry do
   end
 
   @impl true
-  def handle_call({:open, take_id, stream_id, conversation_id, disposition}, _from, state) do
+  def handle_call({:open, take_id, stream_id, conversation_id, disposition, origin}, _from, state) do
     if Map.has_key?(state.takes, take_id) do
       {:reply, {:error, :conflict}, state}
     else
@@ -66,6 +68,7 @@ defmodule Cranium.Input.TakeRegistry do
         stream_id: stream_id,
         conversation_id: conversation_id,
         disposition: disposition,
+        origin: origin,
         opened_at: System.monotonic_time(:millisecond)
       }
 
@@ -149,7 +152,7 @@ defmodule Cranium.Input.TakeRegistry do
     if MapSet.equal?(expected, received) do
       data = chunks |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)) |> Enum.join()
       key = take.disposition |> List.first("text") |> String.to_atom()
-      {:complete, %{key => data, stream_id: take.stream_id, conversation_id: take.conversation_id, disposition: take.disposition}}
+      {:complete, %{key => data, stream_id: take.stream_id, conversation_id: take.conversation_id, disposition: take.disposition, origin: take.origin}}
     else
       :incomplete
     end

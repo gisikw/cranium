@@ -22,6 +22,7 @@ defmodule Cranium.Transport.HTTP do
   post "/v1/submit" do
     conversation_id = conn.body_params["conversation_id"] || "default"
     system = conn.body_params["system"]
+    origin = conn.body_params["origin"]
     disposition = parse_disposition(conn.body_params["disposition"])
 
     # Extract text — either directly or by transcribing audio
@@ -63,7 +64,8 @@ defmodule Cranium.Transport.HTTP do
       system: system,
       conversation_id: conversation_id,
       stream_id: stream_id,
-      disposition: disposition
+      disposition: disposition,
+      origin: origin
     }
 
     Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
@@ -167,12 +169,13 @@ defmodule Cranium.Transport.HTTP do
 
   post "/v1/input/start" do
     conversation_id = conn.body_params["conversation_id"] || "default"
+    origin = conn.body_params["origin"]
     disposition = parse_disposition(conn.body_params["disposition"])
 
     take_id = Cranium.Stage.new_stream_id()
     stream_id = Cranium.Stage.new_stream_id()
 
-    :ok = Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition)
+    :ok = Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition, origin: origin)
     :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
     conn
@@ -303,7 +306,8 @@ defmodule Cranium.Transport.HTTP do
             text: text,
             conversation_id: result.conversation_id,
             stream_id: result.stream_id,
-            disposition: result.disposition
+            disposition: result.disposition,
+            origin: result.origin
           }
 
           case Cranium.Epoch.submit(epoch_pid, message) do

@@ -226,7 +226,11 @@ defmodule Cranium.Epoch do
 
     # 2. Persist enriched user message (includes system-reminders from TurnInjector)
     enriched_text = enriched[:text] || text
-    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{role: :user, content: enriched_text})
+    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
+      role: :user,
+      content: enriched_text,
+      origin: msg_map[:origin]
+    })
 
     # 3. Map pipeline output to Agent context
     context = %{
@@ -362,7 +366,8 @@ defmodule Cranium.Epoch do
       stream_id: Map.get(message, :stream_id),
       disposition: Map.get(message, :disposition, ["text"]),
       mode: Map.get(message, :mode, :text),
-      attachments: Map.get(message, :attachments, [])
+      attachments: Map.get(message, :attachments, []),
+      origin: Map.get(message, :origin)
     }
   end
 end
