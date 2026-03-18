@@ -72,27 +72,31 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
     end
   end
 
-  defp parse_event(%{"type" => "assistant", "message" => %{"content" => content}}, marker_tools)
-       when is_list(content) do
+  defp parse_event(%{"type" => "assistant", "message" => message}, marker_tools) do
+    content = message["content"]
+
     messages =
-      content
-      |> Enum.flat_map(fn block -> parse_content_block(block, marker_tools) end)
+      if is_list(content) do
+        Enum.flat_map(content, fn block -> parse_content_block(block, marker_tools) end)
+      else
+        []
+      end
+
+    # Extract per-call usage snapshot (actual context window state for this API call)
+    messages =
+      case message["usage"] do
+        %{} = usage -> messages ++ [{:llm_usage, normalize_usage(usage)}]
+        _ -> messages
+      end
 
     if messages == [], do: :skip, else: {:ok, messages}
   end
 
-  defp parse_event(%{"type" => "result", "subtype" => "success"} = event, _marker_tools) do
-    messages = []
-
-    messages =
-      case event["usage"] do
-        %{} = usage -> [{:llm_usage, normalize_usage(usage)} | messages]
-        _ -> messages
-      end
-
-    messages = [{:llm_stop, "end_turn"} | messages]
-
-    {:ok, Enum.reverse(messages)}
+  defp parse_event(%{"type" => "result", "subtype" => "success"} = _event, _marker_tools) do
+    # Note: result.usage is cumulative across all internal API calls in the turn,
+    # which double-counts context. Per-call snapshots from assistant messages are
+    # more accurate for saturation tracking.
+    {:ok, [{:llm_stop, "end_turn"}]}
   end
 
   defp parse_event(%{"type" => "user", "tool_use_result" => result, "message" => message}, _marker_tools)

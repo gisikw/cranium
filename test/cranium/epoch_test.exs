@@ -19,7 +19,22 @@ defmodule Cranium.EpochTest do
     end
 
     test "returns 0.5 at midpoint" do
-      assert Cranium.Epoch.compute_saturation(%{input_tokens: 100_000}) == 0.5
+      assert Cranium.Epoch.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) == 0.5
+    end
+
+    test "includes output_tokens in total" do
+      assert Cranium.Epoch.compute_saturation(%{input_tokens: 0, output_tokens: 100_000}) == 0.5
+    end
+
+    test "sums all token types" do
+      usage = %{
+        input_tokens: 10_000,
+        output_tokens: 10_000,
+        cache_creation_input_tokens: 30_000,
+        cache_read_input_tokens: 50_000
+      }
+
+      assert Cranium.Epoch.compute_saturation(usage) == 0.5
     end
 
     test "returns 1.0 at full capacity" do
@@ -41,7 +56,7 @@ defmodule Cranium.EpochTest do
 
         pid =
           spawn(fn ->
-            send(caller, {:llm_usage, %{input_tokens: 100_000, output_tokens: 10}})
+            send(caller, {:llm_usage, %{input_tokens: 99_000, output_tokens: 1_000}})
             send(caller, {:llm_stop, "end_turn"})
           end)
 

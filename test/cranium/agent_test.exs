@@ -208,7 +208,7 @@ defmodule Cranium.AgentTest do
       assert {:error, :cancelled} = result
     end
 
-    test "accumulates usage across tool use rounds", %{egress: egress} do
+    test "keeps last usage snapshot across tool use rounds", %{egress: egress} do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
         caller = self()
@@ -239,8 +239,9 @@ defmodule Cranium.AgentTest do
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s4"}
       {:ok, result} = Cranium.Agent.infer(agent, context, egress)
 
-      assert result.usage.input_tokens == 250
-      assert result.usage.output_tokens == 50
+      # Last snapshot wins — reflects actual context window state
+      assert result.usage.input_tokens == 150
+      assert result.usage.output_tokens == 30
     end
   end
 end

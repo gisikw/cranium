@@ -25,6 +25,28 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
       assert {:ok, [{:llm_text, "Hello world"}]} = CCStreamParser.parse_line(line)
     end
 
+    test "extracts usage from assistant message" do
+      line = Jason.encode!(%{
+        type: "assistant",
+        message: %{
+          content: [%{type: "text", text: "Hi"}],
+          usage: %{
+            input_tokens: 5,
+            output_tokens: 10,
+            cache_creation_input_tokens: 100,
+            cache_read_input_tokens: 20_000
+          }
+        }
+      })
+
+      assert {:ok, messages} = CCStreamParser.parse_line(line)
+      assert {:llm_text, "Hi"} = Enum.at(messages, 0)
+      assert {:llm_usage, usage} = Enum.at(messages, 1)
+      assert usage.input_tokens == 5
+      assert usage.output_tokens == 10
+      assert usage.cache_read_input_tokens == 20_000
+    end
+
     test "skips empty text blocks" do
       line = Jason.encode!(%{
         type: "assistant",
@@ -100,7 +122,7 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
   end
 
   describe "parse_line/2 — result" do
-    test "extracts usage and stop from success result" do
+    test "emits stop without usage (cumulative usage is ignored)" do
       line = Jason.encode!(%{
         type: "result",
         subtype: "success",
@@ -113,11 +135,7 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
         }
       })
 
-      assert {:ok, messages} = CCStreamParser.parse_line(line)
-      assert {:llm_usage, usage} = Enum.find(messages, fn {t, _} -> t == :llm_usage end)
-      assert usage.input_tokens == 1500
-      assert usage.output_tokens == 300
-      assert {:llm_stop, "end_turn"} = List.last(messages)
+      assert {:ok, [{:llm_stop, "end_turn"}]} = CCStreamParser.parse_line(line)
     end
 
     test "handles error result" do

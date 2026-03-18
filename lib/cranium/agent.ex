@@ -345,17 +345,10 @@ defmodule Cranium.Agent do
     text_blocks ++ tool_blocks
   end
 
-  defp merge_usage(existing, new) do
-    %{
-      input_tokens: (existing[:input_tokens] || 0) + (new[:input_tokens] || 0),
-      output_tokens: (existing[:output_tokens] || 0) + (new[:output_tokens] || 0),
-      cache_creation_input_tokens:
-        (existing[:cache_creation_input_tokens] || 0) +
-          (new[:cache_creation_input_tokens] || 0),
-      cache_read_input_tokens:
-        (existing[:cache_read_input_tokens] || 0) + (new[:cache_read_input_tokens] || 0)
-    }
-  end
+  # Replace with latest usage snapshot rather than summing. Each CC assistant
+  # message reports the full context window state for that API call. The last
+  # one reflects the actual context size at the end of the turn.
+  defp merge_usage(_existing, new), do: new
 
   # --- Private ---
 
