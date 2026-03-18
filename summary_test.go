@@ -218,6 +218,13 @@ func TestGenerateSummary_ForkSessionArgs(t *testing.T) {
 	if !containsStr(inv.Args, "--resume") {
 		t.Error("expected --resume in summary args")
 	}
+	if !containsStr(inv.Args, "--plugin-dir") {
+		t.Error("expected --plugin-dir in summary args")
+	}
+	// Prompt should be the skill invocation, not raw instruction text
+	if !containsStr(inv.Args, "/summarize") {
+		t.Error("expected /summarize skill invocation in summary args")
+	}
 }
 
 func TestGenerateSummary_NoSessionSkips(t *testing.T) {

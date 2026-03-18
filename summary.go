@@ -133,18 +133,17 @@ func (b *Bridge) generateSummary(ctx context.Context, roomID id.RoomID) {
 		return
 	}
 
-	prompt := `SYSTEM TASK: You are being invoked as a forked snapshot of an active session. Ignore the previous conversational flow and respond ONLY to this instruction.
-
-Write a 2-4 sentence summary of what this room's conversation has been about. This summary will be shown to your other instances in different rooms for cross-room awareness. Focus on: what's being worked on, key decisions made, and current state. Respond with ONLY the summary text — no commentary, no meta-discussion, no tools.`
+	pluginDir := resolvePluginDir()
 
 	args := []string{
-		"-p", prompt,
+		"-p", "/summarize",
 		"--resume", sessionID,
 		"--fork-session",
 		"--no-session-persistence",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--tools", "",
+		"--plugin-dir", pluginDir,
 	}
 
 	// Use the project directory if the room matches one, since the session

@@ -86,6 +86,12 @@ func TestGenerateHandoff_ArgsCorrect(t *testing.T) {
 	if !containsStr(inv.Args, "--no-session-persistence") {
 		t.Error("expected --no-session-persistence in handoff args")
 	}
+	if !containsStr(inv.Args, "--plugin-dir") {
+		t.Error("expected --plugin-dir in handoff args")
+	}
+	if !containsStr(inv.Args, "/handoff") {
+		t.Error("expected /handoff skill invocation in handoff args")
+	}
 	// Env should be nil for handoff
 	if len(inv.Env) != 0 {
 		t.Errorf("expected no env vars for handoff, got %v", inv.Env)

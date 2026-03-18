@@ -37,23 +37,16 @@ func (b *Bridge) generateHandoff(ctx context.Context, roomID id.RoomID, sessionI
 	roomName := b.getRoomName(ctx, roomID)
 	slug := deriveSlug(roomName, string(roomID))
 
-	prompt := `Write a handoff document for this room's conversation. This will be injected as context into your next fresh session in this room after a clear.
-
-Include:
-- What was being worked on or discussed
-- Current state and any open threads
-- Key decisions made
-- Anything the next session needs to know to pick up smoothly
-
-Be concise but complete. Write in markdown. Do not use any tools — just respond with the handoff text directly.`
+	pluginDir := resolvePluginDir()
 
 	args := []string{
-		"-p", prompt,
+		"-p", "/handoff",
 		"--resume", sessionID,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--no-session-persistence",
 		"--tools", "",
+		"--plugin-dir", pluginDir,
 	}
 
 	// Use the project directory if the room matches one, since the session
