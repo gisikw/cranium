@@ -109,7 +109,7 @@ defmodule Cranium.Epoch do
   @spec cancel(String.t()) :: :ok | :not_found
   def cancel(conversation_id) do
     case Registry.lookup(Cranium.Epoch.Registry, {conversation_id, :agent}) do
-      [{agent_pid, _}] ->
+      [{_epoch_pid, agent_pid}] ->
         GenServer.cast(agent_pid, :cancel)
         :ok
 
