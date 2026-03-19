@@ -126,6 +126,11 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       {^port, {:exit_status, status}} ->
         Logger.error("Claude Code exited with status #{status}")
         send(caller, {:llm_stop, {:error, {:exit_status, status}}})
+
+      {:EXIT, _from, reason} ->
+        Logger.info("CC backend received exit signal: #{inspect(reason)}, closing port")
+        Port.close(port)
+        :ok
     after
       300_000 ->
         Port.close(port)
@@ -263,7 +268,9 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         # Send SIGTERM to the shell's process group. The heredoc pipe
         # (cat <<EOF | claude -p) creates children under sh; killing just
         # the shell may leave them orphaned. Negative PID targets the
-        # entire process group.
+        # entire process group. Any tool subprocesses CC spawned in
+        # different process groups will finish naturally — that's
+        # preferable to killing them mid-operation.
         System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
         :ok
     end

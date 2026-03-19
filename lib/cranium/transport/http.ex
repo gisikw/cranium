@@ -82,7 +82,8 @@ defmodule Cranium.Transport.HTTP do
         |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "clear"}))
 
       "!cancel" ->
-        Cranium.Epoch.cancel(conversation_id)
+        result = Cranium.Epoch.cancel(conversation_id)
+        Logger.info("Cancel result: #{inspect(result)}", conversation_id: conversation_id, transport: :http)
         Cranium.Manifest.complete(stream_id)
 
         conn
@@ -297,7 +298,9 @@ defmodule Cranium.Transport.HTTP do
 
   defp trigger_text_inference(result, take_id) do
     Task.start(fn ->
-      text = "[Transcribed from audio]\n#{result.text}"
+      content_key = result.disposition |> List.first("text") |> String.to_atom()
+      raw_text = Map.fetch!(result, content_key)
+      text = if content_key == :audio, do: "[Transcribed from audio]\n#{raw_text}", else: raw_text
       Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(text, 0..80))}", transport: :http)
 
       case Cranium.Epoch.start_or_get(result.conversation_id) do

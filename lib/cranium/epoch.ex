@@ -110,10 +110,18 @@ defmodule Cranium.Epoch do
   def cancel(conversation_id) do
     case Registry.lookup(Cranium.Epoch.Registry, {conversation_id, :agent}) do
       [{_epoch_pid, agent_pid}] ->
+        Logger.info("Cancel: sending to agent #{inspect(agent_pid)}",
+          conversation_id: conversation_id
+        )
+
         GenServer.cast(agent_pid, :cancel)
         :ok
 
       [] ->
+        Logger.warning("Cancel: no agent registered",
+          conversation_id: conversation_id
+        )
+
         :not_found
     end
   end
