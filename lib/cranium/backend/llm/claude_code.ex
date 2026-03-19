@@ -106,6 +106,13 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     Logger.info("CC backend port opened: os_pid=#{inspect(os_pid)} port=#{inspect(port)}")
 
+    # Drain any stale EXIT messages left in the mailbox (e.g., from
+    # System.cmd ports during nix devShell env resolution). Because this
+    # process traps exits, those EXIT signals queue up instead of being
+    # silently discarded, and would otherwise be caught by the receive
+    # loop's EXIT handler — killing the CC port before it produces output.
+    drain_stale_exits(port)
+
     marker_tools = CCStreamParser.default_marker_tools()
     receive_port_output(port, caller, marker_tools, "")
   end
@@ -150,20 +157,26 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         )
         send(caller, {:llm_stop, {:error, {:exit_status, status}}})
 
-      {:EXIT, from, reason} ->
-        from_label =
-          cond do
-            from == self() -> "self"
-            from == port -> "port"
-            from == caller -> "caller"
-            true -> inspect(from)
-          end
-
+      {:EXIT, ^caller, reason} ->
         Logger.warning(
-          "CC backend received EXIT: from=#{from_label} reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
+          "CC backend: caller exited: reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
         )
         Port.close(port)
         :ok
+
+      {:EXIT, ^port, reason} ->
+        Logger.warning(
+          "CC backend: port exited via EXIT signal: reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
+        )
+        :ok
+
+      {:EXIT, from, reason} ->
+        # Unexpected EXIT from something other than the port or caller.
+        # Log but don't kill the port — this is likely a stale signal.
+        Logger.warning(
+          "CC backend: ignoring stale EXIT from=#{inspect(from)} reason=#{inspect(reason)}"
+        )
+        receive_port_output(port, caller, marker_tools, buffer)
     after
       300_000 ->
         Port.close(port)
@@ -274,6 +287,16 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       ["--permission-mode", "bypassPermissions"]
     else
       []
+    end
+  end
+
+  defp drain_stale_exits(port) do
+    receive do
+      {:EXIT, from, reason} when from != port ->
+        Logger.info("CC backend: drained stale EXIT from=#{inspect(from)} reason=#{inspect(reason)}")
+        drain_stale_exits(port)
+    after
+      0 -> :ok
     end
   end
 
