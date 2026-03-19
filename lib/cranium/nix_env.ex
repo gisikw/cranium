@@ -39,7 +39,9 @@ defmodule Cranium.NixEnv do
             env
 
           _ ->
-            resolve_and_cache(working_dir, flake_path, mtime)
+            # Run resolution in the GenServer so System.cmd's port EXIT
+            # signals don't pollute the caller's mailbox (which may trap exits).
+            GenServer.call(__MODULE__, {:resolve, working_dir, flake_path, mtime}, 30_000)
         end
 
       {:error, _} ->
@@ -51,6 +53,21 @@ defmodule Cranium.NixEnv do
   def init(_opts) do
     :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
     {:ok, %{}}
+  end
+
+  @impl true
+  def handle_call({:resolve, working_dir, flake_path, mtime}, _from, state) do
+    # Double-check cache inside the serialized call to avoid duplicate work
+    result =
+      case :ets.lookup(@table, working_dir) do
+        [{^working_dir, cached_mtime, env}] when cached_mtime == mtime ->
+          env
+
+        _ ->
+          resolve_and_cache(working_dir, flake_path, mtime)
+      end
+
+    {:reply, result, state}
   end
 
   defp resolve_and_cache(working_dir, _flake_path, mtime) do
@@ -73,11 +90,12 @@ defmodule Cranium.NixEnv do
         env
 
       {:error, reason} ->
-        Logger.warning("Failed to resolve nix devShell env",
-          working_dir: working_dir,
-          reason: inspect(reason)
-        )
+        Logger.warning("Failed to resolve nix devShell env: #{inspect(reason)} (#{working_dir})")
 
+        # Negative cache — avoid re-running nix print-dev-env on every
+        # message. Mtime check still applies: if the user fixes the flake,
+        # the mtime changes and we retry.
+        :ets.insert(@table, {working_dir, mtime, []})
         []
     end
   end
