@@ -35,7 +35,13 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         Process.flag(:trap_exit, true)
 
         try do
-          do_stream(caller, messages, opts)
+          result = do_stream(caller, messages, opts)
+          Logger.debug("CC backend do_stream returned: #{inspect(result)}")
+          result
+        rescue
+          e ->
+            Logger.error("CC backend crashed: #{Exception.format(:error, e, __STACKTRACE__)}")
+            send(caller, {:llm_stop, {:error, {:crash, Exception.message(e)}}})
         after
           kill_port_process_group()
           cleanup_temp_files(Process.get(:temp_files, []))
@@ -59,7 +65,13 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     Process.put(:temp_files, temp_files)
 
-    Logger.info("CC backend: mode=#{if cc_session_id, do: "resume", else: "oneshot"}")
+    mode = if cc_session_id, do: "resume", else: "oneshot"
+    Logger.info("CC backend: mode=#{mode}",
+      working_dir: working_dir,
+      session_id: cc_session_id
+    )
+
+    Logger.debug("CC backend command: #{cmd}")
 
     # Unset ANTHROPIC_API_KEY so CC uses its subscription login instead
     # of falling through to direct API mode. Merge nix devShell env if
@@ -79,16 +91,28 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       if working_dir && File.dir?(working_dir) do
         [{:cd, String.to_charlist(working_dir)} | port_opts]
       else
+        Logger.warning("CC backend: working_dir missing or not a directory",
+          working_dir: working_dir
+        )
         port_opts
       end
 
     port = Port.open({:spawn_executable, sh_path()}, port_opts)
 
     # Track the port's OS PID for process group cleanup on cancel
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Process.put(:port_os_pid, os_pid)
-      _ -> :ok
-    end
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} ->
+          Process.put(:port_os_pid, pid)
+          pid
+        _ ->
+          nil
+      end
+
+    Logger.info("CC backend port opened",
+      os_pid: os_pid,
+      port: inspect(port)
+    )
 
     marker_tools = CCStreamParser.default_marker_tools()
     receive_port_output(port, caller, marker_tools, "")
@@ -114,21 +138,35 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
       {^port, {:exit_status, 0}} ->
         # Process any remaining buffer
-        if String.trim(buffer) != "" do
+        remaining = String.trim(buffer)
+
+        if remaining != "" do
+          Logger.debug("CC backend flushing remaining buffer (#{byte_size(remaining)} bytes)")
+
           case CCStreamParser.parse_line(buffer, marker_tools) do
             {:ok, messages} -> Enum.each(messages, fn msg -> send(caller, msg) end)
             :skip -> :ok
           end
         end
 
+        Logger.info("CC backend exited cleanly (status 0)")
         :ok
 
       {^port, {:exit_status, status}} ->
-        Logger.error("Claude Code exited with status #{status}")
+        Logger.error("Claude Code exited with status #{status}",
+          buffer_size: byte_size(buffer),
+          buffer_tail: String.slice(buffer, -500, 500)
+        )
         send(caller, {:llm_stop, {:error, {:exit_status, status}}})
 
-      {:EXIT, _from, reason} ->
-        Logger.info("CC backend received exit signal: #{inspect(reason)}, closing port")
+      {:EXIT, from, reason} ->
+        Logger.warning("CC backend received exit signal",
+          from: inspect(from),
+          from_self: from == self(),
+          from_port: (match?({:EXIT, ^port, _}, {:EXIT, from, reason})),
+          reason: inspect(reason),
+          buffer_size: byte_size(buffer)
+        )
         Port.close(port)
         :ok
     after
