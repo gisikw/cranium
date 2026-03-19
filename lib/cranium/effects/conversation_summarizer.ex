@@ -48,6 +48,7 @@ defmodule Cranium.Effects.ConversationSummarizer do
         case collect_text(stream_pid) do
           {:ok, text} ->
             Cranium.Store.save_summary(conversation_id, text)
+            write_to_hoard(conversation_id, text)
 
           {:error, reason} ->
             Logger.error("Summary generation failed: #{inspect(reason)}",
@@ -68,6 +69,32 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
   defp skills_dir do
     Application.get_env(:cranium, :paths)[:skills]
+  end
+
+  defp write_to_hoard(conversation_id, text) do
+    dir = Application.get_env(:cranium, :paths)[:summaries]
+    if dir do
+      now = System.system_time(:second)
+      payload = %{
+        "room_name" => conversation_id,
+        "summary" => text,
+        "last_message_ts" => now,
+        "last_summary_ts" => now
+      }
+
+      path = Path.join(dir, "#{conversation_id}.json")
+
+      case File.write(path, Jason.encode!(payload, pretty: true)) do
+        :ok ->
+          Logger.info("Summary written to hoard", conversation_id: conversation_id)
+
+        {:error, reason} ->
+          Logger.warning("Failed to write summary to hoard",
+            conversation_id: conversation_id,
+            reason: inspect(reason)
+          )
+      end
+    end
   end
 
   defp collect_text(stream_pid) do

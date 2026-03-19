@@ -52,6 +52,7 @@ defmodule Cranium.Effects.HandoffWriter do
         case collect_text(stream_pid) do
           {:ok, text} ->
             Cranium.Store.save_handoff(epoch_id, text)
+            write_to_hoard(conversation_id, text)
 
             Logger.info("Handoff complete",
               conversation_id: conversation_id,
@@ -78,6 +79,31 @@ defmodule Cranium.Effects.HandoffWriter do
 
   defp skills_dir do
     Application.get_env(:cranium, :paths)[:skills]
+  end
+
+  defp write_to_hoard(conversation_id, text) do
+    dir = Application.get_env(:cranium, :paths)[:handoffs]
+    if dir do
+      room_dir = Path.join(dir, conversation_id)
+      File.mkdir_p(room_dir)
+
+      timestamp = Calendar.strftime(DateTime.utc_now(), "%Y-%m-%d_%H-%M-%S")
+      path = Path.join(room_dir, "#{timestamp}.md")
+
+      case File.write(path, text) do
+        :ok ->
+          Logger.info("Handoff written to hoard",
+            conversation_id: conversation_id,
+            path: path
+          )
+
+        {:error, reason} ->
+          Logger.warning("Failed to write handoff to hoard",
+            conversation_id: conversation_id,
+            reason: inspect(reason)
+          )
+      end
+    end
   end
 
   defp collect_text(stream_pid) do
