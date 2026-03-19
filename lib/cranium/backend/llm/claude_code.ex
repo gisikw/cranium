@@ -62,12 +62,17 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     Logger.info("CC backend: mode=#{if cc_session_id, do: "resume", else: "oneshot"}")
 
     # Unset ANTHROPIC_API_KEY so CC uses its subscription login instead
-    # of falling through to direct API mode.
+    # of falling through to direct API mode. Merge nix devShell env if
+    # the working dir has a flake.nix (cached, ~0ms after first resolve).
+    nix_env = Cranium.NixEnv.env_for(working_dir)
+
+    env = [{~c"ANTHROPIC_API_KEY", false} | nix_env]
+
     port_opts = [
       :binary,
       :exit_status,
       {:args, ["-c", cmd]},
-      {:env, [{~c"ANTHROPIC_API_KEY", false}]}
+      {:env, env}
     ]
 
     port_opts =

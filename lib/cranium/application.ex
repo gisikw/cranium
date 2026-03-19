@@ -38,6 +38,9 @@ defmodule Cranium.Application do
       # Input protocol (chunked audio take registry)
       Cranium.Input.TakeRegistry,
 
+      # Nix devShell env cache (ETS table for PATH injection)
+      Cranium.NixEnv,
+
       # Pipeline stages
       Cranium.Ingress,
       Cranium.Context,
