@@ -66,10 +66,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     Process.put(:temp_files, temp_files)
 
     mode = if cc_session_id, do: "resume", else: "oneshot"
-    Logger.info("CC backend: mode=#{mode}",
-      working_dir: working_dir,
-      session_id: cc_session_id
-    )
+    Logger.info("CC backend: mode=#{mode} working_dir=#{inspect(working_dir)} session_id=#{inspect(cc_session_id)}")
 
     Logger.debug("CC backend command: #{cmd}")
 
@@ -91,9 +88,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       if working_dir && File.dir?(working_dir) do
         [{:cd, String.to_charlist(working_dir)} | port_opts]
       else
-        Logger.warning("CC backend: working_dir missing or not a directory",
-          working_dir: working_dir
-        )
+        Logger.warning("CC backend: working_dir missing or not a directory: #{inspect(working_dir)}")
         port_opts
       end
 
@@ -109,10 +104,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
           nil
       end
 
-    Logger.info("CC backend port opened",
-      os_pid: os_pid,
-      port: inspect(port)
-    )
+    Logger.info("CC backend port opened: os_pid=#{inspect(os_pid)} port=#{inspect(port)}")
 
     marker_tools = CCStreamParser.default_marker_tools()
     receive_port_output(port, caller, marker_tools, "")
@@ -153,19 +145,22 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         :ok
 
       {^port, {:exit_status, status}} ->
-        Logger.error("Claude Code exited with status #{status}",
-          buffer_size: byte_size(buffer),
-          buffer_tail: String.slice(buffer, -500, 500)
+        Logger.error(
+          "Claude Code exited with status #{status}, buffer_size=#{byte_size(buffer)}, tail=#{String.slice(buffer, -500, 500)}"
         )
         send(caller, {:llm_stop, {:error, {:exit_status, status}}})
 
       {:EXIT, from, reason} ->
-        Logger.warning("CC backend received exit signal",
-          from: inspect(from),
-          from_self: from == self(),
-          from_port: (match?({:EXIT, ^port, _}, {:EXIT, from, reason})),
-          reason: inspect(reason),
-          buffer_size: byte_size(buffer)
+        from_label =
+          cond do
+            from == self() -> "self"
+            from == port -> "port"
+            from == caller -> "caller"
+            true -> inspect(from)
+          end
+
+        Logger.warning(
+          "CC backend received EXIT: from=#{from_label} reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
         )
         Port.close(port)
         :ok
