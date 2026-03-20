@@ -79,6 +79,18 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:get_latest_handoff, conversation_id})
   end
 
+  @doc """
+  Eagerly persist the CC session ID for a conversation's active epoch.
+
+  Called mid-inference by the Agent so a process restart doesn't lose
+  the session ID (which would cause CC to start a fresh session with
+  no conversation history).
+  """
+  @spec update_epoch_session(String.t(), String.t()) :: :ok
+  def update_epoch_session(conversation_id, session_id) do
+    GenServer.call(__MODULE__, {:update_epoch_session, conversation_id, session_id})
+  end
+
   # Message timestamp queries
 
   @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
@@ -210,6 +222,25 @@ defmodule Cranium.Store do
       end
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:update_epoch_session, conversation_id, session_id}, _from, state) do
+    from(e in Epoch,
+      where: e.conversation_id == ^conversation_id and e.status != "cleared",
+      order_by: [desc: e.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> :ok
+      epoch ->
+        epoch
+        |> Epoch.changeset(%{cc_session_id: session_id})
+        |> Repo.update!()
+    end
+
+    {:reply, :ok, state}
   end
 
   @impl true

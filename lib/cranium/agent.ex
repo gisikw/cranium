@@ -264,6 +264,13 @@ defmodule Cranium.Agent do
         receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
+        # Persist eagerly so a mid-inference process restart doesn't lose the
+        # session ID. Without this, a restart creates a fresh CC session and
+        # the model loses all conversation history.
+        if state.conversation_id do
+          Cranium.Store.update_epoch_session(state.conversation_id, session_id)
+        end
+
         receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, llm_pid, ref, opts)
 
       {:llm_stop, "end_turn"} ->
