@@ -27,6 +27,7 @@ defmodule Cranium.Epoch do
     :agent_pid,
     :cc_session_id,
     :last_landscape_at,
+    :interrupted_context,
     status: :idle,
     stream_id: nil,
     turn_count: 0,
@@ -42,6 +43,7 @@ defmodule Cranium.Epoch do
           agent_pid: pid() | nil,
           cc_session_id: String.t() | nil,
           last_landscape_at: DateTime.t() | nil,
+          interrupted_context: String.t() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
           turn_count: non_neg_integer(),
@@ -220,7 +222,8 @@ defmodule Cranium.Epoch do
         last_invoked_at: last_invoked_at,
         saturation: state.saturation * 100,
         last_reminder_bucket: state.last_reminder_bucket,
-        last_landscape_at: state.last_landscape_at
+        last_landscape_at: state.last_landscape_at,
+        interrupted_context: state.interrupted_context
       }
     }
 
@@ -272,7 +275,7 @@ defmodule Cranium.Epoch do
     Registry.unregister(Cranium.Epoch.Registry, {state.conversation_id, :agent})
 
     # 5. Persist assistant response, track saturation, capture CC session ID
-    state =
+    {reply, state} =
       case result do
         {:ok, %{output: output, usage: usage} = agent_result} ->
           if output != "" do
@@ -305,20 +308,48 @@ defmodule Cranium.Epoch do
             })
           end
 
-          %{state |
+          {result, %{state |
             turn_count: new_count,
             saturation: saturation,
             last_reminder_bucket: new_bucket,
-            cc_session_id: cc_session_id
-          }
+            cc_session_id: cc_session_id,
+            interrupted_context: nil
+          }}
 
-        _ ->
+        {:error, :cancelled, partial} ->
+          # Persist partial assistant response so history isn't gapped
+          output = partial[:output] || ""
+
+          if output != "" do
+            Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
+              role: :assistant,
+              content: output
+            })
+          end
+
+          # Truncate for context injection (matching v1's 2000 char limit)
+          interrupted =
+            if output != "" do
+              if String.length(output) > 2000,
+                do: String.slice(output, 0, 2000) <> "\n\n[...output truncated...]",
+                else: output
+            end
+
+          cc_session_id = partial[:cc_session_id] || state.cc_session_id
+          Cranium.Store.update_epoch(state.epoch_id, %{status: "active", cc_session_id: cc_session_id})
+
+          {{:error, :cancelled}, %{state |
+            interrupted_context: interrupted,
+            cc_session_id: cc_session_id
+          }}
+
+        {:error, _reason} ->
           Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
-          state
+          {result, state}
       end
 
     state = %{state | status: :idle, stream_id: nil, agent_pid: nil}
-    {:reply, result, state}
+    {:reply, reply, state}
   end
 
   def handle_call({:submit, _message}, _from, state) do
@@ -342,7 +373,8 @@ defmodule Cranium.Epoch do
       saturation: 0.0,
       last_reminder_bucket: 0,
       cc_session_id: nil,
-      last_landscape_at: nil
+      last_landscape_at: nil,
+      interrupted_context: nil
     }
 
     {:reply, :ok, state}

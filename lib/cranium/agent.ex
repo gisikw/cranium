@@ -182,6 +182,19 @@ defmodule Cranium.Agent do
 
         {:reply, {:ok, reply}, %{final_state | status: :idle, stream_id: nil}}
 
+      {:cancelled, final_state} ->
+        output = final_state.partial_output |> Enum.reverse() |> Enum.join()
+        Logger.info("Inference cancelled", output_length: String.length(output))
+
+        partial = %{
+          stream_id: stream_id,
+          output: output,
+          usage: final_state.usage,
+          cc_session_id: final_state.cc_session_id
+        }
+
+        {:reply, {:error, :cancelled, partial}, %{final_state | status: :idle, stream_id: nil}}
+
       {:error, reason} = error ->
         Logger.error("Inference failed", error: inspect(reason))
         {:reply, error, %{state | status: :idle, stream_id: nil}}
@@ -270,12 +283,12 @@ defmodule Cranium.Agent do
         Logger.warning("Unexpected stop reason", reason: inspect(other))
         {:ok, state}
 
-      # Cancel: kill the LLM streaming process to terminate the port
+      # Cancel: kill the LLM streaming process, return partial output
       {:"$gen_cast", :cancel} ->
         Logger.info("Agent cancelled, terminating LLM process")
         Process.unlink(llm_pid)
         Process.exit(llm_pid, :shutdown)
-        {:error, :cancelled}
+        {:cancelled, state}
 
       {:DOWN, ^ref, :process, _pid, :normal} ->
         # LLM process exited normally — might not have sent :llm_stop

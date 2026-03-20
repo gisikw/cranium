@@ -2,10 +2,15 @@ defmodule Cranium.Transport.HTTP do
   @moduledoc """
   HTTP transport for cranium v2.
 
-  Three endpoints:
+  Endpoints:
   - `POST /v1/submit` — accept input, create epoch, return stream_id
   - `GET /v1/streams/:id/manifest` — segment manifest with current status
   - `GET /v1/streams/:id/segments/:n/:rendition` — individual segment content
+  - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
+  - `POST /v1/input/start` — open a chunked audio take
+  - `PUT /v1/input/:id/:seq` — append numbered audio chunk
+  - `POST /v1/input/:id/done` — seal a take
+  - `POST /v1/clear` — clear the active epoch
 
   Client loop: submit → poll manifest → consume new segments → repeat
   until `status: "complete"`.
@@ -268,6 +273,50 @@ defmodule Cranium.Transport.HTTP do
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(400, Jason.encode!(%{"error" => "missing or invalid last_seq"}))
+    end
+  end
+
+  get "/v1/conversations/:id" do
+    conversation_id = id
+
+    # Read epoch state from DB — doesn't touch the (potentially blocked) Epoch GenServer
+    epoch_data =
+      case Cranium.Store.get_epoch(conversation_id) do
+        {:ok, epoch} -> epoch
+        :not_found -> nil
+      end
+
+    # Check if a handoff is currently being generated (Registry auto-clears on Task exit)
+    handoff_generating =
+      Registry.lookup(Cranium.Epoch.Registry, {conversation_id, :handoff}) != []
+
+    # Check if an Epoch process is alive for this conversation
+    has_process =
+      case Cranium.Epoch.lookup(conversation_id) do
+        {:ok, _pid} -> true
+        :not_found -> false
+      end
+
+    if epoch_data do
+      body = %{
+        "conversation_id" => conversation_id,
+        "epoch_id" => epoch_data.id,
+        "status" => epoch_data.status,
+        "turn_count" => epoch_data.turn_count,
+        "saturation" => epoch_data.saturation,
+        "handoff_generating" => handoff_generating,
+        "has_process" => has_process,
+        "cc_session_id" => epoch_data.cc_session_id,
+        "updated_at" => epoch_data.updated_at && DateTime.to_iso8601(epoch_data.updated_at)
+      }
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(body))
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(404, Jason.encode!(%{"error" => "conversation not found"}))
     end
   end
 

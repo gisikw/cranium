@@ -25,6 +25,10 @@ defmodule Cranium.Effects.HandoffWriter do
 
   @spec generate(String.t(), String.t()) :: :ok | {:error, term()}
   def generate(conversation_id, epoch_id) do
+    # Register in Epoch Registry so clients can detect in-flight handoffs.
+    # Auto-unregisters when this Task process exits (success or crash).
+    Registry.register(Cranium.Epoch.Registry, {conversation_id, :handoff}, true)
+
     Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
     backend = Application.get_env(:cranium, :backends)[:llm]
