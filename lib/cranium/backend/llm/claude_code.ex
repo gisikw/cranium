@@ -206,7 +206,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         )
         receive_port_output(port, caller, marker_tools, buffer)
     after
-      300_000 ->
+      900_000 ->
         Port.close(port)
         send(caller, {:llm_stop, {:error, :timeout}})
     end

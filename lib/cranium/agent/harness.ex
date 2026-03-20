@@ -82,10 +82,6 @@ defmodule Cranium.Agent.Harness do
 
       {:DOWN, ^ref, :process, _, reason} ->
         {:error, {:stream_died, reason}}
-    after
-      120_000 ->
-        Process.demonitor(ref, [:flush])
-        {:error, :inference_timeout}
     end
   end
 end

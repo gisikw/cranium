@@ -305,9 +305,6 @@ defmodule Cranium.Agent do
 
       {:DOWN, ^ref, :process, _pid, reason} ->
         {:error, {:llm_crash, reason}}
-    after
-      120_000 ->
-        {:error, :timeout}
     end
   end
 
