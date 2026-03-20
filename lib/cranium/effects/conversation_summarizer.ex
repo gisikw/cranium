@@ -123,7 +123,7 @@ defmodule Cranium.Effects.ConversationSummarizer do
       {:DOWN, ^ref, :process, _, reason} ->
         {:error, {:stream_died, reason}}
     after
-      60_000 ->
+      300_000 ->
         Process.demonitor(ref, [:flush])
         {:error, :timeout}
     end
