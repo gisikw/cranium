@@ -292,6 +292,12 @@ defmodule Cranium.Epoch do
 
           cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
 
+          # Generate cross-conversation summary every N turns
+          summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
+          if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
+            Cranium.Effects.generate_summary(state.conversation_id)
+          end
+
           Cranium.Store.update_epoch(state.epoch_id, %{
             status: "active",
             saturation: saturation,

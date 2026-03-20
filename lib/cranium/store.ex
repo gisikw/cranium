@@ -91,6 +91,20 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:update_epoch_session, conversation_id, session_id})
   end
 
+  @doc """
+  Clear the active epoch for a conversation directly in the DB.
+
+  Used when no Epoch GenServer is running (e.g., after a service restart).
+  Marks the current epoch as cleared and creates a fresh one. Skips handoff
+  generation since there's no running session to summarize.
+
+  Returns `{:ok, new_epoch_id}` or `:not_found`.
+  """
+  @spec clear_epoch(String.t()) :: {:ok, String.t()} | :not_found
+  def clear_epoch(conversation_id) do
+    GenServer.call(__MODULE__, {:clear_epoch, conversation_id})
+  end
+
   # Message timestamp queries
 
   @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
