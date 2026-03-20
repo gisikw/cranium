@@ -269,7 +269,7 @@ defmodule Cranium.Agent do
         # Persist eagerly so a mid-inference process restart doesn't lose the
         # session ID. Without this, a restart creates a fresh CC session and
         # the model loses all conversation history. Skip for ephemeral.
-        if state.conversation_id and not Keyword.get(opts, :ephemeral, false) do
+        if state.conversation_id && !Keyword.get(opts, :ephemeral, false) do
           Cranium.Store.update_epoch_session(state.conversation_id, session_id)
         end
 
