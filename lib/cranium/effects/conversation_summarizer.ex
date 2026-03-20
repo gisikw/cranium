@@ -16,54 +16,63 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
   require Logger
 
-  @spec generate(String.t()) :: :ok | {:error, term()}
-  def generate(conversation_id) do
-    Logger.info("Generating conversation summary",
-      conversation_id: conversation_id,
-      stage: :effects
-    )
+  @spec generate(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def generate(conversation_id, cc_session_id) do
+    case cc_session_id do
+      nil ->
+        Logger.warning("No CC session ID — skipping summary generation",
+          conversation_id: conversation_id,
+          stage: :effects
+        )
 
-    backend = Application.get_env(:cranium, :backends)[:llm]
+        {:error, :no_session}
 
-    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 30)
+      _ ->
+        Logger.info("Generating conversation summary",
+          conversation_id: conversation_id,
+          stage: :effects
+        )
 
-    # Format history as a transcript and prefix with /summarize to invoke the skill
-    transcript =
-      history
-      |> Enum.map(fn msg ->
-        role = to_string(msg[:role] || "user")
-        content = msg[:content] || ""
-        "#{role}: #{content}"
-      end)
-      |> Enum.join("\n\n")
+        backend = Application.get_env(:cranium, :backends)[:llm]
 
-    prompt = "/summarize\n\n#{transcript}"
+        # Resume the existing session (forked, read-only) so the model already
+        # has full conversation context. Just invoke the /summarize skill.
+        messages = [%{"role" => "user", "content" => "/summarize"}]
 
-    messages = [%{"role" => "user", "content" => prompt}]
+        projects_dir = Application.get_env(:cranium, :paths)[:projects] || "~/Projects"
+        working_dir = Cranium.Context.Router.resolve_project_dir(conversation_id, projects_dir)
 
-    opts = [system: "", tools: [], plugin_dir: skills_dir()]
+        opts = [
+          cc_session_id: cc_session_id,
+          no_session_persistence: true,
+          fork_session: true,
+          tools: "",
+          plugin_dir: Path.dirname(skills_dir()),
+          working_dir: working_dir
+        ]
 
-    case backend.stream_chat(messages, opts) do
-      {:ok, stream_pid} ->
-        case collect_text(stream_pid) do
-          {:ok, text} ->
-            Cranium.Store.save_summary(conversation_id, text)
-            write_to_hoard(conversation_id, text)
+        case backend.stream_chat(messages, opts) do
+          {:ok, stream_pid} ->
+            case collect_text(stream_pid) do
+              {:ok, text} ->
+                Cranium.Store.save_summary(conversation_id, text)
+                write_to_hoard(conversation_id, text)
+
+              {:error, reason} ->
+                Logger.error("Summary generation failed: #{inspect(reason)}",
+                  conversation_id: conversation_id
+                )
+
+                {:error, reason}
+            end
 
           {:error, reason} ->
-            Logger.error("Summary generation failed: #{inspect(reason)}",
+            Logger.error("Summary LLM call failed: #{inspect(reason)}",
               conversation_id: conversation_id
             )
 
             {:error, reason}
         end
-
-      {:error, reason} ->
-        Logger.error("Summary LLM call failed: #{inspect(reason)}",
-          conversation_id: conversation_id
-        )
-
-        {:error, reason}
     end
   end
 

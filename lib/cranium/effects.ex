@@ -32,11 +32,11 @@ defmodule Cranium.Effects do
 
   Spawns a Task under the Effects supervisor. Returns immediately.
   """
-  @spec generate_handoff(String.t(), String.t()) :: :ok
-  def generate_handoff(conversation_id, epoch_id) do
+  @spec generate_handoff(String.t(), String.t(), String.t() | nil) :: :ok
+  def generate_handoff(conversation_id, epoch_id, cc_session_id) do
     Task.Supervisor.start_child(
       Cranium.Effects.Supervisor,
-      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id) end,
+      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id, cc_session_id) end,
       restart: :temporary
     )
 
@@ -48,13 +48,13 @@ defmodule Cranium.Effects do
 
   Spawns a Task under the Effects supervisor. Returns immediately.
   """
-  @spec generate_summary(String.t()) :: :ok
-  def generate_summary(conversation_id) do
+  @spec generate_summary(String.t(), String.t() | nil) :: :ok
+  def generate_summary(conversation_id, cc_session_id) do
     Logger.info("Generating summary", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
       Cranium.Effects.Supervisor,
-      fn -> Cranium.Effects.ConversationSummarizer.generate(conversation_id) end,
+      fn -> Cranium.Effects.ConversationSummarizer.generate(conversation_id, cc_session_id) end,
       restart: :temporary
     )
 

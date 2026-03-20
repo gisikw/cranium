@@ -311,7 +311,7 @@ defmodule Cranium.Epoch do
             # Generate cross-conversation summary every N turns
             summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
             if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
-              Cranium.Effects.generate_summary(state.conversation_id)
+              Cranium.Effects.generate_summary(state.conversation_id, state.cc_session_id)
             end
 
             Cranium.Store.update_epoch(state.epoch_id, %{
@@ -392,7 +392,7 @@ defmodule Cranium.Epoch do
     Logger.info("Clearing epoch", stage: :epoch)
 
     Cranium.Store.update_epoch(state.epoch_id, %{status: "cleared"})
-    Cranium.Effects.generate_handoff(state.conversation_id, state.epoch_id)
+    Cranium.Effects.generate_handoff(state.conversation_id, state.epoch_id, state.cc_session_id)
 
     {:ok, new_epoch_id} = Cranium.Store.create_epoch(state.conversation_id)
 

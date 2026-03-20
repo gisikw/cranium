@@ -54,14 +54,25 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
   defp do_stream(caller, messages, opts) do
     ephemeral = Keyword.get(opts, :ephemeral, false)
-    cc_session_id = if ephemeral, do: nil, else: Keyword.get(opts, :cc_session_id)
+    cc_session_id = Keyword.get(opts, :cc_session_id)
     system = Keyword.get(opts, :system)
     working_dir = Keyword.get(opts, :working_dir)
 
-    # Ephemeral requests run in a throwaway tmpdir to avoid CC bug
-    # with overlapping working directories
+    # Ephemeral + session ID = "peek without mutating" → fork the session.
+    # This ensures ephemeral callers never accidentally append to a live session.
+    opts =
+      if ephemeral && cc_session_id do
+        opts
+        |> Keyword.put_new(:fork_session, true)
+        |> Keyword.put_new(:no_session_persistence, true)
+      else
+        opts
+      end
+
+    # Ephemeral requests without a session run in a throwaway tmpdir to avoid
+    # CC bug with overlapping working directories
     {working_dir, temp_dirs} =
-      if ephemeral do
+      if ephemeral && !cc_session_id do
         tmpdir = make_ephemeral_dir()
         {tmpdir, [tmpdir]}
       else
@@ -87,8 +98,10 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     # Unset ANTHROPIC_API_KEY so CC uses its subscription login instead
     # of falling through to direct API mode. Merge nix devShell env if
     # the working dir has a flake.nix (cached, ~0ms after first resolve).
-    # Skip nix env for ephemeral (tmpdir has no flake).
-    nix_env = if ephemeral, do: [], else: Cranium.NixEnv.env_for(working_dir)
+    # Skip nix env for ephemeral oneshot (tmpdir has no flake).
+    # Ephemeral + session resumes use the real working dir, so nix env applies.
+    skip_nix = ephemeral && !cc_session_id
+    nix_env = if skip_nix, do: [], else: Cranium.NixEnv.env_for(working_dir)
 
     env = [{~c"ANTHROPIC_API_KEY", false} | nix_env]
 
@@ -232,9 +245,30 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     args = args ++ permission_args(opts)
     args = args ++ model_args(opts)
-    args = args ++ ephemeral_args(opts)
+    args = args ++ persistence_args(opts)
     args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
     args = if mcp_file, do: args ++ ["--mcp-config", mcp_file], else: args
+
+    args =
+      case Keyword.get(opts, :plugin_dir) do
+        nil -> args
+        dir -> args ++ ["--plugin-dir", dir]
+      end
+
+    # tools: nil → omit (CC uses defaults)
+    # tools: [] → omit (nothing to pass)
+    # tools: "" → --tools "" (disable all tools)
+    # tools: "Bash,Read" or ["Bash", "Read"] → --tools Bash,Read
+    args =
+      case Keyword.get(opts, :tools) do
+        nil -> args
+        [] -> args
+        "" -> args ++ ["--tools", ""]
+        tools when is_binary(tools) -> args ++ ["--tools", tools]
+        tools when is_list(tools) -> args ++ ["--tools", Enum.join(tools, ",")]
+      end
+
+    args = if Keyword.get(opts, :fork_session, false), do: args ++ ["--fork-session"], else: args
 
     escaped_text = escape_heredoc(user_text)
     cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_text}\nCRANIUM_EOF"
@@ -266,7 +300,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     args = args ++ permission_args(opts)
     args = args ++ model_args(opts)
-    args = args ++ ephemeral_args(opts)
+    args = args ++ persistence_args(opts)
     args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
 
     args =
@@ -316,8 +350,8 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     end
   end
 
-  defp ephemeral_args(opts) do
-    if Keyword.get(opts, :ephemeral, false) do
+  defp persistence_args(opts) do
+    if Keyword.get(opts, :ephemeral, false) || Keyword.get(opts, :no_session_persistence, false) do
       ["--no-session-persistence"]
     else
       []
@@ -391,10 +425,14 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
   end
 
   defp shell_escape(arg) do
-    if String.contains?(arg, [" ", "'", "\"", "\\", "$", "`"]) do
-      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    if arg == "" do
+      "''"
     else
-      arg
+      if String.contains?(arg, [" ", "'", "\"", "\\", "$", "`"]) do
+        "'" <> String.replace(arg, "'", "'\\''") <> "'"
+      else
+        arg
+      end
     end
   end
 

@@ -23,61 +23,69 @@ defmodule Cranium.Effects.HandoffWriter do
 
   require Logger
 
-  @spec generate(String.t(), String.t()) :: :ok | {:error, term()}
-  def generate(conversation_id, epoch_id) do
+  @spec generate(String.t(), String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def generate(conversation_id, epoch_id, cc_session_id) do
     # Register in Epoch Registry so clients can detect in-flight handoffs.
     # Auto-unregisters when this Task process exits (success or crash).
     Registry.register(Cranium.Epoch.Registry, {conversation_id, :handoff}, true)
 
-    Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
+    case cc_session_id do
+      nil ->
+        Logger.warning("No CC session ID — skipping handoff generation",
+          conversation_id: conversation_id,
+          stage: :effects
+        )
 
-    backend = Application.get_env(:cranium, :backends)[:llm]
+        {:error, :no_session}
 
-    {:ok, history} = Cranium.Store.get_messages(conversation_id, limit: 100, epoch_id: epoch_id)
+      _ ->
+        Logger.info("Generating handoff", conversation_id: conversation_id, stage: :effects)
 
-    # Format history as a transcript and prefix with /handoff to invoke the skill
-    transcript =
-      history
-      |> Enum.map(fn msg ->
-        role = to_string(msg[:role] || "user")
-        content = msg[:content] || ""
-        "#{role}: #{content}"
-      end)
-      |> Enum.join("\n\n")
+        backend = Application.get_env(:cranium, :backends)[:llm]
 
-    prompt = "/handoff\n\n#{transcript}"
+        # Resume the existing session so the model already has full conversation
+        # context. Just invoke the /handoff skill — no transcript needed.
+        messages = [%{"role" => "user", "content" => "/handoff"}]
 
-    messages = [%{"role" => "user", "content" => prompt}]
+        projects_dir = Application.get_env(:cranium, :paths)[:projects] || "~/Projects"
+        working_dir = Cranium.Context.Router.resolve_project_dir(conversation_id, projects_dir)
 
-    opts = [system: "", tools: [], plugin_dir: skills_dir()]
+        opts = [
+          cc_session_id: cc_session_id,
+          no_session_persistence: true,
+          tools: "",
+          plugin_dir: Path.dirname(skills_dir()),
+          working_dir: working_dir
+        ]
 
-    case backend.stream_chat(messages, opts) do
-      {:ok, stream_pid} ->
-        case collect_text(stream_pid) do
-          {:ok, text} ->
-            Cranium.Store.save_handoff(epoch_id, text)
-            write_to_hoard(conversation_id, text)
+        case backend.stream_chat(messages, opts) do
+          {:ok, stream_pid} ->
+            case collect_text(stream_pid) do
+              {:ok, text} ->
+                Cranium.Store.save_handoff(epoch_id, text)
+                write_to_hoard(conversation_id, text)
 
-            Logger.info("Handoff complete",
-              conversation_id: conversation_id,
-              stage: :effects,
-              length: String.length(text)
-            )
+                Logger.info("Handoff complete",
+                  conversation_id: conversation_id,
+                  stage: :effects,
+                  length: String.length(text)
+                )
+
+              {:error, reason} ->
+                Logger.error("Handoff generation failed: #{inspect(reason)}",
+                  conversation_id: conversation_id
+                )
+
+                {:error, reason}
+            end
 
           {:error, reason} ->
-            Logger.error("Handoff generation failed: #{inspect(reason)}",
+            Logger.error("Handoff LLM call failed: #{inspect(reason)}",
               conversation_id: conversation_id
             )
 
             {:error, reason}
         end
-
-      {:error, reason} ->
-        Logger.error("Handoff LLM call failed: #{inspect(reason)}",
-          conversation_id: conversation_id
-        )
-
-        {:error, reason}
     end
   end
 
