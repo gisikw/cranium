@@ -29,6 +29,8 @@ defmodule Cranium.Transport.HTTP do
     system = conn.body_params["system"]
     origin = conn.body_params["origin"]
     disposition = parse_disposition(conn.body_params["disposition"])
+    model = conn.body_params["model"]
+    ephemeral = conn.body_params["ephemeral"] == true
 
     # Extract text — either directly or by transcribing audio
     text =
@@ -70,7 +72,9 @@ defmodule Cranium.Transport.HTTP do
       conversation_id: conversation_id,
       stream_id: stream_id,
       disposition: disposition,
-      origin: origin
+      origin: origin,
+      model: model,
+      ephemeral: ephemeral
     }
 
     Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)

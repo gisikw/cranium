@@ -155,7 +155,9 @@ defmodule Cranium.Agent do
       max_tokens: Map.get(context, :max_tokens, 8192),
       tools: tools,
       cc_session_id: context[:cc_session_id],
-      working_dir: context[:working_dir]
+      working_dir: context[:working_dir],
+      model: context[:model],
+      ephemeral: context[:ephemeral]
     ]
 
     result = run_inference(state, egress_pid, stream_id, messages, opts)
@@ -266,8 +268,8 @@ defmodule Cranium.Agent do
       {:cc_session, session_id} ->
         # Persist eagerly so a mid-inference process restart doesn't lose the
         # session ID. Without this, a restart creates a fresh CC session and
-        # the model loses all conversation history.
-        if state.conversation_id do
+        # the model loses all conversation history. Skip for ephemeral.
+        if state.conversation_id and not Keyword.get(opts, :ephemeral, false) do
           Cranium.Store.update_epoch_session(state.conversation_id, session_id)
         end
 

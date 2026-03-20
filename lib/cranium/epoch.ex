@@ -194,12 +194,17 @@ defmodule Cranium.Epoch do
 
     msg_map = normalize_message(message)
     text = msg_map[:text] || ""
+    ephemeral = msg_map[:ephemeral] == true
 
     # Derive last_invoked_at from most recent message timestamp
     last_invoked_at =
-      case Cranium.Store.get_last_message_at(state.epoch_id) do
-        {:ok, ts} -> ts
-        :not_found -> nil
+      if ephemeral do
+        nil
+      else
+        case Cranium.Store.get_last_message_at(state.epoch_id) do
+          {:ok, ts} -> ts
+          :not_found -> nil
+        end
       end
 
     # 1. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
@@ -237,11 +242,14 @@ defmodule Cranium.Epoch do
 
     # 2. Persist enriched user message (includes system-reminders from TurnInjector)
     enriched_text = enriched[:text] || text
-    Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
-      role: :user,
-      content: enriched_text,
-      origin: msg_map[:origin]
-    })
+
+    unless ephemeral do
+      Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
+        role: :user,
+        content: enriched_text,
+        origin: msg_map[:origin]
+      })
+    end
 
     # 3. Map pipeline output to Agent context
     context = %{
@@ -251,8 +259,10 @@ defmodule Cranium.Epoch do
       conversation_id: state.conversation_id,
       stream_id: msg_map[:stream_id] || state.stream_id,
       disposition: Map.get(msg_map, :disposition, ["text"]),
-      cc_session_id: state.cc_session_id,
-      working_dir: enriched[:working_dir] || Map.get(msg_map, :working_dir)
+      cc_session_id: if(ephemeral, do: nil, else: state.cc_session_id),
+      working_dir: enriched[:working_dir] || Map.get(msg_map, :working_dir),
+      model: msg_map[:model],
+      ephemeral: ephemeral
     }
 
     # 4. Run inference
@@ -268,7 +278,10 @@ defmodule Cranium.Epoch do
     egress_pid = Process.whereis(Cranium.Egress)
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
-    Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
+    unless ephemeral do
+      Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
+    end
+
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
 
     # Unregister agent — inference is done
@@ -278,11 +291,13 @@ defmodule Cranium.Epoch do
     {reply, state} =
       case result do
         {:ok, %{output: output, usage: usage} = agent_result} ->
-          if output != "" do
-            Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
-              role: :assistant,
-              content: output
-            })
+          unless ephemeral do
+            if output != "" do
+              Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
+                role: :assistant,
+                content: output
+              })
+            end
           end
 
           saturation = compute_saturation(usage)
@@ -292,19 +307,21 @@ defmodule Cranium.Epoch do
 
           cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
 
-          # Generate cross-conversation summary every N turns
-          summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
-          if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
-            Cranium.Effects.generate_summary(state.conversation_id)
-          end
+          unless ephemeral do
+            # Generate cross-conversation summary every N turns
+            summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
+            if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
+              Cranium.Effects.generate_summary(state.conversation_id)
+            end
 
-          Cranium.Store.update_epoch(state.epoch_id, %{
-            status: "active",
-            saturation: saturation,
-            turn_count: new_count,
-            last_reminder_bucket: new_bucket,
-            cc_session_id: cc_session_id
-          })
+            Cranium.Store.update_epoch(state.epoch_id, %{
+              status: "active",
+              saturation: saturation,
+              turn_count: new_count,
+              last_reminder_bucket: new_bucket,
+              cc_session_id: cc_session_id
+            })
+          end
 
           # Push saturation to the manifest so clients can surface it
           if stream_id = agent_result[:stream_id] do
@@ -315,42 +332,50 @@ defmodule Cranium.Epoch do
           end
 
           {result, %{state |
-            turn_count: new_count,
-            saturation: saturation,
-            last_reminder_bucket: new_bucket,
-            cc_session_id: cc_session_id,
+            turn_count: if(ephemeral, do: state.turn_count, else: new_count),
+            saturation: if(ephemeral, do: state.saturation, else: saturation),
+            last_reminder_bucket: if(ephemeral, do: state.last_reminder_bucket, else: new_bucket),
+            cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id),
             interrupted_context: nil
           }}
 
         {:error, :cancelled, partial} ->
-          # Persist partial assistant response so history isn't gapped
           output = partial[:output] || ""
 
-          if output != "" do
-            Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
-              role: :assistant,
-              content: output
-            })
+          unless ephemeral do
+            # Persist partial assistant response so history isn't gapped
+            if output != "" do
+              Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
+                role: :assistant,
+                content: output
+              })
+            end
           end
 
           # Truncate for context injection (matching v1's 2000 char limit)
           interrupted =
-            if output != "" do
+            if not ephemeral and output != "" do
               if String.length(output) > 2000,
                 do: String.slice(output, 0, 2000) <> "\n\n[...output truncated...]",
                 else: output
             end
 
           cc_session_id = partial[:cc_session_id] || state.cc_session_id
-          Cranium.Store.update_epoch(state.epoch_id, %{status: "active", cc_session_id: cc_session_id})
+
+          unless ephemeral do
+            Cranium.Store.update_epoch(state.epoch_id, %{status: "active", cc_session_id: cc_session_id})
+          end
 
           {{:error, :cancelled}, %{state |
             interrupted_context: interrupted,
-            cc_session_id: cc_session_id
+            cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id)
           }}
 
         {:error, _reason} ->
-          Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
+          unless ephemeral do
+            Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
+          end
+
           {result, state}
       end
 
@@ -413,7 +438,9 @@ defmodule Cranium.Epoch do
       disposition: Map.get(message, :disposition, ["text"]),
       mode: Map.get(message, :mode, :text),
       attachments: Map.get(message, :attachments, []),
-      origin: Map.get(message, :origin)
+      origin: Map.get(message, :origin),
+      model: Map.get(message, :model) || Map.get(message, "model"),
+      ephemeral: Map.get(message, :ephemeral, false)
     }
   end
 end

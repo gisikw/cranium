@@ -45,6 +45,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         after
           kill_port_process_group()
           cleanup_temp_files(Process.get(:temp_files, []))
+          cleanup_temp_dirs(Process.get(:temp_dirs, []))
         end
       end)
 
@@ -52,9 +53,22 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
   end
 
   defp do_stream(caller, messages, opts) do
-    cc_session_id = Keyword.get(opts, :cc_session_id)
+    ephemeral = Keyword.get(opts, :ephemeral, false)
+    cc_session_id = if ephemeral, do: nil, else: Keyword.get(opts, :cc_session_id)
     system = Keyword.get(opts, :system)
     working_dir = Keyword.get(opts, :working_dir)
+
+    # Ephemeral requests run in a throwaway tmpdir to avoid CC bug
+    # with overlapping working directories
+    {working_dir, temp_dirs} =
+      if ephemeral do
+        tmpdir = make_ephemeral_dir()
+        {tmpdir, [tmpdir]}
+      else
+        {working_dir, []}
+      end
+
+    Process.put(:temp_dirs, temp_dirs)
 
     {cmd, temp_files} =
       if cc_session_id do
@@ -73,7 +87,8 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     # Unset ANTHROPIC_API_KEY so CC uses its subscription login instead
     # of falling through to direct API mode. Merge nix devShell env if
     # the working dir has a flake.nix (cached, ~0ms after first resolve).
-    nix_env = Cranium.NixEnv.env_for(working_dir)
+    # Skip nix env for ephemeral (tmpdir has no flake).
+    nix_env = if ephemeral, do: [], else: Cranium.NixEnv.env_for(working_dir)
 
     env = [{~c"ANTHROPIC_API_KEY", false} | nix_env]
 
@@ -216,6 +231,8 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     ]
 
     args = args ++ permission_args(opts)
+    args = args ++ model_args(opts)
+    args = args ++ ephemeral_args(opts)
     args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
     args = if mcp_file, do: args ++ ["--mcp-config", mcp_file], else: args
 
@@ -248,6 +265,8 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     ]
 
     args = args ++ permission_args(opts)
+    args = args ++ model_args(opts)
+    args = args ++ ephemeral_args(opts)
     args = if system_file, do: args ++ ["--append-system-prompt-file", system_file], else: args
 
     args =
@@ -288,6 +307,27 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     else
       []
     end
+  end
+
+  defp model_args(opts) do
+    case Keyword.get(opts, :model) do
+      nil -> []
+      model -> ["--model", model]
+    end
+  end
+
+  defp ephemeral_args(opts) do
+    if Keyword.get(opts, :ephemeral, false) do
+      ["--no-session-persistence"]
+    else
+      []
+    end
+  end
+
+  defp make_ephemeral_dir do
+    dir = Path.join(System.tmp_dir!(), "cranium_ephemeral_" <> random_hex(8))
+    File.mkdir_p!(dir)
+    dir
   end
 
   defp drain_stale_exits(port) do
@@ -337,6 +377,12 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
   defp cleanup_temp_files(paths) do
     Enum.each(paths, fn path ->
       File.rm(path)
+    end)
+  end
+
+  defp cleanup_temp_dirs(dirs) do
+    Enum.each(dirs, fn dir ->
+      File.rm_rf(dir)
     end)
   end
 
