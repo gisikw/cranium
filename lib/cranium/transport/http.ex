@@ -323,7 +323,7 @@ defmodule Cranium.Transport.HTTP do
   post "/v1/clear" do
     conversation_id = conn.body_params["conversation_id"] || "default"
 
-    case Cranium.Epoch.lookup(conversation_id) do
+    case Cranium.Epoch.start_or_get(conversation_id) do
       {:ok, pid} ->
         Cranium.Epoch.clear(pid)
         Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
@@ -332,10 +332,14 @@ defmodule Cranium.Transport.HTTP do
         |> put_resp_content_type("application/json")
         |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
 
-      :not_found ->
+      {:error, reason} ->
+        Logger.error("Failed to start epoch for clear: #{inspect(reason)}",
+          conversation_id: conversation_id
+        )
+
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(404, Jason.encode!(%{"error" => "no active epoch"}))
+        |> send_resp(500, Jason.encode!(%{"error" => "failed to start epoch"}))
     end
   end
 
