@@ -65,6 +65,7 @@ defmodule Cranium.Transport.HTTP do
     # Generate a stream_id for manifest tracking
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
+    Cranium.Manifest.stamp(stream_id, :submitted)
 
     message = %{
       text: text,
@@ -159,6 +160,8 @@ defmodule Cranium.Transport.HTTP do
 
     case Cranium.TTS.Cache.get(id, index) do
       {:ok, audio} ->
+        Cranium.Manifest.stamp_segment(id, index, :first_retrieved)
+
         conn
         |> put_resp_content_type("audio/mpeg")
         |> send_resp(200, audio)
@@ -187,6 +190,7 @@ defmodule Cranium.Transport.HTTP do
 
     :ok = Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition, origin: origin)
     :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
+    Cranium.Manifest.stamp(stream_id, :submitted)
 
     conn
     |> put_resp_content_type("application/json")

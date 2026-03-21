@@ -35,6 +35,9 @@ defmodule Cranium.Application do
       # TTS audio cache (ephemeral buffer between Synthesizer and HTTP transport)
       Cranium.TTS.Cache,
 
+      # TTS warm queue (serializes synthesis to avoid GPU contention)
+      Cranium.TTS.Warmer,
+
       # Input protocol (chunked audio take registry)
       Cranium.Input.TakeRegistry,
 

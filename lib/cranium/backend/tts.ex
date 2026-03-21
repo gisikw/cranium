@@ -3,7 +3,7 @@ defmodule Cranium.Backend.TTS do
   Behaviour for Text-to-Speech backends.
 
   Implementations convert text to audio binary data. Current implementation
-  is Kokoro (HTTP POST to the fort TTS service).
+  is ExoVoice (OpenAI-compatible TTS endpoint).
   """
 
   @doc """
@@ -16,11 +16,11 @@ defmodule Cranium.Backend.TTS do
               {:ok, audio :: binary()} | {:error, term()}
 end
 
-defmodule Cranium.Backend.TTS.Kokoro do
+defmodule Cranium.Backend.TTS.ExoVoice do
   @moduledoc """
-  Kokoro TTS backend.
+  Exo TTS backend (OpenAI-compatible).
 
-  Sends text to the Kokoro TTS service and returns audio data.
+  Sends text to the Exo voice service at exo-tts.gisi.network.
   """
 
   @behaviour Cranium.Backend.TTS
@@ -28,13 +28,14 @@ defmodule Cranium.Backend.TTS.Kokoro do
   @impl true
   def synthesize(text, opts) do
     url = Keyword.get(opts, :url) || tts_url()
-    voice = Keyword.get(opts, :voice, "af_bella")
     format = Keyword.get(opts, :format, "mp3")
 
-    payload = %{text: text, voice: voice, format: format}
+    payload = %{input: text, response_format: format}
     plug = Keyword.get(opts, :plug)
 
-    req_opts = [json: payload] ++ if(plug, do: [plug: plug], else: [])
+    req_opts =
+      [json: payload, connect_options: [timeout: 10_000], receive_timeout: 120_000] ++
+        if(plug, do: [plug: plug], else: [])
 
     case Req.post(url, req_opts) do
       {:ok, %{status: 200, body: audio}} when is_binary(audio) ->
@@ -49,6 +50,6 @@ defmodule Cranium.Backend.TTS.Kokoro do
   end
 
   defp tts_url do
-    Application.get_env(:cranium, :backends)[:tts_url] || "https://tts.example.com/synthesize"
+    Application.get_env(:cranium, :backends)[:tts_url] || "https://exo-tts.gisi.network/v1/audio/speech"
   end
 end

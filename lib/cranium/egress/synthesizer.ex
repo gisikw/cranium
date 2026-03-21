@@ -42,6 +42,6 @@ defmodule Cranium.Egress.Synthesizer do
   end
 
   defp backend_module do
-    Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
+    Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.ExoVoice
   end
 end

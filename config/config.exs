@@ -11,7 +11,7 @@ config :cranium, Cranium.Store.Repo,
 #   llm: Cranium.Backend.LLM.ClaudeCode
 config :cranium, :backends,
   stt: Cranium.Backend.STT.Whisper,
-  tts: Cranium.Backend.TTS.Kokoro,
+  tts: Cranium.Backend.TTS.ExoVoice,
   llm: Cranium.Backend.LLM.ClaudeCode,
   claude_code_path: "claude"
 

@@ -233,6 +233,8 @@ defmodule Cranium.Epoch do
     }
 
     {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
+    stream_id = msg_map[:stream_id] || state.stream_id
+    Cranium.Manifest.stamp(stream_id, :context_assembled)
 
     # Track landscape injection for delta filtering on subsequent idle returns
     state =
@@ -282,6 +284,7 @@ defmodule Cranium.Epoch do
       Cranium.Store.update_epoch(state.epoch_id, %{status: "inferring"})
     end
 
+    Cranium.Manifest.stamp(stream_id, :inference_start)
     result = Cranium.Agent.infer(agent_pid, context, egress_pid)
 
     # Unregister agent — inference is done

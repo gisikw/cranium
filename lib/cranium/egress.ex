@@ -140,6 +140,8 @@ defmodule Cranium.Egress do
   def handle_info({:stream_end, stream_id}, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
+        Cranium.Manifest.stamp(stream_id, :stream_end)
+
         remaining = String.trim(stream.text)
 
         if remaining != "" do
@@ -239,16 +241,7 @@ defmodule Cranium.Egress do
   end
 
   defp warm_tts(stream_id, index, text) do
-    backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
-
-    case backend.synthesize(text, []) do
-      {:ok, audio} ->
-        Cranium.TTS.Cache.put(stream_id, index, audio)
-
-      {:error, reason} ->
-        Logger.error("TTS warm failed: stream=#{stream_id} segment=#{index} reason=#{inspect(reason)}",
-          stage: :egress
-        )
-    end
+    Cranium.TTS.Cache.mark_warming(stream_id, index)
+    Cranium.TTS.Warmer.enqueue(stream_id, index, text)
   end
 end

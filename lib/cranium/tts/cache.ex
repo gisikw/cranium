@@ -5,11 +5,15 @@ defmodule Cranium.TTS.Cache do
   Sits between the Synthesizer (which produces audio) and the HTTP transport
   (which serves it). Two paths to audio:
 
-  - **Eager warming**: Caller puts audio via `put/4` after synthesis. Used when
-    client disposition includes audio — audio is ready before the client asks.
-  - **Lazy synthesis**: `get/3` finds no cached entry, pulls text from the
-    Manifest, synthesizes on the caller's process, and returns the audio without
-    caching it (since it's already being consumed).
+  - **Eager warming**: Egress marks a segment as `:warming` via `mark_warming/3`,
+    then a Task synthesizes and calls `put/4`. The cache entry transitions from
+    `:warming` → audio binary.
+  - **Lazy synthesis**: `get/3` finds no cached entry and no warming marker,
+    pulls text from the Manifest, synthesizes on the caller's process, and
+    returns the audio.
+
+  When `get/3` finds a `:warming` marker, it polls until audio arrives or a
+  timeout expires, avoiding duplicate TTS requests.
 
   Entries are evicted on first retrieval — this is an ephemeral buffer, not
   durable storage. When a stream completes, `schedule_cleanup/2` sets a timer
@@ -21,6 +25,8 @@ defmodule Cranium.TTS.Cache do
   require Logger
 
   @cleanup_delay :timer.minutes(5)
+  @warming_poll_interval 200
+  @warming_timeout 120_000
 
   defstruct entries: %{}, cleanup_timers: %{}
 
@@ -32,20 +38,29 @@ defmodule Cranium.TTS.Cache do
   end
 
   @doc """
-  Get audio for a segment. Checks cache first (evicting on hit), then falls
-  back to lazy synthesis on the caller's process.
+  Get audio for a segment. Checks cache first (evicting on hit), waits if
+  warming is in progress, falls back to lazy synthesis if no warm was started.
 
   Returns `{:ok, audio_binary}` or `{:error, reason}`.
   """
   def get(stream_id, index, name \\ __MODULE__) do
     case GenServer.call(name, {:get, stream_id, index}) do
       {:ok, audio} -> {:ok, audio}
+      :warming -> await_warm(stream_id, index, name)
       :not_found -> synthesize_lazy(stream_id, index)
     end
   end
 
   @doc """
-  Pre-cache audio for a segment (eager warming).
+  Mark a segment as warming (synthesis in progress). Prevents duplicate
+  TTS requests when the client polls before the warm completes.
+  """
+  def mark_warming(stream_id, index, name \\ __MODULE__) do
+    GenServer.call(name, {:put, stream_id, index, :warming})
+  end
+
+  @doc """
+  Pre-cache audio for a segment (eager warming complete).
   """
   def put(stream_id, index, audio, name \\ __MODULE__) do
     GenServer.call(name, {:put, stream_id, index, audio})
@@ -73,6 +88,13 @@ defmodule Cranium.TTS.Cache do
     key = {stream_id, index}
 
     case Map.fetch(state.entries, key) do
+      {:ok, :warming} ->
+        {:reply, :warming, state}
+
+      {:ok, :error} ->
+        entries = Map.delete(state.entries, key)
+        {:reply, :not_found, %{state | entries: entries}}
+
       {:ok, audio} ->
         entries = Map.delete(state.entries, key)
         {:reply, {:ok, audio}, %{state | entries: entries}}
@@ -114,6 +136,25 @@ defmodule Cranium.TTS.Cache do
 
   # --- Private ---
 
+  defp await_warm(stream_id, index, name) do
+    await_warm(stream_id, index, name, 0)
+  end
+
+  defp await_warm(stream_id, index, _name, elapsed) when elapsed >= @warming_timeout do
+    Logger.error("TTS cache: warming timeout for stream=#{stream_id} segment=#{index}")
+    {:error, :warming_timeout}
+  end
+
+  defp await_warm(stream_id, index, name, elapsed) do
+    Process.sleep(@warming_poll_interval)
+
+    case GenServer.call(name, {:get, stream_id, index}) do
+      {:ok, audio} -> {:ok, audio}
+      :warming -> await_warm(stream_id, index, name, elapsed + @warming_poll_interval)
+      :not_found -> {:error, :warming_failed}
+    end
+  end
+
   defp cancel_timer(state, stream_id) do
     case Map.fetch(state.cleanup_timers, stream_id) do
       {:ok, ref} ->
@@ -128,7 +169,7 @@ defmodule Cranium.TTS.Cache do
   defp synthesize_lazy(stream_id, index) do
     case Cranium.Manifest.get_segment_text(stream_id, index) do
       {:ok, text} ->
-        backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.Kokoro
+        backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.ExoVoice
         backend.synthesize(text, [])
 
       :not_found ->
