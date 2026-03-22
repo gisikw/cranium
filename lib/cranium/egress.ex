@@ -184,21 +184,28 @@ defmodule Cranium.Egress do
 
   # Adaptive lead-time chunking constants.
   # When audio disposition is active, Egress estimates how far ahead the
-  # TTS pipeline is relative to playback. When lead time drops below the
-  # threshold, we switch to aggressive sentence-level chunking to get
-  # audio synthesizing sooner. Above threshold, we use paragraph-level
-  # batching for better prosody.
+  # TTS pipeline is relative to playback. The batch size is derived from
+  # lead time: lead must cover the chunk's synthesis time, or the client
+  # stalls waiting for audio. The warmer is sequential — the entire chunk
+  # must finish synthesizing before any of its audio is available.
+  #
   # Measured empirically: 2.2-2.8 WPS across clip lengths.
   # Using 2.3 (short-clip average) — underestimates lead time slightly,
   # which errs toward staying aggressive longer. Safe direction.
   @speech_rate_wps 2.3
-  @lead_time_threshold_ms 5_000
   @sentence_min_words 8
   # Measured empirically: 0.89-0.96 RTF across clip lengths (non-linear,
   # short clips have worse RTF). Used to cap lead time at what synthesis
   # could have actually produced — prevents burst scenarios from inflating
   # lead time when no audio has been synthesized yet.
   @synth_rtf 0.91
+  # Minimum batch size worth switching to relaxed mode for — prosody
+  # benefit below this threshold is negligible vs sentence-level chunking.
+  @min_relaxed_words 20
+  # Hard cap on audio batch size. Limits worst-case synthesis time to
+  # ~20s at RTF 0.91. Larger chunks don't improve prosody enough to
+  # justify the stall risk.
+  @max_batch_words 50
 
   # --- Adaptive lead-time chunking ---
 
@@ -220,8 +227,19 @@ defmodule Cranium.Egress do
     min(raw_lead, max_lead)
   end
 
+  # Maximum words we can safely queue for synthesis given current lead time.
+  # The warmer is sequential — the entire chunk must complete before the
+  # client can play it. Lead must cover the chunk's synthesis time:
+  #   lead >= words / wps * 1000 * rtf
+  #   → words <= lead * wps / (1000 * rtf)
+  defp safe_batch_words(stream) do
+    lead = lead_time_ms(stream)
+    safe = trunc(lead * @speech_rate_wps / (1000.0 * @synth_rtf))
+    safe |> max(@sentence_min_words) |> min(@max_batch_words)
+  end
+
   defp needs_aggressive_chunking?(stream) do
-    "audio" in stream.disposition and lead_time_ms(stream) < @lead_time_threshold_ms
+    "audio" in stream.disposition and safe_batch_words(stream) < @min_relaxed_words
   end
 
   # Aggressive mode: emit paragraphs immediately (no word threshold), and
@@ -277,16 +295,33 @@ defmodule Cranium.Egress do
     end
   end
 
-  # Relaxed mode: paragraph-based batching with word thresholds (existing behavior).
+  # Relaxed mode: paragraph-based batching with word thresholds.
+  # For audio disposition, the batch size is derived from current lead time
+  # to ensure the warmer can synthesize the chunk before playback catches up.
+  # For text-only, uses fixed thresholds (30 first / 100 subsequent).
   defp relaxed_chunk(stream, stream_id) do
     original_text = stream.text
     original_index = stream.segment_index
     {emittable, remainder} = split_paragraphs(original_text)
-    {new_index, leftover} = batch_and_emit(emittable, remainder, stream, stream_id)
+
+    threshold =
+      cond do
+        stream.segment_index == 0 -> @first_batch_words
+        "audio" in stream.disposition -> safe_batch_words(stream)
+        true -> @subsequent_batch_words
+      end
+
+    {new_index, leftover} = batch_and_emit(emittable, remainder, stream, stream_id, threshold)
 
     stream = %{stream | text: leftover, segment_index: new_index}
 
     if new_index > original_index do
+      Logger.debug(
+        "Relaxed emit: threshold=#{threshold} lead_time=#{lead_time_ms(stream)}ms",
+        stage: :egress,
+        stream_id: stream_id
+      )
+
       emitted_words = word_count(original_text) - word_count(leftover)
       track_emission(stream, emitted_words)
     else
@@ -340,12 +375,11 @@ defmodule Cranium.Egress do
   # Merge paragraphs until word threshold is met, then emit.
   # First segment: emit on first paragraph break on or after 30 words.
   # Subsequent: on or after 100 words.
-  defp batch_and_emit([], remainder, stream, _stream_id) do
+  defp batch_and_emit([], remainder, stream, _stream_id, _threshold) do
     {stream.segment_index, remainder}
   end
 
-  defp batch_and_emit(paragraphs, remainder, stream, stream_id) do
-    threshold = if stream.segment_index == 0, do: @first_batch_words, else: @subsequent_batch_words
+  defp batch_and_emit(paragraphs, remainder, stream, stream_id, threshold) do
 
     {index, acc} =
       Enum.reduce(paragraphs, {stream.segment_index, ""}, fn para, {idx, acc} ->
