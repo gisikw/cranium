@@ -150,6 +150,8 @@ defmodule Cranium.Agent do
         do: [],
         else: Cranium.Agent.ToolRouter.tool_definitions()
 
+    disposition = Map.get(context, :disposition, ["text"])
+
     opts = [
       system: system,
       max_tokens: Map.get(context, :max_tokens, 8192),
@@ -157,7 +159,8 @@ defmodule Cranium.Agent do
       cc_session_id: context[:cc_session_id],
       working_dir: context[:working_dir],
       model: context[:model],
-      ephemeral: context[:ephemeral]
+      ephemeral: context[:ephemeral],
+      effort_level: if("audio" in disposition, do: "low")
     ]
 
     result = run_inference(state, egress_pid, stream_id, messages, opts)

@@ -194,6 +194,11 @@ defmodule Cranium.Egress do
   @speech_rate_wps 2.3
   @lead_time_threshold_ms 5_000
   @sentence_min_words 8
+  # Measured empirically: 0.89-0.96 RTF across clip lengths (non-linear,
+  # short clips have worse RTF). Used to cap lead time at what synthesis
+  # could have actually produced — prevents burst scenarios from inflating
+  # lead time when no audio has been synthesized yet.
+  @synth_rtf 0.91
 
   # --- Adaptive lead-time chunking ---
 
@@ -202,7 +207,17 @@ defmodule Cranium.Egress do
   defp lead_time_ms(%{first_emit_at: t, words_emitted: w}) do
     audio_ms = w / @speech_rate_wps * 1000
     elapsed = System.monotonic_time(:millisecond) - t
-    trunc(audio_ms - elapsed)
+
+    # Raw lead time: how far ahead audio content is vs wall clock
+    raw_lead = trunc(audio_ms - elapsed)
+
+    # Cap at what synthesis could have actually produced. The warmer runs
+    # at RTF, so net lead accrues at (1/RTF - 1) per second of wall time.
+    # In burst scenarios (elapsed ≈ 0), this correctly yields ~0 even with
+    # lots of queued words — because no synthesis has happened yet.
+    max_lead = trunc(elapsed * (1.0 / @synth_rtf - 1.0))
+
+    min(raw_lead, max_lead)
   end
 
   defp needs_aggressive_chunking?(stream) do

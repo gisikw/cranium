@@ -105,6 +105,14 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
     env = [{~c"ANTHROPIC_API_KEY", false} | nix_env]
 
+    # When disposition includes audio, set low effort for shorter, more
+    # conversational responses that work better as speech.
+    env =
+      case Keyword.get(opts, :effort_level) do
+        nil -> env
+        level -> [{~c"CLAUDE_CODE_EFFORT_LEVEL", String.to_charlist(level)} | env]
+      end
+
     port_opts = [
       :binary,
       :exit_status,
