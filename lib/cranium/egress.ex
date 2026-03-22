@@ -97,7 +97,9 @@ defmodule Cranium.Egress do
       Map.put(state.streams, stream_id, %{
         text: "",
         segment_index: 0,
-        disposition: disposition
+        disposition: disposition,
+        first_emit_at: nil,
+        words_emitted: 0
       })
 
     mode = Map.get(metadata, :mode, state.mode)
@@ -108,12 +110,15 @@ defmodule Cranium.Egress do
   def handle_info({:chunk, stream_id, chunk}, state) when is_binary(chunk) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
-        text = stream.text <> chunk
+        stream = %{stream | text: stream.text <> chunk}
 
-        {emittable, remainder} = split_paragraphs(text)
-        {new_index, leftover} = batch_and_emit(emittable, remainder, stream, stream_id)
+        stream =
+          if needs_aggressive_chunking?(stream) do
+            aggressive_chunk(stream, stream_id)
+          else
+            relaxed_chunk(stream, stream_id)
+          end
 
-        stream = %{stream | text: leftover, segment_index: new_index}
         {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
 
       :error ->
@@ -166,7 +171,9 @@ defmodule Cranium.Egress do
 
     if remaining != "" do
       emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
+
       %{stream | text: "", segment_index: stream.segment_index + 1}
+      |> track_emission(word_count(remaining))
     else
       stream
     end
@@ -174,6 +181,134 @@ defmodule Cranium.Egress do
 
   @first_batch_words 30
   @subsequent_batch_words 100
+
+  # Adaptive lead-time chunking constants.
+  # When audio disposition is active, Egress estimates how far ahead the
+  # TTS pipeline is relative to playback. When lead time drops below the
+  # threshold, we switch to aggressive sentence-level chunking to get
+  # audio synthesizing sooner. Above threshold, we use paragraph-level
+  # batching for better prosody.
+  # Measured empirically: 2.2-2.8 WPS across clip lengths.
+  # Using 2.3 (short-clip average) — underestimates lead time slightly,
+  # which errs toward staying aggressive longer. Safe direction.
+  @speech_rate_wps 2.3
+  @lead_time_threshold_ms 5_000
+  @sentence_min_words 8
+
+  # --- Adaptive lead-time chunking ---
+
+  defp lead_time_ms(%{first_emit_at: nil}), do: 0
+
+  defp lead_time_ms(%{first_emit_at: t, words_emitted: w}) do
+    audio_ms = w / @speech_rate_wps * 1000
+    elapsed = System.monotonic_time(:millisecond) - t
+    trunc(audio_ms - elapsed)
+  end
+
+  defp needs_aggressive_chunking?(stream) do
+    "audio" in stream.disposition and lead_time_ms(stream) < @lead_time_threshold_ms
+  end
+
+  # Aggressive mode: emit paragraphs immediately (no word threshold), and
+  # fall back to sentence-level splitting when no paragraph break exists yet.
+  defp aggressive_chunk(stream, stream_id) do
+    case split_paragraphs(stream.text) do
+      {[_ | _] = paragraphs, remainder} ->
+        # Emit each paragraph immediately — no word threshold
+        {index, stream} =
+          Enum.reduce(paragraphs, {stream.segment_index, stream}, fn para, {idx, s} ->
+            emit_segment(stream_id, idx, para, s.disposition)
+
+            Logger.debug("Aggressive emit (para): segment=#{idx} words=#{word_count(para)} lead_time=#{lead_time_ms(s)}ms",
+              stage: :egress,
+              stream_id: stream_id
+            )
+
+            {idx + 1, track_emission(s, word_count(para))}
+          end)
+
+        stream = %{stream | text: remainder, segment_index: index}
+
+        if needs_aggressive_chunking?(stream) do
+          aggressive_chunk(stream, stream_id)
+        else
+          stream
+        end
+
+      {[], _} ->
+        # No paragraph break yet — try sentence boundary
+        case split_at_sentence(stream.text, @sentence_min_words) do
+          {emittable, remainder} ->
+            emit_segment(stream_id, stream.segment_index, emittable, stream.disposition)
+
+            Logger.debug("Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",
+              stage: :egress,
+              stream_id: stream_id
+            )
+
+            stream =
+              %{stream | text: remainder, segment_index: stream.segment_index + 1}
+              |> track_emission(word_count(emittable))
+
+            if needs_aggressive_chunking?(stream) do
+              aggressive_chunk(stream, stream_id)
+            else
+              stream
+            end
+
+          nil ->
+            stream
+        end
+    end
+  end
+
+  # Relaxed mode: paragraph-based batching with word thresholds (existing behavior).
+  defp relaxed_chunk(stream, stream_id) do
+    original_text = stream.text
+    original_index = stream.segment_index
+    {emittable, remainder} = split_paragraphs(original_text)
+    {new_index, leftover} = batch_and_emit(emittable, remainder, stream, stream_id)
+
+    stream = %{stream | text: leftover, segment_index: new_index}
+
+    if new_index > original_index do
+      emitted_words = word_count(original_text) - word_count(leftover)
+      track_emission(stream, emitted_words)
+    else
+      stream
+    end
+  end
+
+  defp track_emission(stream, 0), do: stream
+
+  defp track_emission(stream, words) do
+    now = System.monotonic_time(:millisecond)
+
+    %{stream |
+      first_emit_at: stream.first_emit_at || now,
+      words_emitted: stream.words_emitted + words
+    }
+  end
+
+  # Find the earliest sentence boundary ([.!?] followed by whitespace) where
+  # the text up to that point has at least min_words words.
+  defp split_at_sentence(text, min_words) do
+    case Regex.scan(~r/[.!?](?=\s)/, text, return: :index) do
+      [] ->
+        nil
+
+      matches ->
+        Enum.find_value(matches, fn [{start, len}] ->
+          split_pos = start + len
+          before = :binary.part(text, 0, split_pos)
+          after_text = :binary.part(text, split_pos, byte_size(text) - split_pos)
+
+          if word_count(before) >= min_words and String.trim(after_text) != "" do
+            {String.trim(before), String.trim_leading(after_text)}
+          end
+        end)
+    end
+  end
 
   defp split_paragraphs(text) do
     case String.split(text, ~r/\n\n+/, parts: :infinity) do
