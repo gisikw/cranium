@@ -182,6 +182,7 @@ defmodule Cranium.Manifest do
       {:ok, manifest} ->
         manifest = %{manifest | status: :complete}
         manifest = put_timing(manifest, :manifest_complete, mono_now())
+        log_pipeline_timing(manifest)
         streams = Map.put(state.streams, stream_id, manifest)
         {:reply, :ok, %{state | streams: streams}}
 
@@ -196,6 +197,7 @@ defmodule Cranium.Manifest do
       {:ok, manifest} ->
         manifest = %{manifest | status: :cancelled}
         manifest = put_timing(manifest, :manifest_complete, mono_now())
+        log_pipeline_timing(manifest)
         streams = Map.put(state.streams, stream_id, manifest)
         {:reply, :ok, %{state | streams: streams}}
 
@@ -275,6 +277,36 @@ defmodule Cranium.Manifest do
   end
 
   defp mono_now, do: System.monotonic_time(:millisecond)
+
+  defp log_pipeline_timing(manifest) do
+    t = manifest.timing
+    origin = manifest.mono_origin
+
+    # Compute deltas between consecutive milestones
+    deltas =
+      [:submitted, :context_assembled, :inference_start, :first_token, :stream_end, :manifest_complete]
+      |> Enum.map(fn m -> {m, Map.get(t, m)} end)
+      |> Enum.reject(fn {_, v} -> is_nil(v) end)
+
+    total = offset(t, :manifest_complete, origin)
+
+    fields =
+      deltas
+      |> Enum.map(fn {m, mono} -> "#{m}=#{mono - origin}ms" end)
+      |> Enum.join(" ")
+
+    Logger.info(
+      "Pipeline timing: stream=#{manifest.stream_id} conversation=#{manifest.conversation_id} status=#{manifest.status} #{fields} total=#{total}ms",
+      stage: :manifest
+    )
+  end
+
+  defp offset(timing, milestone, origin) do
+    case Map.get(timing, milestone) do
+      nil -> 0
+      mono -> mono - origin
+    end
+  end
 
   defp to_json_manifest(manifest) do
     disposition = Map.get(manifest, :disposition, ["text"])

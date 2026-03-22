@@ -39,19 +39,25 @@ defmodule Cranium.TTS.Warmer do
   end
 
   @impl true
-  def handle_info({:warm_done, stream_id, index, result}, state) do
+  def handle_info({:warm_done, stream_id, index, result, started_at}, state) do
     Cranium.Manifest.stamp_segment(stream_id, index, :warm_complete)
+    synthesis_ms = System.monotonic_time(:millisecond) - started_at
 
     case result do
       {:ok, audio} ->
         Cranium.TTS.Cache.put(stream_id, index, audio)
 
+        Logger.info(
+          "Segment warm complete: stream=#{stream_id} segment=#{index} synthesis=#{synthesis_ms}ms bytes=#{byte_size(audio)}",
+          stage: :tts
+        )
+
       {:error, reason} ->
         Cranium.TTS.Cache.put(stream_id, index, :error)
 
         Logger.error(
-          "TTS warm failed: stream=#{stream_id} segment=#{index} reason=#{inspect(reason)}",
-          stage: :egress
+          "TTS warm failed: stream=#{stream_id} segment=#{index} synthesis=#{synthesis_ms}ms reason=#{inspect(reason)}",
+          stage: :tts
         )
     end
 
@@ -63,13 +69,14 @@ defmodule Cranium.TTS.Warmer do
       {{:value, {stream_id, index, text}}, queue} ->
         warmer = self()
         Cranium.Manifest.stamp_segment(stream_id, index, :warm_started)
+        started_at = System.monotonic_time(:millisecond)
 
         Task.start(fn ->
           backend =
             Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.ExoVoice
 
           result = backend.synthesize(text, [])
-          send(warmer, {:warm_done, stream_id, index, result})
+          send(warmer, {:warm_done, stream_id, index, result, started_at})
         end)
 
         %{state | queue: queue, busy: true}
