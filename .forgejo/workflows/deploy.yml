@@ -1,0 +1,41 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: nixos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Attic
+        run: |
+          mkdir -p ~/.config/attic
+          printf '%s\n' \
+            'default-server = "forge"' \
+            '' \
+            '[servers.forge]' \
+            "endpoint = \"$ATTIC_CACHE_URL\"" \
+            "token = \"$(cat $ATTIC_TOKEN_FILE)\"" \
+            > ~/.config/attic/config.toml
+
+      - name: Build
+        run: nix build .#default -L
+
+      - name: Test
+        run: nix develop -c just test
+
+      - name: Push to Attic
+        run: attic push fort ./result
+
+      - name: Register Overlay
+        run: |
+          STORE_PATH=$(readlink -f ./result)
+          curl -sf -X POST https://overlay-registry.gisi.network/dev/cranium-v2 \
+            -d "{\"storePath\":\"$STORE_PATH\"}"
+
+      - name: Trigger Refresh
+        run: |
+          fort ratched refresh '{"overlay": "cranium-v2"}'

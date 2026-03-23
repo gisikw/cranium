@@ -1,5 +1,25 @@
 import Config
 
+# Paths — override from env vars when set. In test env, defaults
+# come from test.exs; in dev, from .env; in prod, from systemd env.
+paths =
+  [
+    handoffs: System.get_env("HANDOFFS_PATH"),
+    summaries: System.get_env("SUMMARIES_PATH"),
+    skills: System.get_env("SKILLS_PATH"),
+    identity: System.get_env("IDENTITY_PATH"),
+    subagent_prompt: System.get_env("SUBAGENT_PROMPT_PATH")
+  ]
+  |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+if paths != [] do
+  config :cranium, :paths, Map.new(paths)
+end
+
+if port = System.get_env("PORT") do
+  config :cranium, :http_port, String.to_integer(port)
+end
+
 if config_env() == :prod do
   config :cranium, Cranium.Store.Repo,
     url: System.get_env("DATABASE_URL") || raise("DATABASE_URL not set"),
