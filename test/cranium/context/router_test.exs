@@ -20,50 +20,63 @@ defmodule Cranium.Context.RouterTest do
   end
 
   describe "resolve_project_dir/2" do
-    test "returns path when directory exists" do
-      # cranium-v2 itself is a real project directory
-      result = Router.resolve_project_dir("cranium-v2", "~/Projects")
-      expanded = Path.expand("~/Projects/cranium-v2")
-      assert result == expanded
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "router_test_#{:erlang.unique_integer([:positive])}")
+      project = Path.join(tmp, "cranium-v2")
+      File.mkdir_p!(project)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      %{projects_dir: tmp}
+    end
+
+    test "returns path when directory exists", %{projects_dir: dir} do
+      result = Router.resolve_project_dir("cranium-v2", dir)
+      assert result == Path.join(dir, "cranium-v2")
       assert File.dir?(result)
     end
 
-    test "returns nil when directory does not exist" do
-      result = Router.resolve_project_dir("nonexistent-project-abc123", "~/Projects")
+    test "returns nil when directory does not exist", %{projects_dir: dir} do
+      result = Router.resolve_project_dir("nonexistent-project-abc123", dir)
       assert result == nil
     end
 
-    test "handles conversation_id slugification" do
-      # "Cranium V2" slugifies to "cranium-v2" which exists
-      result = Router.resolve_project_dir("Cranium V2", "~/Projects")
-      expanded = Path.expand("~/Projects/cranium-v2")
-      assert result == expanded
+    test "handles conversation_id slugification", %{projects_dir: dir} do
+      # "Cranium V2" slugifies to "cranium-v2" which exists in our temp dir
+      result = Router.resolve_project_dir("Cranium V2", dir)
+      assert result == Path.join(dir, "cranium-v2")
     end
   end
 
   describe "process/2" do
-    test "sets working_dir for a known project" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "router_test_#{:erlang.unique_integer([:positive])}")
+      project = Path.join(tmp, "cranium-v2")
+      File.mkdir_p!(project)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      %{projects_dir: tmp}
+    end
+
+    test "sets working_dir for a known project", %{projects_dir: dir} do
       message = %{conversation_id: "cranium-v2", text: "hello", attachments: []}
-      context = %{projects_dir: "~/Projects"}
+      context = %{projects_dir: dir}
 
       {:ok, enriched} = Router.process(message, context)
 
-      assert enriched.working_dir == Path.expand("~/Projects/cranium-v2")
+      assert enriched.working_dir == Path.join(dir, "cranium-v2")
       assert Map.has_key?(enriched, :is_fresh)
     end
 
-    test "sets working_dir to nil for unknown project" do
+    test "sets working_dir to nil for unknown project", %{projects_dir: dir} do
       message = %{conversation_id: "nonexistent-xyz", text: "hello", attachments: []}
-      context = %{projects_dir: "~/Projects"}
+      context = %{projects_dir: dir}
 
       {:ok, enriched} = Router.process(message, context)
 
       assert enriched.working_dir == nil
     end
 
-    test "preserves original message fields" do
+    test "preserves original message fields", %{projects_dir: dir} do
       message = %{conversation_id: "cranium-v2", text: "hello", attachments: [], custom: "data"}
-      context = %{projects_dir: "~/Projects"}
+      context = %{projects_dir: dir}
 
       {:ok, enriched} = Router.process(message, context)
 
