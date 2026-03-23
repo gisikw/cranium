@@ -24,10 +24,10 @@ jobs:
             > ~/.config/attic/config.toml
 
       - name: Build
-        run: nix build .#default -L
+        run: nix build 'path:.#default' -L
 
       - name: Test
-        run: nix develop -c just test
+        run: nix develop 'path:.' -c just test
 
       - name: Push to Attic
         run: attic push fort ./result
