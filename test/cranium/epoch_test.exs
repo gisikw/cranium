@@ -19,7 +19,8 @@ defmodule Cranium.EpochTest do
     end
 
     test "returns 0.5 at midpoint" do
-      assert Cranium.Epoch.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) == 0.5
+      assert Cranium.Epoch.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) ==
+               0.5
     end
 
     test "includes output_tokens in total" do
@@ -93,6 +94,8 @@ defmodule Cranium.EpochTest do
       end)
 
       {:ok, epoch_pid} = Cranium.Epoch.start_or_get(conversation_id)
+      # Handoff generation requires a cc_session_id — inject one
+      :sys.replace_state(epoch_pid, fn state -> %{state | cc_session_id: "test-session"} end)
       :ok = Cranium.Epoch.clear(epoch_pid)
 
       assert_receive {:handoff_task, handoff_pid}, 2000

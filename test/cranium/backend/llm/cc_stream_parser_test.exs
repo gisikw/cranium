@@ -17,27 +17,29 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
 
   describe "parse_line/2 — assistant content" do
     test "extracts text from text block" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [%{type: "text", text: "Hello world"}]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{content: [%{type: "text", text: "Hello world"}]}
+        })
 
       assert {:ok, [{:llm_text, "Hello world"}]} = CCStreamParser.parse_line(line)
     end
 
     test "extracts usage from assistant message" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{
-          content: [%{type: "text", text: "Hi"}],
-          usage: %{
-            input_tokens: 5,
-            output_tokens: 10,
-            cache_creation_input_tokens: 100,
-            cache_read_input_tokens: 20_000
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [%{type: "text", text: "Hi"}],
+            usage: %{
+              input_tokens: 5,
+              output_tokens: 10,
+              cache_creation_input_tokens: 100,
+              cache_read_input_tokens: 20_000
+            }
           }
-        }
-      })
+        })
 
       assert {:ok, messages} = CCStreamParser.parse_line(line)
       assert {:llm_text, "Hi"} = Enum.at(messages, 0)
@@ -48,68 +50,101 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
     end
 
     test "skips empty text blocks" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [%{type: "text", text: ""}]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{content: [%{type: "text", text: ""}]}
+        })
 
       assert :skip = CCStreamParser.parse_line(line)
     end
 
     test "extracts MCP marker tool calls" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [%{
-          type: "tool_use",
-          id: "tool_1",
-          name: "mcp__cranium-markers__show",
-          input: %{url: "img.png"}
-        }]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [
+              %{
+                type: "tool_use",
+                id: "tool_1",
+                name: "mcp__cranium-markers__show",
+                input: %{url: "img.png"}
+              }
+            ]
+          }
+        })
 
       assert {:ok, [{:llm_tool_use, %{id: "tool_1", name: "show", input: %{"url" => "img.png"}}}]} =
-        CCStreamParser.parse_line(line)
+               CCStreamParser.parse_line(line)
     end
 
     test "emits cc_tool_use for native CC tool calls" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [%{
-          type: "tool_use",
-          id: "tool_2",
-          name: "Read",
-          input: %{file_path: "/tmp/test"}
-        }]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [
+              %{
+                type: "tool_use",
+                id: "tool_2",
+                name: "Read",
+                input: %{file_path: "/tmp/test"}
+              }
+            ]
+          }
+        })
 
-      assert {:ok, [{:cc_tool_use, %{id: "tool_2", name: "Read", input: %{"file_path" => "/tmp/test"}}}]} =
-        CCStreamParser.parse_line(line)
+      assert {:ok,
+              [
+                {:cc_tool_use,
+                 %{id: "tool_2", name: "Read", input: %{"file_path" => "/tmp/test"}}}
+              ]} =
+               CCStreamParser.parse_line(line)
     end
 
     test "skips unrecognized MCP tools" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [%{
-          type: "tool_use",
-          id: "tool_3",
-          name: "mcp__cranium-markers__unknown_tool",
-          input: %{}
-        }]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [
+              %{
+                type: "tool_use",
+                id: "tool_3",
+                name: "mcp__cranium-markers__unknown_tool",
+                input: %{}
+              }
+            ]
+          }
+        })
 
       assert :skip = CCStreamParser.parse_line(line)
     end
 
     test "handles mixed text and marker blocks" do
-      line = Jason.encode!(%{
-        type: "assistant",
-        message: %{content: [
-          %{type: "text", text: "Here's an image:"},
-          %{type: "tool_use", id: "t1", name: "mcp__cranium-markers__show", input: %{url: "pic.png"}},
-          %{type: "text", text: " and some code:"},
-          %{type: "tool_use", id: "t2", name: "mcp__cranium-markers__show_code", input: %{code: "x = 1"}}
-        ]}
-      })
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [
+              %{type: "text", text: "Here's an image:"},
+              %{
+                type: "tool_use",
+                id: "t1",
+                name: "mcp__cranium-markers__show",
+                input: %{url: "pic.png"}
+              },
+              %{type: "text", text: " and some code:"},
+              %{
+                type: "tool_use",
+                id: "t2",
+                name: "mcp__cranium-markers__show_code",
+                input: %{code: "x = 1"}
+              }
+            ]
+          }
+        })
 
       assert {:ok, messages} = CCStreamParser.parse_line(line)
       assert length(messages) == 4
@@ -123,54 +158,69 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
 
   describe "parse_line/2 — result" do
     test "emits stop without usage (cumulative usage is ignored)" do
-      line = Jason.encode!(%{
-        type: "result",
-        subtype: "success",
-        result: "Some response text",
-        usage: %{
-          input_tokens: 1500,
-          output_tokens: 300,
-          cache_creation_input_tokens: 100,
-          cache_read_input_tokens: 50
-        }
-      })
+      line =
+        Jason.encode!(%{
+          type: "result",
+          subtype: "success",
+          result: "Some response text",
+          usage: %{
+            input_tokens: 1500,
+            output_tokens: 300,
+            cache_creation_input_tokens: 100,
+            cache_read_input_tokens: 50
+          }
+        })
 
       assert {:ok, [{:llm_stop, "end_turn"}]} = CCStreamParser.parse_line(line)
     end
 
     test "handles error result" do
-      line = Jason.encode!(%{
-        type: "result",
-        subtype: "error",
-        error: %{message: "context window exceeded"}
-      })
+      line =
+        Jason.encode!(%{
+          type: "result",
+          subtype: "error",
+          error: %{message: "context window exceeded"}
+        })
 
       assert {:ok, [{:llm_stop, {:error, "context window exceeded"}}]} =
-        CCStreamParser.parse_line(line)
+               CCStreamParser.parse_line(line)
     end
   end
 
   describe "parse_line/2 — CC tool results" do
     test "extracts tool result with file info" do
-      line = Jason.encode!(%{
-        type: "user",
-        message: %{role: "user", content: [%{tool_use_id: "toolu_abc", type: "tool_result", content: "ratched\n"}]},
-        tool_use_result: %{type: "text", file: %{filePath: "/etc/hostname", content: "ratched\n"}}
-      })
+      line =
+        Jason.encode!(%{
+          type: "user",
+          message: %{
+            role: "user",
+            content: [%{tool_use_id: "toolu_abc", type: "tool_result", content: "ratched\n"}]
+          },
+          tool_use_result: %{
+            type: "text",
+            file: %{filePath: "/etc/hostname", content: "ratched\n"}
+          }
+        })
 
-      assert {:ok, [{:cc_tool_result, %{tool_use_id: "toolu_abc", content: "Read /etc/hostname"}}]} =
-        CCStreamParser.parse_line(line)
+      assert {:ok,
+              [{:cc_tool_result, %{tool_use_id: "toolu_abc", content: "Read /etc/hostname"}}]} =
+               CCStreamParser.parse_line(line)
     end
 
     test "extracts tool result with plain text content" do
-      line = Jason.encode!(%{
-        type: "user",
-        message: %{role: "user", content: [%{tool_use_id: "toolu_def", type: "tool_result", content: "ok"}]},
-        tool_use_result: %{type: "text", content: "command output here"}
-      })
+      line =
+        Jason.encode!(%{
+          type: "user",
+          message: %{
+            role: "user",
+            content: [%{tool_use_id: "toolu_def", type: "tool_result", content: "ok"}]
+          },
+          tool_use_result: %{type: "text", content: "command output here"}
+        })
 
-      assert {:ok, [{:cc_tool_result, %{tool_use_id: "toolu_def", content: "command output here"}}]} =
-        CCStreamParser.parse_line(line)
+      assert {:ok,
+              [{:cc_tool_result, %{tool_use_id: "toolu_def", content: "command output here"}}]} =
+               CCStreamParser.parse_line(line)
     end
   end
 
@@ -198,7 +248,9 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
   describe "demangle_mcp_name/1" do
     test "demanges cranium-markers prefix" do
       assert {:ok, "show"} = CCStreamParser.demangle_mcp_name("mcp__cranium-markers__show")
-      assert {:ok, "play_audio"} = CCStreamParser.demangle_mcp_name("mcp__cranium-markers__play_audio")
+
+      assert {:ok, "play_audio"} =
+               CCStreamParser.demangle_mcp_name("mcp__cranium-markers__play_audio")
     end
 
     test "returns :not_mcp for non-MCP names" do

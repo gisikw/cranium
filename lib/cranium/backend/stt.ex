@@ -43,7 +43,11 @@ defmodule Cranium.Backend.STT.Whisper do
     plug = Keyword.get(opts, :plug)
 
     req_opts =
-      [form_multipart: [file: {audio, filename: "audio", content_type: "application/octet-stream"}]] ++
+      [
+        form_multipart: [
+          file: {audio, filename: "audio", content_type: "application/octet-stream"}
+        ]
+      ] ++
         if(plug, do: [plug: plug], else: [])
 
     case Req.post(url, req_opts) do

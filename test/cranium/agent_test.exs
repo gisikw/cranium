@@ -81,7 +81,12 @@ defmodule Cranium.AgentTest do
         pid =
           spawn(fn ->
             send(caller, {:llm_text, "Here's an image"})
-            send(caller, {:llm_tool_use, %{id: "tc_m", name: "show", input: %{"url" => "img.png"}}})
+
+            send(
+              caller,
+              {:llm_tool_use, %{id: "tc_m", name: "show", input: %{"url" => "img.png"}}}
+            )
+
             send(caller, {:llm_stop, "tool_use"})
           end)
 
@@ -94,10 +99,13 @@ defmodule Cranium.AgentTest do
         assert content == ~s({"success": true})
 
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "There you go"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "There you go"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -107,7 +115,8 @@ defmodule Cranium.AgentTest do
       assert result.output == "There you go"
 
       # Should have received the marker on the egress channel
-      assert_receive {:chunk, "s2", {:marker, %{type: :marker, marker: :show, payload: %{"url" => "img.png"}}}}
+      assert_receive {:chunk, "s2",
+                      {:marker, %{type: :marker, marker: :show, payload: %{"url" => "img.png"}}}}
     end
 
     test "handles unknown tools with error result", %{egress: egress} do
@@ -129,10 +138,13 @@ defmodule Cranium.AgentTest do
         assert content =~ "unknown tool"
 
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "Sorry, I cannot do that"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "Sorry, I cannot do that"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -203,9 +215,10 @@ defmodule Cranium.AgentTest do
       assert_receive :llm_streaming, 2000
       GenServer.cast(agent, :cancel)
 
-      # Should return with cancelled error
+      # Should return with cancelled error and partial output
       result = Task.await(task, 5000)
-      assert {:error, :cancelled} = result
+      assert {:error, :cancelled, partial} = result
+      assert partial.output == "Starting..."
     end
 
     test "keeps last usage snapshot across tool use rounds", %{egress: egress} do

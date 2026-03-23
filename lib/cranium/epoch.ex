@@ -162,7 +162,15 @@ defmodule Cranium.Epoch do
 
     {epoch_id, turn_count, saturation, last_reminder_bucket, cc_session_id} =
       case Cranium.Store.get_epoch(conversation_id) do
-        {:ok, %{id: id, status: status, turn_count: tc, saturation: sat, last_reminder_bucket: lrb, cc_session_id: ccid}}
+        {:ok,
+         %{
+           id: id,
+           status: status,
+           turn_count: tc,
+           saturation: sat,
+           last_reminder_bucket: lrb,
+           cc_session_id: ccid
+         }}
         when status != "cleared" ->
           Logger.info("Epoch resumed", epoch_id: id, turn_count: tc)
           {id, tc, sat || 0.0, lrb || 0, ccid}
@@ -268,10 +276,11 @@ defmodule Cranium.Epoch do
     }
 
     # 4. Run inference
-    {:ok, agent_pid} = Cranium.Agent.start_link(
-      conversation_id: state.conversation_id,
-      epoch_pid: self()
-    )
+    {:ok, agent_pid} =
+      Cranium.Agent.start_link(
+        conversation_id: state.conversation_id,
+        epoch_pid: self()
+      )
 
     # Register agent_pid so cancel/1 can reach it without going through
     # this blocked handle_call
@@ -313,6 +322,7 @@ defmodule Cranium.Epoch do
           unless ephemeral do
             # Generate cross-conversation summary every N turns
             summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
+
             if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
               Cranium.Effects.generate_summary(state.conversation_id, state.cc_session_id)
             end
@@ -334,13 +344,16 @@ defmodule Cranium.Epoch do
             })
           end
 
-          {result, %{state |
-            turn_count: if(ephemeral, do: state.turn_count, else: new_count),
-            saturation: if(ephemeral, do: state.saturation, else: saturation),
-            last_reminder_bucket: if(ephemeral, do: state.last_reminder_bucket, else: new_bucket),
-            cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id),
-            interrupted_context: nil
-          }}
+          {result,
+           %{
+             state
+             | turn_count: if(ephemeral, do: state.turn_count, else: new_count),
+               saturation: if(ephemeral, do: state.saturation, else: saturation),
+               last_reminder_bucket:
+                 if(ephemeral, do: state.last_reminder_bucket, else: new_bucket),
+               cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id),
+               interrupted_context: nil
+           }}
 
         {:error, :cancelled, partial} ->
           output = partial[:output] || ""
@@ -366,13 +379,18 @@ defmodule Cranium.Epoch do
           cc_session_id = partial[:cc_session_id] || state.cc_session_id
 
           unless ephemeral do
-            Cranium.Store.update_epoch(state.epoch_id, %{status: "active", cc_session_id: cc_session_id})
+            Cranium.Store.update_epoch(state.epoch_id, %{
+              status: "active",
+              cc_session_id: cc_session_id
+            })
           end
 
-          {{:error, :cancelled}, %{state |
-            interrupted_context: interrupted,
-            cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id)
-          }}
+          {{:error, :cancelled},
+           %{
+             state
+             | interrupted_context: interrupted,
+               cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id)
+           }}
 
         {:error, _reason} ->
           unless ephemeral do
@@ -399,16 +417,17 @@ defmodule Cranium.Epoch do
 
     {:ok, new_epoch_id} = Cranium.Store.create_epoch(state.conversation_id)
 
-    state = %{state |
-      status: :idle,
-      stream_id: nil,
-      epoch_id: new_epoch_id,
-      turn_count: 0,
-      saturation: 0.0,
-      last_reminder_bucket: 0,
-      cc_session_id: nil,
-      last_landscape_at: nil,
-      interrupted_context: nil
+    state = %{
+      state
+      | status: :idle,
+        stream_id: nil,
+        epoch_id: new_epoch_id,
+        turn_count: 0,
+        saturation: 0.0,
+        last_reminder_bucket: 0,
+        cc_session_id: nil,
+        last_landscape_at: nil,
+        interrupted_context: nil
     }
 
     {:reply, :ok, state}

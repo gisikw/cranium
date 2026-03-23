@@ -51,7 +51,9 @@ defmodule Cranium.Backend.LLM.Anthropic do
     system = Keyword.get(opts, :system)
     tools = Keyword.get(opts, :tools, [])
 
-    Logger.info("LLM request: system_bytes=#{byte_size(system || "")}, messages=#{length(messages)}")
+    Logger.info(
+      "LLM request: system_bytes=#{byte_size(system || "")}, messages=#{length(messages)}"
+    )
 
     body =
       %{

@@ -91,7 +91,10 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     Process.put(:temp_files, temp_files)
 
     mode = if cc_session_id, do: "resume", else: "oneshot"
-    Logger.info("CC backend: mode=#{mode} working_dir=#{inspect(working_dir)} session_id=#{inspect(cc_session_id)}")
+
+    Logger.info(
+      "CC backend: mode=#{mode} working_dir=#{inspect(working_dir)} session_id=#{inspect(cc_session_id)}"
+    )
 
     Logger.debug("CC backend command: #{cmd}")
 
@@ -124,7 +127,10 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       if working_dir && File.dir?(working_dir) do
         [{:cd, String.to_charlist(working_dir)} | port_opts]
       else
-        Logger.warning("CC backend: working_dir missing or not a directory: #{inspect(working_dir)}")
+        Logger.warning(
+          "CC backend: working_dir missing or not a directory: #{inspect(working_dir)}"
+        )
+
         port_opts
       end
 
@@ -136,6 +142,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         {:os_pid, pid} ->
           Process.put(:port_os_pid, pid)
           pid
+
         _ ->
           nil
       end
@@ -191,12 +198,14 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         Logger.error(
           "Claude Code exited with status #{status}, buffer_size=#{byte_size(buffer)}, tail=#{String.slice(buffer, -500, 500)}"
         )
+
         send(caller, {:llm_stop, {:error, {:exit_status, status}}})
 
       {:EXIT, ^caller, reason} ->
         Logger.warning(
           "CC backend: caller exited: reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
         )
+
         Port.close(port)
         :ok
 
@@ -204,6 +213,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         Logger.warning(
           "CC backend: port exited via EXIT signal: reason=#{inspect(reason)} buffer_size=#{byte_size(buffer)}"
         )
+
         :ok
 
       {:EXIT, from, reason} ->
@@ -212,6 +222,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         Logger.warning(
           "CC backend: ignoring stale EXIT from=#{inspect(from)} reason=#{inspect(reason)}"
         )
+
         receive_port_output(port, caller, marker_tools, buffer)
     after
       900_000 ->
@@ -246,8 +257,10 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     args = [
       claude_path(),
       "-p",
-      "--resume", session_id,
-      "--output-format", "stream-json",
+      "--resume",
+      session_id,
+      "--output-format",
+      "stream-json",
       "--verbose"
     ]
 
@@ -279,7 +292,9 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     args = if Keyword.get(opts, :fork_session, false), do: args ++ ["--fork-session"], else: args
 
     escaped_text = escape_heredoc(user_text)
-    cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_text}\nCRANIUM_EOF"
+
+    cmd =
+      "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_text}\nCRANIUM_EOF"
 
     {cmd, temp_files}
   end
@@ -302,7 +317,8 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     args = [
       claude_path(),
       "-p",
-      "--output-format", "stream-json",
+      "--output-format",
+      "stream-json",
       "--verbose"
     ]
 
@@ -318,7 +334,9 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
       end
 
     escaped_prompt = escape_heredoc(prompt)
-    cmd = "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_prompt}\nCRANIUM_EOF"
+
+    cmd =
+      "cat <<'CRANIUM_EOF' | #{Enum.map_join(args, " ", &shell_escape/1)}\n#{escaped_prompt}\nCRANIUM_EOF"
 
     {cmd, temp_files}
   end
@@ -375,7 +393,10 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
   defp drain_stale_exits(port) do
     receive do
       {:EXIT, from, reason} when from != port ->
-        Logger.info("CC backend: drained stale EXIT from=#{inspect(from)} reason=#{inspect(reason)}")
+        Logger.info(
+          "CC backend: drained stale EXIT from=#{inspect(from)} reason=#{inspect(reason)}"
+        )
+
         drain_stale_exits(port)
     after
       0 -> :ok
@@ -384,7 +405,9 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
 
   defp split_lines(buffer) do
     case String.split(buffer, "\n") do
-      [single] -> {[], single}
+      [single] ->
+        {[], single}
+
       parts ->
         {lines, [rest]} = Enum.split(parts, -1)
         {lines, rest}

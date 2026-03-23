@@ -11,20 +11,21 @@ defmodule Cranium.Agent.Tools.Subagent do
 
   require Logger
 
-  @subagent_prompt_file "/home/dev/Projects/exocortex/notes/SUBAGENT.md"
-
   @impl true
   def execute(%{"prompt" => prompt}, _opts) do
     preview = String.slice(prompt, 0, 200) |> String.replace("\n", " ")
     Logger.info("Subagent: #{preview}")
 
-    args = [
-      "-p",
-      "--output-format=json",
-      "--append-system-prompt-file=#{@subagent_prompt_file}",
-      "--dangerously-skip-permissions",
-      prompt
-    ]
+    prompt_file = Application.get_env(:cranium, :paths)[:subagent_prompt]
+
+    args =
+      [
+        "-p",
+        "--output-format=json",
+        "--dangerously-skip-permissions"
+      ] ++
+        if(prompt_file, do: ["--append-system-prompt-file=#{prompt_file}"], else: []) ++
+        [prompt]
 
     Logger.info("Subagent args: #{inspect(args)}")
 
@@ -33,7 +34,10 @@ defmodule Cranium.Agent.Tools.Subagent do
     # so we still get the real exit code.
     wrapper = "exec claude #{Enum.map_join(args, " ", &shell_escape/1)} </dev/null"
 
-    case System.cmd("sh", ["-c", wrapper], stderr_to_stdout: true, env: [{"CLAUDECODE", nil}, {"ANTHROPIC_API_KEY", nil}]) do
+    case System.cmd("sh", ["-c", wrapper],
+           stderr_to_stdout: true,
+           env: [{"CLAUDECODE", nil}, {"ANTHROPIC_API_KEY", nil}]
+         ) do
       {output, 0} ->
         Logger.info("Subagent completed", exit_code: 0, output_bytes: byte_size(output))
         {:ok, extract_result(output)}

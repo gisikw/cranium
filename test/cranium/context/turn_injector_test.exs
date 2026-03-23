@@ -112,12 +112,26 @@ defmodule Cranium.Context.TurnInjectorTest do
     end
 
     test "sets landscape_injected flag on fresh epoch with landscape data" do
+      # Create a temp summary file so landscape has data regardless of env
+      summaries_dir = Application.get_env(:cranium, :paths)[:summaries]
+      summary_file = Path.join(summaries_dir, "other-room.json")
+
+      File.write!(
+        summary_file,
+        Jason.encode!(%{
+          "room_name" => "other-room",
+          "summary" => "They were discussing tests.",
+          "last_message_ts" => DateTime.to_unix(DateTime.utc_now())
+        })
+      )
+
+      on_exit(fn -> File.rm(summary_file) end)
+
       message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
       context = %{now: DateTime.utc_now()}
 
       {:ok, result} = TurnInjector.process(message, context)
 
-      # Hoard summaries exist on disk, so landscape should be injected
       assert result[:landscape_injected] == true
       assert result.text =~ "<cross-room-context>"
       assert result.text =~ "hello"

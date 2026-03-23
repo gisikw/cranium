@@ -35,8 +35,7 @@ defmodule Cranium.Ingress.CommandDetectorTest do
     test "detects !new with conversation name" do
       event = Map.put(@base_event, :body, "!new my-project")
 
-      assert {:command, :new_conversation,
-              %{conversation_id: "test-convo", name: "my-project"}} =
+      assert {:command, :new_conversation, %{conversation_id: "test-convo", name: "my-project"}} =
                CommandDetector.process(event, %{})
     end
 

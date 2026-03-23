@@ -9,7 +9,11 @@ defmodule Cranium.Agent.ToolRouterTest.TestTool do
 
   @impl true
   def schema do
-    %{name: "test_tool", description: "A test tool", input_schema: %{type: "object", properties: %{}}}
+    %{
+      name: "test_tool",
+      description: "A test tool",
+      input_schema: %{type: "object", properties: %{}}
+    }
   end
 end
 
@@ -33,7 +37,9 @@ defmodule Cranium.Agent.ToolRouterTest do
       on_exit(fn -> Application.put_env(:cranium, :tools, original) end)
 
       ToolRouter.register("my_tool", __MODULE__)
-      assert {:execute, __MODULE__, %{"key" => "val"}} = ToolRouter.route(%{name: "my_tool", input: %{"key" => "val"}})
+
+      assert {:execute, __MODULE__, %{"key" => "val"}} =
+               ToolRouter.route(%{name: "my_tool", input: %{"key" => "val"}})
     end
   end
 
@@ -55,7 +61,7 @@ defmodule Cranium.Agent.ToolRouterTest do
       names = Enum.map(defs, & &1.name)
       assert "test_tool" in names
 
-      tool_def = Enum.find(defs, & &1.name == "test_tool")
+      tool_def = Enum.find(defs, &(&1.name == "test_tool"))
       assert tool_def.description == "A test tool"
     end
   end

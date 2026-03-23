@@ -280,7 +280,14 @@ defmodule Cranium.Agent do
           Cranium.Store.update_epoch_session(state.conversation_id, session_id)
         end
 
-        receive_loop(%{state | cc_session_id: session_id}, egress_pid, stream_id, llm_pid, ref, opts)
+        receive_loop(
+          %{state | cc_session_id: session_id},
+          egress_pid,
+          stream_id,
+          llm_pid,
+          ref,
+          opts
+        )
 
       {:llm_stop, "end_turn"} ->
         {:ok, state}
@@ -345,7 +352,10 @@ defmodule Cranium.Agent do
               ~s({"error": "unknown tool: #{name}"})
           end
 
-        %{role: "user", content: [%{type: "tool_result", tool_use_id: tool_call.id, content: result}]}
+        %{
+          role: "user",
+          content: [%{type: "tool_result", tool_use_id: tool_call.id, content: result}]
+        }
       end)
 
     # Append assistant message + tool results to conversation

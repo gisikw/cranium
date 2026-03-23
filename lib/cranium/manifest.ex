@@ -284,7 +284,14 @@ defmodule Cranium.Manifest do
 
     # Compute deltas between consecutive milestones
     deltas =
-      [:submitted, :context_assembled, :inference_start, :first_token, :stream_end, :manifest_complete]
+      [
+        :submitted,
+        :context_assembled,
+        :inference_start,
+        :first_token,
+        :stream_end,
+        :manifest_complete
+      ]
       |> Enum.map(fn m -> {m, Map.get(t, m)} end)
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
 
@@ -316,7 +323,11 @@ defmodule Cranium.Manifest do
     base = %{
       "stream_id" => manifest.stream_id,
       "status" => to_string(manifest.status),
-      "segments" => Enum.map(manifest.segments, &to_json_segment(&1, manifest.stream_id, disposition, origin_wall, origin_mono)),
+      "segments" =>
+        Enum.map(
+          manifest.segments,
+          &to_json_segment(&1, manifest.stream_id, disposition, origin_wall, origin_mono)
+        ),
       "timing" => timing_to_json(manifest.timing, origin_wall, origin_mono)
     }
 
@@ -326,7 +337,13 @@ defmodule Cranium.Manifest do
     end
   end
 
-  defp to_json_segment(%{type: :utterance} = seg, stream_id, disposition, origin_wall, origin_mono) do
+  defp to_json_segment(
+         %{type: :utterance} = seg,
+         stream_id,
+         disposition,
+         origin_wall,
+         origin_mono
+       ) do
     renditions =
       %{}
       |> maybe_put_rendition("text", disposition, %{
@@ -365,10 +382,11 @@ defmodule Cranium.Manifest do
       offset_ms = mono - origin_mono
       wall = DateTime.add(origin_wall, offset_ms, :millisecond)
 
-      {to_string(milestone), %{
-        "wall" => DateTime.to_iso8601(wall),
-        "offset_ms" => offset_ms
-      }}
+      {to_string(milestone),
+       %{
+         "wall" => DateTime.to_iso8601(wall),
+         "offset_ms" => offset_ms
+       }}
     end)
   end
 

@@ -40,22 +40,34 @@ defmodule Cranium.Backend.LLM.CCMcpServerTest do
 
       init_request = Jason.encode!(%{jsonrpc: "2.0", id: 1, method: "initialize", params: %{}})
       list_request = Jason.encode!(%{jsonrpc: "2.0", id: 2, method: "tools/list", params: %{}})
-      call_request = Jason.encode!(%{jsonrpc: "2.0", id: 3, method: "tools/call", params: %{name: "show", arguments: %{url: "test.png"}}})
+
+      call_request =
+        Jason.encode!(%{
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: %{name: "show", arguments: %{url: "test.png"}}
+        })
+
       notification = Jason.encode!(%{jsonrpc: "2.0", method: "notifications/initialized"})
 
       # Pipe input via printf since System.cmd doesn't support stdin
-      escaped = Enum.map_join(
-        [init_request, notification, list_request, call_request],
-        "\\n",
-        &String.replace(&1, "\"", "\\\"")
-      )
+      escaped =
+        Enum.map_join(
+          [init_request, notification, list_request, call_request],
+          "\\n",
+          &String.replace(&1, "\"", "\\\"")
+        )
 
-      {output, 0} = System.cmd("sh", ["-c", "printf '#{escaped}\\n' | bash #{script}"],
-        stderr_to_stdout: true
-      )
+      {output, 0} =
+        System.cmd("sh", ["-c", "printf '#{escaped}\\n' | bash #{script}"],
+          stderr_to_stdout: true
+        )
 
       lines = String.split(String.trim(output), "\n")
-      assert length(lines) == 3, "Expected 3 responses (notification skipped), got #{length(lines)}: #{inspect(lines)}"
+
+      assert length(lines) == 3,
+             "Expected 3 responses (notification skipped), got #{length(lines)}: #{inspect(lines)}"
 
       {:ok, init_resp} = Jason.decode(Enum.at(lines, 0))
       assert init_resp["id"] == 1

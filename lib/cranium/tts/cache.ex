@@ -128,7 +128,9 @@ defmodule Cranium.TTS.Cache do
     timers = Map.delete(state.cleanup_timers, stream_id)
 
     if length(evicted) > 0 do
-      Logger.info("TTS cache: evicted #{length(evicted)} unconsumed entries for stream #{stream_id}")
+      Logger.info(
+        "TTS cache: evicted #{length(evicted)} unconsumed entries for stream #{stream_id}"
+      )
     end
 
     {:noreply, %{state | entries: Map.new(remaining), cleanup_timers: timers}}

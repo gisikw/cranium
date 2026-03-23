@@ -182,7 +182,10 @@ defmodule Cranium.Transport.HTTPTest do
   describe "input protocol" do
     test "POST /v1/input/start returns take_id and stream_id" do
       conn =
-        Plug.Test.conn(:post, "/v1/input/start", %{"conversation_id" => "conv-input-1", "disposition" => ~s(["audio","text"])})
+        Plug.Test.conn(:post, "/v1/input/start", %{
+          "conversation_id" => "conv-input-1",
+          "disposition" => ~s(["audio","text"])
+        })
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> HTTP.call(HTTP.init([]))
 

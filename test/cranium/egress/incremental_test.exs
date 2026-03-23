@@ -24,10 +24,14 @@ defmodule Cranium.Egress.IncrementalTest do
 
     :ok = Manifest.init_stream(stream_id, "conv1", disposition: disposition)
 
-    send(egress, {:stream_start, stream_id, %{
-      disposition: disposition,
-      mode: :text
-    }})
+    send(
+      egress,
+      {:stream_start, stream_id,
+       %{
+         disposition: disposition,
+         mode: :text
+       }}
+    )
 
     for chunk <- chunks do
       send(egress, {:chunk, stream_id, chunk})
@@ -187,7 +191,11 @@ defmodule Cranium.Egress.IncrementalTest do
       t1 = %{id: "t1", name: "Read", input: %{}}
       t2 = %{id: "t2", name: "Bash", input: %{}}
 
-      simulate_stream(sid, [{:tool_use, t1}, {:tool_result, %{tool_use_id: "t1"}}, {:tool_use, t2}])
+      simulate_stream(sid, [
+        {:tool_use, t1},
+        {:tool_result, %{tool_use_id: "t1"}},
+        {:tool_use, t2}
+      ])
 
       {:ok, manifest} = Manifest.get(sid)
       indices = Enum.map(manifest["segments"], & &1["index"])

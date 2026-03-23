@@ -252,7 +252,8 @@ defmodule Cranium.Egress do
           Enum.reduce(paragraphs, {stream.segment_index, stream}, fn para, {idx, s} ->
             emit_segment(stream_id, idx, para, s.disposition)
 
-            Logger.debug("Aggressive emit (para): segment=#{idx} words=#{word_count(para)} lead_time=#{lead_time_ms(s)}ms",
+            Logger.debug(
+              "Aggressive emit (para): segment=#{idx} words=#{word_count(para)} lead_time=#{lead_time_ms(s)}ms",
               stage: :egress,
               stream_id: stream_id
             )
@@ -274,7 +275,8 @@ defmodule Cranium.Egress do
           {emittable, remainder} ->
             emit_segment(stream_id, stream.segment_index, emittable, stream.disposition)
 
-            Logger.debug("Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",
+            Logger.debug(
+              "Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",
               stage: :egress,
               stream_id: stream_id
             )
@@ -334,9 +336,10 @@ defmodule Cranium.Egress do
   defp track_emission(stream, words) do
     now = System.monotonic_time(:millisecond)
 
-    %{stream |
-      first_emit_at: stream.first_emit_at || now,
-      words_emitted: stream.words_emitted + words
+    %{
+      stream
+      | first_emit_at: stream.first_emit_at || now,
+        words_emitted: stream.words_emitted + words
     }
   end
 
@@ -380,7 +383,6 @@ defmodule Cranium.Egress do
   end
 
   defp batch_and_emit(paragraphs, remainder, stream, stream_id, threshold) do
-
     {index, acc} =
       Enum.reduce(paragraphs, {stream.segment_index, ""}, fn para, {idx, acc} ->
         merged = if acc == "", do: para, else: acc <> "\n\n" <> para

@@ -18,9 +18,9 @@ end
 
 defmodule Cranium.Backend.TTS.ExoVoice do
   @moduledoc """
-  Exo TTS backend (OpenAI-compatible).
+  TTS backend (OpenAI-compatible).
 
-  Sends text to the Exo voice service at exo-tts.gisi.network.
+  Sends text to the configured TTS endpoint (TTS_URL env var).
   """
 
   @behaviour Cranium.Backend.TTS
@@ -50,6 +50,7 @@ defmodule Cranium.Backend.TTS.ExoVoice do
   end
 
   defp tts_url do
-    Application.get_env(:cranium, :backends)[:tts_url] || "https://exo-tts.gisi.network/v1/audio/speech"
+    Application.get_env(:cranium, :backends)[:tts_url] ||
+      raise "TTS_URL not configured — set TTS_URL env var"
   end
 end

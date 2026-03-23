@@ -11,8 +11,15 @@ defmodule CraniumTest.StoreTest do
 
     test "inserts messages and retrieves them in insertion order", %{epoch_id: epoch_id} do
       :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "hello"})
-      :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :assistant, content: "hi there"})
-      :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "how are you?"})
+
+      :ok =
+        Cranium.Store.append_message("conv-msg", epoch_id, %{
+          role: :assistant,
+          content: "hi there"
+        })
+
+      :ok =
+        Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "how are you?"})
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg")
 
@@ -23,7 +30,8 @@ defmodule CraniumTest.StoreTest do
 
     test "respects the limit option, returning most recent", %{epoch_id: epoch_id} do
       for i <- 1..10 do
-        :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "msg #{i}"})
+        :ok =
+          Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "msg #{i}"})
       end
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg", limit: 3)
@@ -128,7 +136,9 @@ defmodule CraniumTest.StoreTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-ts")
       :ok = Cranium.Store.append_message("conv-ts", epoch_id, %{role: :user, content: "first"})
       Process.sleep(10)
-      :ok = Cranium.Store.append_message("conv-ts", epoch_id, %{role: :assistant, content: "second"})
+
+      :ok =
+        Cranium.Store.append_message("conv-ts", epoch_id, %{role: :assistant, content: "second"})
 
       {:ok, ts} = Cranium.Store.get_last_message_at(epoch_id)
       assert %DateTime{} = ts

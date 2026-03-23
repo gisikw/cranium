@@ -72,7 +72,10 @@ defmodule Cranium.Input.TakeRegistry do
         opened_at: System.monotonic_time(:millisecond)
       }
 
-      Logger.info("Input start: take=#{take_id} stream=#{stream_id} conversation=#{conversation_id}")
+      Logger.info(
+        "Input start: take=#{take_id} stream=#{stream_id} conversation=#{conversation_id}"
+      )
+
       {:reply, :ok, %{state | takes: Map.put(state.takes, take_id, take)}}
     end
   end
@@ -92,7 +95,9 @@ defmodule Cranium.Input.TakeRegistry do
         case check_completeness(take) do
           {:complete, result} ->
             take = %{take | status: :complete, completed_at: System.monotonic_time(:millisecond)}
-            {:reply, {:ok, :complete, result}, %{state | takes: Map.put(state.takes, take_id, take)}}
+
+            {:reply, {:ok, :complete, result},
+             %{state | takes: Map.put(state.takes, take_id, take)}}
 
           :incomplete ->
             {:reply, {:ok, :buffered}, %{state | takes: Map.put(state.takes, take_id, take)}}
@@ -112,13 +117,17 @@ defmodule Cranium.Input.TakeRegistry do
         case check_completeness(take) do
           {:complete, result} ->
             take = %{take | status: :complete, completed_at: System.monotonic_time(:millisecond)}
-            {:reply, {:ok, :complete, result}, %{state | takes: Map.put(state.takes, take_id, take)}}
+
+            {:reply, {:ok, :complete, result},
+             %{state | takes: Map.put(state.takes, take_id, take)}}
 
           :incomplete ->
             expected = MapSet.new(0..last_seq)
             received = MapSet.new(Map.keys(take.chunks))
             missing = MapSet.difference(expected, received) |> MapSet.to_list() |> Enum.sort()
-            {:reply, {:ok, :incomplete, missing}, %{state | takes: Map.put(state.takes, take_id, take)}}
+
+            {:reply, {:ok, :incomplete, missing},
+             %{state | takes: Map.put(state.takes, take_id, take)}}
         end
     end
   end
@@ -152,7 +161,15 @@ defmodule Cranium.Input.TakeRegistry do
     if MapSet.equal?(expected, received) do
       data = chunks |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)) |> Enum.join()
       key = take.disposition |> List.first("text") |> String.to_atom()
-      {:complete, %{key => data, stream_id: take.stream_id, conversation_id: take.conversation_id, disposition: take.disposition, origin: take.origin}}
+
+      {:complete,
+       %{
+         key => data,
+         stream_id: take.stream_id,
+         conversation_id: take.conversation_id,
+         disposition: take.disposition,
+         origin: take.origin
+       }}
     else
       :incomplete
     end

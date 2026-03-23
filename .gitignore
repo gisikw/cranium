@@ -17,8 +17,8 @@
 .ko/agent.lock
 
 # Elixir
-/_build/
-/deps/
+_build/
+deps/
 /cover/
 /doc/
 /.fetch

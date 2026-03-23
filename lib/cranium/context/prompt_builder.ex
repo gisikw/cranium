@@ -13,8 +13,6 @@ defmodule Cranium.Context.PromptBuilder do
 
   require Logger
 
-  @default_identity_path "/home/dev/Projects/hoard/prompts/EXO.md"
-
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
     identity = resolve_identity(context)
@@ -36,17 +34,20 @@ defmodule Cranium.Context.PromptBuilder do
   end
 
   defp resolve_identity(_context) do
-    case File.read(@default_identity_path) do
-      {:ok, content} ->
-        content
+    path = Application.get_env(:cranium, :paths)[:identity]
 
-      {:error, reason} ->
-        Logger.warning("Failed to load identity document",
-          path: @default_identity_path,
-          reason: reason
-        )
+    if path do
+      case File.read(path) do
+        {:ok, content} ->
+          content
 
-        ""
+        {:error, reason} ->
+          Logger.warning("Failed to load identity document", path: path, reason: reason)
+          ""
+      end
+    else
+      Logger.warning("No identity path configured (IDENTITY_PATH env var)")
+      ""
     end
   end
 

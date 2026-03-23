@@ -132,8 +132,27 @@ defmodule Cranium.Store do
     {:ok, %__MODULE__{}}
   end
 
+  # All handle_call clauses route through a rescue wrapper so that
+  # transient Repo errors (or Ecto sandbox teardown in tests) never
+  # crash this GenServer — which would cascade via rest_for_one and
+  # take down Manifest, Egress, and everything downstream.
+
   @impl true
-  def handle_call({:get_epoch, conversation_id}, _from, state) do
+  def handle_call(request, from, state) do
+    try do
+      do_handle_call(request, from, state)
+    rescue
+      e ->
+        Logger.error("Store operation failed: #{Exception.message(e)}", stage: :store)
+        {:reply, {:error, :db_error}, state}
+    catch
+      :exit, reason ->
+        Logger.error("Store operation exit: #{inspect(reason)}", stage: :store)
+        {:reply, {:error, :db_error}, state}
+    end
+  end
+
+  defp do_handle_call({:get_epoch, conversation_id}, _from, state) do
     result =
       from(e in Epoch,
         where: e.conversation_id == ^conversation_id,
@@ -149,8 +168,7 @@ defmodule Cranium.Store do
     {:reply, result, state}
   end
 
-  @impl true
-  def handle_call({:create_epoch, conversation_id, attrs}, _from, state) do
+  defp do_handle_call({:create_epoch, conversation_id, attrs}, _from, state) do
     epoch =
       %Epoch{}
       |> Epoch.changeset(Map.put(attrs, :conversation_id, conversation_id))
@@ -159,8 +177,7 @@ defmodule Cranium.Store do
     {:reply, {:ok, epoch.id}, state}
   end
 
-  @impl true
-  def handle_call({:update_epoch, epoch_id, attrs}, _from, state) do
+  defp do_handle_call({:update_epoch, epoch_id, attrs}, _from, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     Repo.get!(Epoch, epoch_id)
@@ -170,8 +187,7 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_call({:append_message, conversation_id, epoch_id, message}, _from, state) do
+  defp do_handle_call({:append_message, conversation_id, epoch_id, message}, _from, state) do
     %Message{}
     |> Message.changeset(%{
       conversation_id: conversation_id,
@@ -185,8 +201,7 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_call({:get_messages, conversation_id, opts}, _from, state) do
+  defp do_handle_call({:get_messages, conversation_id, opts}, _from, state) do
     limit = Keyword.get(opts, :limit)
     epoch_id = Keyword.get(opts, :epoch_id)
 
@@ -201,6 +216,7 @@ defmodule Cranium.Store do
     messages =
       if limit do
         recent = from(m in base, order_by: [desc: m.inserted_at, desc: m.id], limit: ^limit)
+
         from(m in subquery(recent), order_by: [asc: m.inserted_at, asc: m.id])
         |> Repo.all()
       else
@@ -212,8 +228,7 @@ defmodule Cranium.Store do
     {:reply, {:ok, result}, state}
   end
 
-  @impl true
-  def handle_call({:save_handoff, epoch_id, content}, _from, state) do
+  defp do_handle_call({:save_handoff, epoch_id, content}, _from, state) do
     Repo.get!(Epoch, epoch_id)
     |> Epoch.changeset(%{handoff: content})
     |> Repo.update!()
@@ -221,8 +236,7 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_call({:get_latest_handoff, conversation_id}, _from, state) do
+  defp do_handle_call({:get_latest_handoff, conversation_id}, _from, state) do
     result =
       from(e in Epoch,
         where: e.conversation_id == ^conversation_id and not is_nil(e.handoff),
@@ -238,8 +252,7 @@ defmodule Cranium.Store do
     {:reply, result, state}
   end
 
-  @impl true
-  def handle_call({:update_epoch_session, conversation_id, session_id}, _from, state) do
+  defp do_handle_call({:update_epoch_session, conversation_id, session_id}, _from, state) do
     from(e in Epoch,
       where: e.conversation_id == ^conversation_id and e.status != "cleared",
       order_by: [desc: e.inserted_at],
@@ -247,7 +260,9 @@ defmodule Cranium.Store do
     )
     |> Repo.one()
     |> case do
-      nil -> :ok
+      nil ->
+        :ok
+
       epoch ->
         epoch
         |> Epoch.changeset(%{cc_session_id: session_id})
@@ -257,8 +272,7 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_call({:get_last_message_at, epoch_id}, _from, state) do
+  defp do_handle_call({:get_last_message_at, epoch_id}, _from, state) do
     result =
       from(m in Message,
         where: m.epoch_id == ^epoch_id,
@@ -273,8 +287,7 @@ defmodule Cranium.Store do
     {:reply, result, state}
   end
 
-  @impl true
-  def handle_call({:save_summary, conversation_id, content}, _from, state) do
+  defp do_handle_call({:save_summary, conversation_id, content}, _from, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     case Repo.get_by(Summary, conversation_id: conversation_id) do
@@ -292,14 +305,41 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_call(:get_all_summaries, _from, state) do
+  defp do_handle_call(:get_all_summaries, _from, state) do
     summaries =
       from(s in Summary, order_by: [desc: s.updated_at])
       |> Repo.all()
       |> Enum.map(&summary_to_map/1)
 
     {:reply, {:ok, summaries}, state}
+  end
+
+  defp do_handle_call({:clear_epoch, conversation_id}, _from, state) do
+    result =
+      from(e in Epoch,
+        where: e.conversation_id == ^conversation_id and e.status != "cleared",
+        order_by: [desc: e.inserted_at],
+        limit: 1
+      )
+      |> Repo.one()
+      |> case do
+        nil ->
+          :not_found
+
+        epoch ->
+          epoch
+          |> Epoch.changeset(%{status: "cleared"})
+          |> Repo.update!()
+
+          new_epoch =
+            %Epoch{}
+            |> Epoch.changeset(%{conversation_id: conversation_id})
+            |> Repo.insert!()
+
+          {:ok, new_epoch.id}
+      end
+
+    {:reply, result, state}
   end
 
   # --- Private ---

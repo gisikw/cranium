@@ -82,8 +82,10 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
   defp write_to_hoard(conversation_id, text) do
     dir = Application.get_env(:cranium, :paths)[:summaries]
+
     if dir do
       now = System.system_time(:second)
+
       payload = %{
         "room_name" => conversation_id,
         "summary" => text,

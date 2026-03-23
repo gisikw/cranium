@@ -99,7 +99,10 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
     {:ok, [{:llm_stop, "end_turn"}]}
   end
 
-  defp parse_event(%{"type" => "user", "tool_use_result" => result, "message" => message}, _marker_tools)
+  defp parse_event(
+         %{"type" => "user", "tool_use_result" => result, "message" => message},
+         _marker_tools
+       )
        when is_map(result) do
     # CC tool result — tool_use_id lives in message.content[0], result data in tool_use_result
     tool_use_id =
@@ -131,7 +134,10 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
     if text == "", do: [], else: [{:llm_text, text}]
   end
 
-  defp parse_content_block(%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}, marker_tools) do
+  defp parse_content_block(
+         %{"type" => "tool_use", "id" => id, "name" => name, "input" => input},
+         marker_tools
+       ) do
     case demangle_mcp_name(name) do
       {:ok, tool_name} ->
         if MapSet.member?(marker_tools, tool_name) do

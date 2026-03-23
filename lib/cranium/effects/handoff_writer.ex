@@ -95,6 +95,7 @@ defmodule Cranium.Effects.HandoffWriter do
 
   defp write_to_hoard(conversation_id, text) do
     dir = Application.get_env(:cranium, :paths)[:handoffs]
+
     if dir do
       room_dir = Path.join(dir, conversation_id)
       File.mkdir_p(room_dir)

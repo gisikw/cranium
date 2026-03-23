@@ -20,9 +20,9 @@ defmodule Cranium.Transport.HTTP do
 
   require Logger
 
-  plug :match
-  plug Plug.Parsers, parsers: [:json, :multipart], json_decoder: Jason
-  plug :dispatch
+  plug(:match)
+  plug(Plug.Parsers, parsers: [:json, :multipart], json_decoder: Jason)
+  plug(:dispatch)
 
   post "/v1/submit" do
     conversation_id = conn.body_params["conversation_id"] || "default"
@@ -78,7 +78,10 @@ defmodule Cranium.Transport.HTTP do
       ephemeral: ephemeral
     }
 
-    Logger.info("Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}", transport: :http)
+    Logger.info(
+      "Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}",
+      transport: :http
+    )
 
     # Check for commands before dispatching to inference
     case text do
@@ -93,7 +96,12 @@ defmodule Cranium.Transport.HTTP do
 
       "!cancel" ->
         result = Cranium.Epoch.cancel(conversation_id)
-        Logger.info("Cancel result: #{inspect(result)}", conversation_id: conversation_id, transport: :http)
+
+        Logger.info("Cancel result: #{inspect(result)}",
+          conversation_id: conversation_id,
+          transport: :http
+        )
+
         Cranium.Manifest.complete(stream_id)
 
         conn
@@ -112,7 +120,10 @@ defmodule Cranium.Transport.HTTP do
               Cranium.Manifest.cancel(stream_id)
 
             {:error, reason} ->
-              Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}", transport: :http)
+              Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}",
+                transport: :http
+              )
+
               Cranium.Manifest.complete(stream_id)
           end
         end)
@@ -126,13 +137,18 @@ defmodule Cranium.Transport.HTTP do
   get "/v1/streams/:id/manifest" do
     case Cranium.Manifest.get(id) do
       {:ok, manifest} ->
-        Logger.debug("Manifest poll: stream=#{id} status=#{manifest["status"]} segments=#{length(manifest["segments"])}", transport: :http)
+        Logger.debug(
+          "Manifest poll: stream=#{id} status=#{manifest["status"]} segments=#{length(manifest["segments"])}",
+          transport: :http
+        )
+
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(200, Jason.encode!(manifest))
 
       :not_found ->
         Logger.debug("Manifest poll: stream=#{id} not_found", transport: :http)
+
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(404, Jason.encode!(%{"error" => "stream not found"}))
@@ -172,7 +188,10 @@ defmodule Cranium.Transport.HTTP do
         |> send_resp(404, Jason.encode!(%{"error" => "segment not found"}))
 
       {:error, reason} ->
-        Logger.error("TTS synthesis failed: stream=#{id} segment=#{index} reason=#{inspect(reason)}", transport: :http)
+        Logger.error(
+          "TTS synthesis failed: stream=#{id} segment=#{index} reason=#{inspect(reason)}",
+          transport: :http
+        )
 
         conn
         |> put_resp_content_type("application/json")
@@ -188,7 +207,11 @@ defmodule Cranium.Transport.HTTP do
     take_id = Cranium.Stage.new_stream_id()
     stream_id = Cranium.Stage.new_stream_id()
 
-    :ok = Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition, origin: origin)
+    :ok =
+      Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition,
+        origin: origin
+      )
+
     :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
     Cranium.Manifest.stamp(stream_id, :submitted)
 
@@ -203,12 +226,19 @@ defmodule Cranium.Transport.HTTP do
         case conn.body_params["chunk"] do
           %Plug.Upload{path: path} ->
             audio = File.read!(path)
-            Logger.info("Chunk received: take=#{id} seq=#{seq_int} size=#{byte_size(audio)}", transport: :http)
+
+            Logger.info("Chunk received: take=#{id} seq=#{seq_int} size=#{byte_size(audio)}",
+              transport: :http
+            )
+
             stt = Application.get_env(:cranium, :backends)[:stt] || Cranium.Backend.STT.Whisper
 
             case stt.transcribe(audio, []) do
               {:ok, text} ->
-                Logger.info("Chunk STT: take=#{id} seq=#{seq_int} transcribed #{byte_size(audio)} bytes", transport: :http)
+                Logger.info(
+                  "Chunk STT: take=#{id} seq=#{seq_int} transcribed #{byte_size(audio)} bytes",
+                  transport: :http
+                )
 
                 case Cranium.Input.TakeRegistry.put_chunk(id, seq_int, text) do
                   {:ok, :buffered} ->
@@ -235,7 +265,10 @@ defmodule Cranium.Transport.HTTP do
                 end
 
               {:error, reason} ->
-                Logger.error("Chunk STT failed: take=#{id} seq=#{seq_int} reason=#{inspect(reason)}", transport: :http)
+                Logger.error(
+                  "Chunk STT failed: take=#{id} seq=#{seq_int} reason=#{inspect(reason)}",
+                  transport: :http
+                )
 
                 conn
                 |> put_resp_content_type("application/json")
@@ -362,7 +395,10 @@ defmodule Cranium.Transport.HTTP do
       content_key = result.disposition |> List.first("text") |> String.to_atom()
       raw_text = Map.fetch!(result, content_key)
       text = if content_key == :audio, do: "[Transcribed from audio]\n#{raw_text}", else: raw_text
-      Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(text, 0..80))}", transport: :http)
+
+      Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(text, 0..80))}",
+        transport: :http
+      )
 
       case Cranium.Epoch.start_or_get(result.conversation_id) do
         {:ok, epoch_pid} ->
@@ -383,7 +419,10 @@ defmodule Cranium.Transport.HTTP do
               Cranium.Manifest.cancel(result.stream_id)
 
             {:error, reason} ->
-              Logger.error("Input submit failed: take=#{take_id} reason=#{inspect(reason)}", transport: :http)
+              Logger.error("Input submit failed: take=#{take_id} reason=#{inspect(reason)}",
+                transport: :http
+              )
+
               Cranium.Manifest.complete(result.stream_id)
           end
       end
@@ -391,12 +430,13 @@ defmodule Cranium.Transport.HTTP do
   end
 
   defp parse_disposition(list) when is_list(list), do: list
+
   defp parse_disposition(str) when is_binary(str) do
     case Jason.decode(str) do
       {:ok, list} when is_list(list) -> list
       _ -> ["text"]
     end
   end
-  defp parse_disposition(_), do: ["text"]
 
+  defp parse_disposition(_), do: ["text"]
 end

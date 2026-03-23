@@ -18,11 +18,8 @@ config :cranium, :backends,
 # Tool registry — tools are registered at runtime via ToolRouter.register/2
 config :cranium, :tools, []
 
-# Paths
-config :cranium, :paths,
-  handoffs: "/home/dev/Projects/hoard/handoffs",
-  summaries: "/home/dev/Projects/hoard/summaries",
-  skills: "/home/dev/Projects/cranium-v2/skills"
+# Paths — configured via environment variables. See .env.example.
+config :cranium, :paths, %{}
 
 # Pipeline tuning
 config :cranium, :pipeline,

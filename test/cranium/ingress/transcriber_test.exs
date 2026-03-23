@@ -16,7 +16,7 @@ defmodule Cranium.Ingress.TranscriberTest do
 
       assert {:ok, result} = Transcriber.process(%{type: :audio, audio: audio}, %{})
       assert result.type == :text
-      assert result.body == "hello world"
+      assert result.body == "[Transcribed from audio]\nhello world"
       assert result.audio == nil
     end
 

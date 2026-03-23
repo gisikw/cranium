@@ -7,7 +7,9 @@ defmodule Cranium.Context.LandscapeTest do
 
   setup do
     # Create a temporary directory with hoard-format summary files
-    tmp_dir = Path.join(System.tmp_dir!(), "landscape_test_#{:erlang.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "landscape_test_#{:erlang.unique_integer([:positive])}")
+
     File.mkdir_p!(tmp_dir)
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
@@ -133,7 +135,9 @@ defmodule Cranium.Context.LandscapeTest do
       refute result =~ "stale"
 
       # Filter: everything after two_hours_ago (both should appear since stale is exactly at boundary)
-      result2 = Landscape.build("test-room", since: DateTime.add(two_hours_ago, -1, :second), now: @now)
+      result2 =
+        Landscape.build("test-room", since: DateTime.add(two_hours_ago, -1, :second), now: @now)
+
       assert result2 =~ "recent"
       assert result2 =~ "stale"
     end
