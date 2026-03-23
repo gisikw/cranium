@@ -39,7 +39,16 @@ jobs:
         run: nix build 'path:.#default' -L --show-trace
 
       - name: Test
-        run: nix develop 'path:.' -c just test
+        run: |
+          nix develop 'path:.' -c bash -c '
+            export PGDATA=$(mktemp -d)
+            export PGHOST=$PGDATA
+            initdb --no-locale --encoding=UTF8 -A trust
+            pg_ctl start -l "$PGDATA/log" -o "-k $PGDATA -h ''"
+            createuser -h "$PGDATA" postgres -s
+            just test
+            pg_ctl stop
+          '
 
       - name: Push to Attic
         run: attic push fort ./result
