@@ -23,6 +23,18 @@ jobs:
             "token = \"$(cat $ATTIC_TOKEN_FILE)\"" \
             > ~/.config/attic/config.toml
 
+      - name: Debug flake eval
+        run: |
+          echo "--- flake show ---"
+          nix flake show 'path:.' --all-systems 2>&1 || true
+          echo "--- try eval packages ---"
+          nix eval 'path:.#packages.x86_64-linux.default.name' --show-trace 2>&1 || true
+          echo "--- try nix-instantiate ---"
+          nix-instantiate --eval --strict --show-trace -E '
+            let flake = builtins.getFlake "path:'$(pwd)'";
+            in builtins.attrNames flake.packages.x86_64-linux
+          ' 2>&1 || true
+
       - name: Build
         run: nix build 'path:.#default' -L --show-trace
 
