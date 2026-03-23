@@ -1,0 +1,5 @@
+project:
+  prefix: crn
+
+pipeline:
+  from: ~/Projects/hoard/pipelines/coding
