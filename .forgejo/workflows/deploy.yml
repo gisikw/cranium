@@ -23,32 +23,11 @@ jobs:
             "token = \"$(cat $ATTIC_TOKEN_FILE)\"" \
             > ~/.config/attic/config.toml
 
-      - name: Debug flake eval
-        run: |
-          echo "--- flake show ---"
-          nix flake show 'path:.' --all-systems 2>&1 || true
-          echo "--- try eval packages ---"
-          nix eval 'path:.#packages.x86_64-linux.default.name' --show-trace 2>&1 || true
-          echo "--- try nix-instantiate ---"
-          nix-instantiate --eval --strict --show-trace -E '
-            let flake = builtins.getFlake "path:'$(pwd)'";
-            in builtins.attrNames flake.packages.x86_64-linux
-          ' 2>&1 || true
-
       - name: Build
-        run: nix build 'path:.#default' -L --show-trace
+        run: nix build 'path:.#default' -L
 
       - name: Test
-        run: |
-          nix develop 'path:.' -c bash -c '
-            export PGDATA=$(mktemp -d)
-            export PGHOST=$PGDATA
-            initdb --no-locale --encoding=UTF8 -A trust
-            pg_ctl start -l "$PGDATA/log" -o "-k $PGDATA -h ''"
-            createuser -h "$PGDATA" postgres -s
-            just test
-            pg_ctl stop
-          '
+        run: nix develop 'path:.' -c just test
 
       - name: Push to Attic
         run: attic push fort ./result

@@ -20,6 +20,10 @@
         };
       in
       {
+        # LOAD-BEARING: forces eager eval of beamPackages/mixNixDeps.
+        # Without this, eachDefaultSystem drops the packages output
+        # entirely when mixRelease eval is deferred. Don't remove
+        # until we understand why.
         packages.debug = pkgs.writeText "cranium-debug" (builtins.toJSON {
           hasBeamPackages = builtins.hasAttr "beamPackages" pkgs;
           hasMixRelease = builtins.hasAttr "mixRelease" beamPackages;
