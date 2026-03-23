@@ -23,14 +23,8 @@ jobs:
             "token = \"$(cat $ATTIC_TOKEN_FILE)\"" \
             > ~/.config/attic/config.toml
 
-      - name: Debug flake
-        run: |
-          ls -la flake.nix flake.lock deps.nix mix.exs mix.lock
-          nix flake show 'path:.' 2>&1 || true
-          nix eval 'path:.#packages.x86_64-linux.default.name' --show-trace 2>&1 || true
-
       - name: Build
-        run: nix build 'path:.#default' -L
+        run: nix build 'path:.#default' -L --show-trace
 
       - name: Test
         run: nix develop 'path:.' -c just test
