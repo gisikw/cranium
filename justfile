@@ -1,29 +1,50 @@
-# List available recipes
+# === Project: cranium-v2 ===
+#
+# Justfile conventions (see exocortex/scripts/justfile.template):
+#
+#   Universal:  develop, test, build, check, fmt, ship
+#   Optional:   dev, clean
+#
+#   `ship` commits, pushes, and lets CI handle deployment.
+#   `build` is the fast iterative check ("does the compiler love this?").
+#   Deployment is a CI concern — see .forgejo/workflows/deploy.yml.
+
 default:
     @just --list
 
-# Run the test suite
+# --- Environment ---
+
+# Enter nix development shell
+develop:
+    nix develop
+
+# --- Quality ---
+
+# Run tests
 test:
-    mix test
-
-# Build the project
-build:
-    mix compile --warnings-as-errors
-
-# Start interactive shell
-dev:
-    iex -S mix
+    mix local.hex --force --if-missing
+    mix local.rebar --force --if-missing
+    mix deps.get
+    MIX_ENV=test mix test
 
 # Format code
 fmt:
     mix format
 
-# Check formatting without changing files
-fmt-check:
-    mix format --check-formatted
+# Run all quality checks (format + compile warnings + tests)
+check: fmt build test
 
-# Run all checks (format + compile warnings + tests)
-check: fmt-check build test
+# --- Build ---
+
+# Build the project (iterative/dev build — "does the compiler love this?")
+build:
+    mix compile --warnings-as-errors
+
+# --- Development ---
+
+# Start interactive shell
+dev:
+    iex -S mix
 
 # Setup project (deps + database)
 setup:
@@ -48,9 +69,16 @@ nuke-conversation conversation_id:
     psql -U postgres cranium_dev -c "DELETE FROM handoffs WHERE conversation_id = '{{conversation_id}}';"
     psql -U postgres cranium_dev -c "DELETE FROM summaries WHERE conversation_id = '{{conversation_id}}';"
 
-# Restart the cranium-v2 systemd service
-restart:
-    fort ratched systemd '{"unit":"cranium-v2","action":"restart"}'
+# --- Shipping ---
 
-stop:
-    fort ratched systemd '{"unit":"cranium-v2","action":"stop"}'
+# Commit and push. CI handles deployment.
+ship message="ship":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git diff --quiet HEAD 2>/dev/null \
+        || ! git diff --cached --quiet 2>/dev/null \
+        || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        git add -A
+        git commit -m "{{message}}"
+    fi
+    git push
