@@ -3,7 +3,7 @@
 { storePath, config ? {}, ... }:
 {
   services.cranium = {
-    exec = "${storePath}/bin/cranium eval 'Cranium.Release.migrate()' && ${storePath}/bin/cranium start";
+    exec = "/bin/sh -c '\"${storePath}/bin/cranium\" eval \"Cranium.Release.migrate()\" && exec \"${storePath}/bin/cranium\" start'";
     user = "dev";
     group = "users";
     workingDirectory = "/home/dev/Projects/cranium-v2";
