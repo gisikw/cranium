@@ -366,6 +366,10 @@ defmodule Cranium.Transport.HTTP do
 
     case Cranium.Epoch.start_or_get(conversation_id) do
       {:ok, pid} ->
+        # Cancel any in-flight inference first so the Epoch GenServer unblocks.
+        # Without this, clear times out if the GenServer is blocked in a submit.
+        Cranium.Epoch.cancel(conversation_id)
+
         Cranium.Epoch.clear(pid)
         Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
 

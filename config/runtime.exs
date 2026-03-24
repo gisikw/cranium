@@ -2,22 +2,25 @@ import Config
 
 # Paths — override from env vars when set. In test env, defaults
 # come from test.exs; in dev, from .env; in prod, from systemd env.
-paths =
-  [
-    handoffs: System.get_env("HANDOFFS_PATH"),
-    summaries: System.get_env("SUMMARIES_PATH"),
-    skills: System.get_env("SKILLS_PATH"),
-    identity: System.get_env("IDENTITY_PATH"),
-    subagent_prompt: System.get_env("SUBAGENT_PROMPT_PATH")
-  ]
-  |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+# In test env, test.exs provides safe defaults — don't let env vars override
+unless config_env() == :test do
+  paths =
+    [
+      handoffs: System.get_env("HANDOFFS_PATH"),
+      summaries: System.get_env("SUMMARIES_PATH"),
+      skills: System.get_env("SKILLS_PATH"),
+      identity: System.get_env("IDENTITY_PATH"),
+      subagent_prompt: System.get_env("SUBAGENT_PROMPT_PATH")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-if paths != [] do
-  config :cranium, :paths, Map.new(paths)
-end
+  if paths != [] do
+    config :cranium, :paths, Map.new(paths)
+  end
 
-if port = System.get_env("PORT") do
-  config :cranium, :http_port, String.to_integer(port)
+  if port = System.get_env("PORT") do
+    config :cranium, :http_port, String.to_integer(port)
+  end
 end
 
 if config_env() == :prod do

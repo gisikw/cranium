@@ -35,6 +35,25 @@
           version = "0.1.0";
           src = ./.;
           inherit mixNixDeps;
+
+          # Override configurePhase to use ln -sfn instead of ln -sv.
+          # The upstream builder's ln -sv fails when deps.compile has
+          # already created a dep directory (e.g. mint via finch).
+          configurePhase = ''
+            runHook preConfigure
+
+            mix deps.compile --no-deps-check --skip-umbrella-children
+
+            mkdir -p deps
+            ${pkgs.lib.concatMapAttrsStringSep "\n" (name: dep: ''
+              if [ -d "${dep}/src" ]; then
+                rm -rf deps/${name}/src 2>/dev/null || true
+                ln -sv ${dep}/src deps/${name}
+              fi
+            '') mixNixDeps}
+
+            runHook postConfigure
+          '';
         };
 
         devShells.default = pkgs.mkShell {
