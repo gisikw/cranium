@@ -1,8 +1,8 @@
-# Cranium-v2 overlay — evaluated by fort-overlay-manager at activation time.
+# Cranium overlay — evaluated by fort-overlay-manager at activation time.
 # Arguments: storePath (injected by manager), config (from manifest.nix).
 { storePath, config ? {}, ... }:
 {
-  services.cranium-v2 = {
+  services.cranium = {
     exec = "${storePath}/bin/cranium eval 'Cranium.Release.migrate()' && ${storePath}/bin/cranium start";
     user = "dev";
     group = "users";
@@ -17,8 +17,8 @@
     environment = [
       "HOME=/home/dev"
       "PORT=${config.port or "4000"}"
-      "RELEASE_COOKIE=cranium_v2_cookie"
-      "RELEASE_TMP=/tmp/cranium_v2"
+      "RELEASE_COOKIE=cranium_cookie"
+      "RELEASE_TMP=/tmp/cranium"
       "FORT_SSH_KEY=/var/lib/fort/dev-sandbox/agent-key"
       "FORT_ORIGIN=dev-sandbox"
     ];

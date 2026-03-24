@@ -35,9 +35,9 @@ jobs:
       - name: Register Overlay
         run: |
           STORE_PATH=$(readlink -f ./result)
-          curl -sf -X POST https://overlay-registry.gisi.network/dev/cranium-v2 \
+          curl -sf -X POST https://overlay-registry.gisi.network/dev/cranium \
             -d "{\"storePath\":\"$STORE_PATH\"}"
 
       - name: Trigger Refresh
         run: |
-          fort ratched refresh '{"overlay": "cranium-v2"}'
+          fort ratched refresh '{"overlay": "cranium"}'
