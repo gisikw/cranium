@@ -146,10 +146,38 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp format_time_gap(elapsed, now) do
-    formatted_time = Calendar.strftime(now, "%a %b %-d, %-I:%M %p")
+    local = DateTime.add(now, central_offset(now), :second)
+    formatted_time = Calendar.strftime(local, "%a %b %-d, %-I:%M %p")
     human_elapsed = humanize_duration(elapsed)
 
-    "<system-reminder>It's been #{human_elapsed} since the last message in this conversation. The current time is #{formatted_time}.</system-reminder>"
+    "<system-reminder>It's been #{human_elapsed} since the last message in this conversation. The current time is #{formatted_time} Central.</system-reminder>"
+  end
+
+  # US Central: CDT (UTC-5) from 2nd Sunday in March to 1st Sunday in November,
+  # CST (UTC-6) otherwise.
+  defp central_offset(utc_dt) do
+    year = utc_dt.year
+
+    # 2nd Sunday in March
+    march_start = dst_transition(year, 3, 2)
+    # 1st Sunday in November
+    nov_end = dst_transition(year, 11, 1)
+
+    date = DateTime.to_date(utc_dt)
+
+    if Date.compare(date, march_start) in [:gt, :eq] and Date.compare(date, nov_end) == :lt do
+      -5 * 3600
+    else
+      -6 * 3600
+    end
+  end
+
+  defp dst_transition(year, month, nth_sunday) do
+    first = Date.new!(year, month, 1)
+    day_of_week = Date.day_of_week(first)
+    # Days until first Sunday (Sunday = 7 in ISO)
+    days_to_sunday = rem(7 - day_of_week, 7)
+    Date.add(first, days_to_sunday + (nth_sunday - 1) * 7)
   end
 
   defp humanize_duration(seconds) when seconds < 3600 do
