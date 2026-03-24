@@ -10,6 +10,7 @@
     after = [ "network-online.target" "postgresql.service" ];
     restart = "on-failure";
     restartSec = 5;
+    timeoutStopSec = 300;
     environmentFile = [
       config.envFile or "/dev/null"
       "/var/lib/fort/dev-sandbox/env"

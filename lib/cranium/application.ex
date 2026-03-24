@@ -25,6 +25,9 @@ defmodule Cranium.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      # Drain coordinator — traps SIGTERM for graceful shutdown
+      Cranium.Drain,
+
       # Storage — must start first (downstream stages depend on it)
       Cranium.Store.Repo,
       Cranium.Store,

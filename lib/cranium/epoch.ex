@@ -409,6 +409,11 @@ defmodule Cranium.Epoch do
   end
 
   @impl true
+  def handle_call(:get_status, _from, state) do
+    {:reply, %{status: state.status}, state}
+  end
+
+  @impl true
   def handle_call(:clear, _from, state) do
     Logger.info("Clearing epoch", stage: :epoch)
 

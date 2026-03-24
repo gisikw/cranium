@@ -25,6 +25,21 @@ defmodule Cranium.Transport.HTTP do
   plug(:dispatch)
 
   post "/v1/submit" do
+    drain_submit(conn)
+  end
+
+  # Extracted so drain guard can use early return
+  defp drain_submit(conn) do
+    if Cranium.Drain.draining?() do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(503, Jason.encode!(%{"error" => "server is shutting down"}))
+    else
+      do_submit(conn)
+    end
+  end
+
+  defp do_submit(conn) do
     conversation_id = conn.body_params["conversation_id"] || "default"
     system = conn.body_params["system"]
     origin = conn.body_params["origin"]
