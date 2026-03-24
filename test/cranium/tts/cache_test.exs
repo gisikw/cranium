@@ -2,6 +2,8 @@ defmodule Cranium.TTS.CacheTest do
   # async: false because lazy synthesis reads from the global Manifest
   use ExUnit.Case, async: false
 
+  @moduletag :capture_log
+
   import Mox
 
   alias Cranium.TTS.Cache

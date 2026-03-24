@@ -1,6 +1,8 @@
 defmodule Cranium.Backend.LLM.ClaudeCodeTest do
   use ExUnit.Case, async: true
 
+  @moduletag :capture_log
+
   alias Cranium.Backend.LLM.ClaudeCode
 
   describe "manages_tool_loop?/0" do

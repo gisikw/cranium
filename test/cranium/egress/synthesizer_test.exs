@@ -1,6 +1,8 @@
 defmodule Cranium.Egress.SynthesizerTest do
   use ExUnit.Case, async: false
 
+  @moduletag :capture_log
+
   import Mox
 
   alias Cranium.Egress.Synthesizer

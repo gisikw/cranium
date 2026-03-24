@@ -1,6 +1,8 @@
 defmodule Cranium.EpochTest do
   use CraniumTest.DataCase, async: false
 
+  @moduletag :capture_log
+
   import Mox
 
   setup :set_mox_global

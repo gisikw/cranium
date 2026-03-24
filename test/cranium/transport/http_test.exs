@@ -1,6 +1,8 @@
 defmodule Cranium.Transport.HTTPTest do
   use ExUnit.Case, async: false
 
+  @moduletag :capture_log
+
   import Mox
 
   alias Cranium.Transport.HTTP

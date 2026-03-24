@@ -1,6 +1,8 @@
 defmodule CraniumTest.StoreTest do
   use CraniumTest.DataCase, async: false
 
+  @moduletag :capture_log
+
   # Store is started by the application supervisor; DataCase handles DB sandbox.
 
   describe "append_message/get_messages" do

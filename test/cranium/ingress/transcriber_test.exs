@@ -1,6 +1,8 @@
 defmodule Cranium.Ingress.TranscriberTest do
   use ExUnit.Case, async: false
 
+  @moduletag :capture_log
+
   import Mox
 
   alias Cranium.Ingress.Transcriber
