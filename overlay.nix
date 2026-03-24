@@ -21,6 +21,7 @@
       "RELEASE_TMP=/tmp/cranium"
       "FORT_SSH_KEY=/var/lib/fort/dev-sandbox/agent-key"
       "FORT_ORIGIN=dev-sandbox"
+      "PATH=/run/current-system/sw/bin:/run/overlays/bin:/run/managed-bin:/home/dev/.local/bin"
     ];
   };
 
