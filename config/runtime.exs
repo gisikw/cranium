@@ -15,7 +15,7 @@ unless config_env() == :test do
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
   if paths != [] do
-    config :cranium, :paths, Map.new(paths)
+    config :cranium, :paths, paths
   end
 
   if port = System.get_env("PORT") do

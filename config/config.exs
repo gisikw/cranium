@@ -19,7 +19,7 @@ config :cranium, :backends,
 config :cranium, :tools, []
 
 # Paths — configured via environment variables. See .env.example.
-config :cranium, :paths, %{}
+config :cranium, :paths, []
 
 # Pipeline tuning
 config :cranium, :pipeline,
