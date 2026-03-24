@@ -54,6 +54,10 @@
 
             runHook postConfigure
           '';
+
+          postInstall = ''
+            cp ${./overlay.nix} $out/overlay.nix
+          '';
         };
 
         devShells.default = pkgs.mkShell {
