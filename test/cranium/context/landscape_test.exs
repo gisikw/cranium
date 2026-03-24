@@ -12,7 +12,14 @@ defmodule Cranium.Context.LandscapeTest do
 
     File.mkdir_p!(tmp_dir)
 
-    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+    # Save original paths so we can restore them — put_env in tests clobbers
+    # keys that other concurrent test modules depend on (e.g. :skills).
+    original_paths = Application.get_env(:cranium, :paths)
+
+    on_exit(fn ->
+      Application.put_env(:cranium, :paths, original_paths)
+      File.rm_rf!(tmp_dir)
+    end)
 
     {:ok, tmp_dir: tmp_dir}
   end
@@ -34,8 +41,7 @@ defmodule Cranium.Context.LandscapeTest do
   describe "build/2 with hoard disk source" do
     test "formats entries from hoard JSON files", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       two_hours_ago = DateTime.add(@now, -7200, :second) |> DateTime.to_unix()
@@ -66,8 +72,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "excludes current conversation", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "my-room.json", %{
@@ -87,8 +92,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "returns nil when no entries exist", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       assert Landscape.build("test-room", now: @now) == nil
@@ -96,8 +100,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "returns nil when only current conversation exists", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "only-room.json", %{
@@ -110,8 +113,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "filters by :since option", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       one_hour_ago = DateTime.add(@now, -3600, :second)
@@ -144,8 +146,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "returns nil when all entries are before :since", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "old.json", %{
@@ -160,8 +161,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "sorts entries by recency (most recent first)", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "older.json", %{
@@ -184,8 +184,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "skips malformed JSON files", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       File.write!(Path.join(dir, "broken.json"), "not json at all")
@@ -201,8 +200,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "skips files with empty summaries", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "empty.json", %{
@@ -217,8 +215,7 @@ defmodule Cranium.Context.LandscapeTest do
   describe "humanize_ago formatting" do
     test "just now for < 60 seconds", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "recent.json", %{
@@ -233,8 +230,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "minutes for < 1 hour", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "recent.json", %{
@@ -249,8 +245,7 @@ defmodule Cranium.Context.LandscapeTest do
 
     test "days for >= 24 hours", %{tmp_dir: dir} do
       Application.put_env(:cranium, :paths,
-        handoffs: Application.get_env(:cranium, :paths)[:handoffs],
-        summaries: dir
+        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
       )
 
       write_hoard_summary(dir, "old.json", %{
