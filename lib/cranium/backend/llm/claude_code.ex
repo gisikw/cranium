@@ -179,16 +179,20 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
         receive_port_output(port, caller, marker_tools, rest)
 
       {^port, {:exit_status, 0}} ->
-        # Process any remaining buffer
-        remaining = String.trim(buffer)
+        # Process any remaining buffer — may contain multiple lines if the
+        # last data chunk didn't end with a newline.
+        {lines, tail} = split_lines(buffer)
+        lines = if String.trim(tail) != "", do: lines ++ [tail], else: lines
 
-        if remaining != "" do
-          Logger.debug("CC backend flushing remaining buffer (#{byte_size(remaining)} bytes)")
+        if lines != [] do
+          Logger.debug("CC backend flushing remaining buffer (#{length(lines)} line(s))")
 
-          case CCStreamParser.parse_line(buffer, marker_tools) do
-            {:ok, messages} -> Enum.each(messages, fn msg -> send(caller, msg) end)
-            :skip -> :ok
-          end
+          Enum.each(lines, fn line ->
+            case CCStreamParser.parse_line(line, marker_tools) do
+              {:ok, messages} -> Enum.each(messages, fn msg -> send(caller, msg) end)
+              :skip -> :ok
+            end
+          end)
         end
 
         Logger.info("CC backend exited cleanly (status 0)")
