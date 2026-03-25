@@ -18,14 +18,15 @@ defmodule Cranium.TTS.CacheTest do
   end
 
   describe "put/get with eager warming" do
-    test "returns cached audio and evicts on first retrieval", %{cache: cache} do
+    test "returns cached audio on repeated retrieval (evicted only by cleanup)", %{cache: cache} do
       audio = <<0xFF, 0xFB, 0x90, 0x00>>
       :ok = Cache.put("s1", 0, audio, cache)
 
       assert {:ok, ^audio} = Cache.get("s1", 0, cache)
-      # Second retrieval — evicted, falls through to lazy path
-      # which will fail since no manifest text exists
-      assert {:error, :segment_not_found} = Cache.get("s1", 0, cache)
+      # Second retrieval still returns cached audio — entries persist
+      # until the cleanup timer fires, preventing races between
+      # concurrent readers.
+      assert {:ok, ^audio} = Cache.get("s1", 0, cache)
     end
 
     test "multiple segments for same stream", %{cache: cache} do

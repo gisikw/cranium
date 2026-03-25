@@ -15,9 +15,10 @@ defmodule Cranium.TTS.Cache do
   When `get/3` finds a `:warming` marker, it polls until audio arrives or a
   timeout expires, avoiding duplicate TTS requests.
 
-  Entries are evicted on first retrieval — this is an ephemeral buffer, not
-  durable storage. When a stream completes, `schedule_cleanup/2` sets a timer
-  to sweep any unconsumed entries after a configurable delay (default 5 min).
+  Entries persist until the cleanup timer fires — multiple readers can safely
+  fetch the same segment without racing. When a stream completes,
+  `schedule_cleanup/2` sets a timer to sweep all entries after a configurable
+  delay (default 5 min).
   """
 
   use GenServer
@@ -96,8 +97,7 @@ defmodule Cranium.TTS.Cache do
         {:reply, :not_found, %{state | entries: entries}}
 
       {:ok, audio} ->
-        entries = Map.delete(state.entries, key)
-        {:reply, {:ok, audio}, %{state | entries: entries}}
+        {:reply, {:ok, audio}, state}
 
       :error ->
         {:reply, :not_found, state}
