@@ -250,6 +250,12 @@ defmodule Cranium.Epoch do
         do: %{state | last_landscape_at: DateTime.utc_now()},
         else: state
 
+    # Only advance reminder bucket when a saturation warning was actually injected
+    state =
+      if enriched[:saturation_warned_bucket],
+        do: %{state | last_reminder_bucket: enriched[:saturation_warned_bucket]},
+        else: state
+
     # 2. Persist enriched user message (includes system-reminders from TurnInjector)
     enriched_text = enriched[:text] || text
 
@@ -314,8 +320,6 @@ defmodule Cranium.Epoch do
 
           saturation = compute_saturation(usage)
           new_count = state.turn_count + 1
-          saturation_pct = saturation * 100
-          new_bucket = div(trunc(saturation_pct), 5) * 5
 
           cc_session_id = agent_result[:cc_session_id] || state.cc_session_id
 
@@ -331,7 +335,7 @@ defmodule Cranium.Epoch do
               status: "active",
               saturation: saturation,
               turn_count: new_count,
-              last_reminder_bucket: new_bucket,
+              last_reminder_bucket: state.last_reminder_bucket,
               cc_session_id: cc_session_id
             })
           end
@@ -349,8 +353,6 @@ defmodule Cranium.Epoch do
              state
              | turn_count: if(ephemeral, do: state.turn_count, else: new_count),
                saturation: if(ephemeral, do: state.saturation, else: saturation),
-               last_reminder_bucket:
-                 if(ephemeral, do: state.last_reminder_bucket, else: new_bucket),
                cc_session_id: if(ephemeral, do: state.cc_session_id, else: cc_session_id),
                interrupted_context: nil
            }}

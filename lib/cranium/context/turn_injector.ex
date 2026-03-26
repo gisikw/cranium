@@ -33,7 +33,7 @@ defmodule Cranium.Context.TurnInjector do
 
   @spec process(map(), map()) :: {:ok, map()}
   def process(message, context) do
-    {injections, landscape_injected} = build_injections(message, context)
+    {injections, landscape_injected, saturation_bucket} = build_injections(message, context)
 
     message =
       case injections do
@@ -51,6 +51,11 @@ defmodule Cranium.Context.TurnInjector do
         do: Map.put(message, :landscape_injected, true),
         else: message
 
+    message =
+      if saturation_bucket,
+        do: Map.put(message, :saturation_warned_bucket, saturation_bucket),
+        else: message
+
     {:ok, message}
   end
 
@@ -60,7 +65,7 @@ defmodule Cranium.Context.TurnInjector do
   Returns `{injections, landscape_injected}` where the boolean signals
   to the Epoch that `last_landscape_at` should be updated.
   """
-  @spec build_injections(map(), map()) :: {[String.t()], boolean()}
+  @spec build_injections(map(), map()) :: {[String.t()], boolean(), non_neg_integer() | nil}
   def build_injections(message, context) do
     {landscape_block, landscape_injected} = resolve_landscape(message, context)
 
@@ -73,7 +78,9 @@ defmodule Cranium.Context.TurnInjector do
       |> maybe_add_resume(message, context)
       |> Enum.reverse()
 
-    {injections, landscape_injected}
+    saturation_bucket = saturation_fired_bucket(context)
+
+    {injections, landscape_injected, saturation_bucket}
   end
 
   defp maybe_add_time_gap(injections, _message, context) do
@@ -110,6 +117,18 @@ defmodule Cranium.Context.TurnInjector do
       [reminder | injections]
     else
       injections
+    end
+  end
+
+  # Returns the bucket value when a saturation warning fires, nil otherwise.
+  # Mirrors the condition in maybe_add_saturation/3.
+  defp saturation_fired_bucket(context) do
+    current = get_in(context, [:epoch, :saturation]) || 0
+    last_bucket = get_in(context, [:epoch, :last_reminder_bucket]) || 0
+    current_bucket = div(trunc(current), @saturation_bucket_size) * @saturation_bucket_size
+
+    if current >= @saturation_warn_threshold and current_bucket > last_bucket do
+      current_bucket
     end
   end
 

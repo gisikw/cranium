@@ -10,7 +10,7 @@ defmodule Cranium.Context.TurnInjectorTest do
     test "returns empty list when no injections are needed" do
       message = %{text: "hello"}
       context = %{}
-      assert {[], false} = TurnInjector.build_injections(message, context)
+      assert {[], false, nil} = TurnInjector.build_injections(message, context)
     end
 
     test "injects time-gap reminder after 30+ minutes" do
@@ -20,7 +20,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
       assert length(injections) >= 1
       assert Enum.any?(injections, &(&1 =~ "45 minutes"))
       assert Enum.any?(injections, &(&1 =~ "<system-reminder>"))
@@ -33,7 +33,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
       refute Enum.any?(injections, &(&1 =~ "minutes"))
     end
 
@@ -44,9 +44,10 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 55.0, last_reminder_bucket: 45}
       }
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
       assert Enum.any?(injections, &(&1 =~ "55%"))
       assert Enum.any?(injections, &(&1 =~ "past halfway"))
+      assert bucket == 55
     end
 
     test "no saturation warning when in same bucket" do
@@ -56,8 +57,27 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 53.0, last_reminder_bucket: 50}
       }
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
       refute Enum.any?(injections, &(&1 =~ "%"))
+      assert bucket == nil
+    end
+
+    test "saturation warning fires when last_reminder_bucket has not been advanced" do
+      # Regression: last_reminder_bucket must only advance when a warning fires.
+      # If it advances every turn, the warning can never fire because the
+      # pre-inference saturation and last_reminder_bucket are always in the
+      # same bucket.
+      message = %{text: "hello"}
+
+      # Simulates: saturation grew past 50% but last_reminder_bucket stayed at 0
+      # because no warning was previously injected
+      context = %{
+        epoch: %{saturation: 52.0, last_reminder_bucket: 0}
+      }
+
+      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "52%"))
+      assert bucket == 50
     end
 
     test "injects interrupted context breadcrumb" do
@@ -67,7 +87,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{interrupted_context: "Was working on deploying the new service"}
       }
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
       assert Enum.any?(injections, &(&1 =~ "interrupted"))
       assert Enum.any?(injections, &(&1 =~ "deploying the new service"))
     end
@@ -87,7 +107,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         now: now
       }
 
-      {injections, _landscape} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
       assert length(injections) >= 2
     end
   end
@@ -109,6 +129,19 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       {:ok, result} = TurnInjector.process(message, %{})
       assert result.text == "hello"
+      refute Map.has_key?(result, :saturation_warned_bucket)
+    end
+
+    test "sets saturation_warned_bucket when warning fires" do
+      message = %{text: "hello"}
+
+      context = %{
+        epoch: %{saturation: 72.0, last_reminder_bucket: 65}
+      }
+
+      {:ok, result} = TurnInjector.process(message, context)
+      assert result[:saturation_warned_bucket] == 70
+      assert result.text =~ "72%"
     end
 
     test "sets landscape_injected flag on fresh epoch with landscape data" do
