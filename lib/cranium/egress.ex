@@ -194,11 +194,12 @@ defmodule Cranium.Egress do
   # which errs toward staying aggressive longer. Safe direction.
   @speech_rate_wps 2.3
   @sentence_min_words 8
-  # Measured empirically: 0.89-0.96 RTF across clip lengths (non-linear,
-  # short clips have worse RTF). Used to cap lead time at what synthesis
-  # could have actually produced — prevents burst scenarios from inflating
-  # lead time when no audio has been synthesized yet.
-  @synth_rtf 0.91
+  # Measured empirically on Qwen3-TTS 0.6B / RTX 3090: 0.67-0.71 RTF
+  # across clip lengths (non-linear, short clips have worse RTF). Used to
+  # cap lead time at what synthesis could have actually produced — prevents
+  # burst scenarios from inflating lead time when no audio has been
+  # synthesized yet.
+  @synth_rtf 0.70
   # Minimum batch size worth switching to relaxed mode for — prosody
   # benefit below this threshold is negligible vs sentence-level chunking.
   @min_relaxed_words 20
@@ -242,23 +243,40 @@ defmodule Cranium.Egress do
     "audio" in stream.disposition and safe_batch_words(stream) < @min_relaxed_words
   end
 
-  # Aggressive mode: emit paragraphs immediately (no word threshold), and
-  # fall back to sentence-level splitting when no paragraph break exists yet.
+  # Aggressive mode: emit paragraphs immediately when they fit within the
+  # available runway (better prosody). When a paragraph exceeds the safe
+  # batch size, sentence-split it to avoid dead air — a 50-word paragraph
+  # that takes 15s to synthesize will stall the client if only 8s of audio
+  # is buffered. Falls back to sentence-level splitting when no paragraph
+  # break exists yet.
   defp aggressive_chunk(stream, stream_id) do
     case split_paragraphs(stream.text) do
       {[_ | _] = paragraphs, remainder} ->
-        # Emit each paragraph immediately — no word threshold
+        max_words = safe_batch_words(stream)
+
         {index, stream} =
           Enum.reduce(paragraphs, {stream.segment_index, stream}, fn para, {idx, s} ->
-            emit_segment(stream_id, idx, para, s.disposition)
+            if word_count(para) <= max_words do
+              # Paragraph fits within runway — emit whole for better prosody
+              emit_segment(stream_id, idx, para, s.disposition)
 
-            Logger.debug(
-              "Aggressive emit (para): segment=#{idx} words=#{word_count(para)} lead_time=#{lead_time_ms(s)}ms",
-              stage: :egress,
-              stream_id: stream_id
-            )
+              Logger.debug(
+                "Aggressive emit (para): segment=#{idx} words=#{word_count(para)} safe=#{max_words} lead_time=#{lead_time_ms(s)}ms",
+                stage: :egress,
+                stream_id: stream_id
+              )
 
-            {idx + 1, track_emission(s, word_count(para))}
+              {idx + 1, track_emission(s, word_count(para))}
+            else
+              # Paragraph too large for runway — sentence-split it
+              Logger.debug(
+                "Aggressive split (para too large): words=#{word_count(para)} safe=#{max_words} lead_time=#{lead_time_ms(s)}ms",
+                stage: :egress,
+                stream_id: stream_id
+              )
+
+              sentence_split_and_emit(para, idx, s, stream_id)
+            end
           end)
 
         stream = %{stream | text: remainder, segment_index: index}
@@ -293,6 +311,37 @@ defmodule Cranium.Egress do
 
           nil ->
             stream
+        end
+    end
+  end
+
+  # Recursively sentence-split a paragraph that's too large for the current
+  # runway. Emits each sentence as its own segment. Any trailing text without
+  # a sentence boundary is emitted as a final segment (it's from a complete
+  # paragraph, so we know no more words will be appended).
+  defp sentence_split_and_emit(text, index, stream, stream_id) do
+    case split_at_sentence(text, @sentence_min_words) do
+      {emittable, remainder} ->
+        emit_segment(stream_id, index, emittable, stream.disposition)
+
+        Logger.debug(
+          "Aggressive emit (sentence from para): segment=#{index} words=#{word_count(emittable)}",
+          stage: :egress,
+          stream_id: stream_id
+        )
+
+        stream = track_emission(stream, word_count(emittable))
+        sentence_split_and_emit(String.trim_leading(remainder), index + 1, stream, stream_id)
+
+      nil ->
+        # No more sentence boundaries — emit remaining text
+        trimmed = String.trim(text)
+
+        if trimmed != "" do
+          emit_segment(stream_id, index, trimmed, stream.disposition)
+          {index + 1, track_emission(stream, word_count(trimmed))}
+        else
+          {index, stream}
         end
     end
   end

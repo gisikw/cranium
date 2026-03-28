@@ -227,5 +227,41 @@ defmodule Cranium.Egress.IncrementalTest do
       {:ok, manifest} = Manifest.get(sid)
       assert length(manifest["segments"]) == 2
     end
+
+    test "aggressive mode sentence-splits large paragraphs instead of emitting whole" do
+      sid = "incr-agg-split-#{System.unique_integer([:positive])}"
+
+      # Build a paragraph with multiple sentences totaling ~40 words.
+      # In audio mode with no lead time, aggressive mode should sentence-split
+      # this rather than emitting the entire paragraph as one segment.
+      sentence1 = "The quick brown fox jumps over the lazy dog near the river."
+      sentence2 = "A second sentence follows with enough words to be meaningful."
+      sentence3 = "The third sentence completes this test paragraph nicely."
+      paragraph = "#{sentence1} #{sentence2} #{sentence3}"
+
+      # Allow any number of synthesize calls (we just care about segmentation)
+      Cranium.Backend.TTS.Mock
+      |> stub(:synthesize, fn _text, [] -> {:ok, <<0>>} end)
+
+      simulate_stream(sid, [paragraph, "\n\n", "Final."], ["audio", "text"])
+
+      {:ok, manifest} = Manifest.get(sid)
+      utterances = Enum.filter(manifest["segments"], &(&1["type"] == "utterance"))
+
+      # Should produce more than 2 segments (paragraph + final).
+      # With sentence splitting, we expect 3+ segments from the paragraph
+      # plus the "Final." segment.
+      assert length(utterances) >= 3,
+        "Expected aggressive mode to sentence-split the paragraph into multiple segments, " <>
+          "got #{length(utterances)} segments"
+
+      # First segment should be shorter than the full paragraph
+      {:ok, first_text} = Manifest.get_segment_text(sid, 0)
+      first_words = length(String.split(first_text, ~r/\s+/, trim: true))
+      paragraph_words = length(String.split(paragraph, ~r/\s+/, trim: true))
+
+      assert first_words < paragraph_words,
+        "First segment (#{first_words} words) should be smaller than full paragraph (#{paragraph_words} words)"
+    end
   end
 end
