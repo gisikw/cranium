@@ -145,23 +145,26 @@ defmodule Cranium.Context.TurnInjectorTest do
     end
 
     test "sets landscape_injected flag on fresh epoch with landscape data" do
-      # Create a temp summary file so landscape has data regardless of env
-      summaries_dir = Application.get_env(:cranium, :paths)[:summaries]
-      summary_file = Path.join(summaries_dir, "other-room.json")
+      # Push a summary into the Landscape GenServer cache
+      now = DateTime.utc_now()
+      Cranium.Context.Landscape.summary_updated("other-room", "They were discussing tests.", now)
+      # Ensure the cast is processed before we read
+      :sys.get_state(Cranium.Context.Landscape)
 
-      File.write!(
-        summary_file,
-        Jason.encode!(%{
-          "room_name" => "other-room",
-          "summary" => "They were discussing tests.",
-          "last_message_ts" => DateTime.to_unix(DateTime.utc_now())
-        })
-      )
-
-      on_exit(fn -> File.rm(summary_file) end)
+      on_exit(fn ->
+        # Clean up: remove the test entry so it doesn't leak to other tests.
+        # Push an empty entry then let it be excluded by the empty-summary guard.
+        # Simplest: just restart the Landscape to clear its cache.
+        if pid = Process.whereis(Cranium.Context.Landscape) do
+          :sys.replace_state(pid, fn state ->
+            entries = Map.delete(state.entries, "other-room")
+            %{state | entries: entries}
+          end)
+        end
+      end)
 
       message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
-      context = %{now: DateTime.utc_now()}
+      context = %{now: now}
 
       {:ok, result} = TurnInjector.process(message, context)
 

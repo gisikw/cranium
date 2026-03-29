@@ -82,6 +82,15 @@ defmodule Cranium.Transport.HTTP do
     Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
     Cranium.Manifest.stamp(stream_id, :submitted)
 
+    # Stamp routing dispatch at ingest
+    dispatch =
+      Cranium.Dispatch.from_submit(%{
+        conversation_id: conversation_id,
+        model: model,
+        disposition: disposition,
+        ephemeral: ephemeral
+      })
+
     message = %{
       text: text,
       system: system,
@@ -90,7 +99,8 @@ defmodule Cranium.Transport.HTTP do
       disposition: disposition,
       origin: origin,
       model: model,
-      ephemeral: ephemeral
+      ephemeral: ephemeral,
+      dispatch: dispatch
     }
 
     Logger.info(

@@ -38,12 +38,20 @@ defmodule Cranium.Context.LandscapeTest do
     File.write!(Path.join(dir, filename), json)
   end
 
+  # Start a fresh Landscape GenServer with a unique name for test isolation.
+  # Must be called AFTER hoard files are written (the server loads on init).
+  defp start_landscape(dir) do
+    Application.put_env(:cranium, :paths,
+      Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
+    )
+
+    name = :"landscape_#{:erlang.unique_integer([:positive])}"
+    {:ok, _pid} = Landscape.start_link(name: name)
+    name
+  end
+
   describe "build/2 with hoard disk source" do
     test "formats entries from hoard JSON files", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       two_hours_ago = DateTime.add(@now, -7200, :second) |> DateTime.to_unix()
       one_day_ago = DateTime.add(@now, -86400, :second) |> DateTime.to_unix()
 
@@ -59,7 +67,9 @@ defmodule Cranium.Context.LandscapeTest do
         last_message_ts: one_day_ago
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+
+      result = Landscape.build("test-room", now: @now, name: name)
       assert result =~ "<cross-room-context>"
       assert result =~ "</cross-room-context>"
       assert result =~ "**fort-nix**"
@@ -71,10 +81,6 @@ defmodule Cranium.Context.LandscapeTest do
     end
 
     test "excludes current conversation", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "my-room.json", %{
         room_name: "my-room",
         summary: "Should be excluded"
@@ -85,37 +91,29 @@ defmodule Cranium.Context.LandscapeTest do
         summary: "Should be included"
       })
 
-      result = Landscape.build("my-room", now: @now)
+      name = start_landscape(dir)
+
+      result = Landscape.build("my-room", now: @now, name: name)
       assert result =~ "other-room"
       refute result =~ "Should be excluded"
     end
 
     test "returns nil when no entries exist", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
-      assert Landscape.build("test-room", now: @now) == nil
+      name = start_landscape(dir)
+      assert Landscape.build("test-room", now: @now, name: name) == nil
     end
 
     test "returns nil when only current conversation exists", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "only-room.json", %{
         room_name: "only-room",
         summary: "Just me"
       })
 
-      assert Landscape.build("only-room", now: @now) == nil
+      name = start_landscape(dir)
+      assert Landscape.build("only-room", now: @now, name: name) == nil
     end
 
     test "filters by :since option", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       one_hour_ago = DateTime.add(@now, -3600, :second)
       two_hours_ago = DateTime.add(@now, -7200, :second)
 
@@ -131,39 +129,38 @@ defmodule Cranium.Context.LandscapeTest do
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -7200, :second))
       })
 
+      name = start_landscape(dir)
+
       # Filter: only things after one_hour_ago
-      result = Landscape.build("test-room", since: one_hour_ago, now: @now)
+      result = Landscape.build("test-room", since: one_hour_ago, now: @now, name: name)
       assert result =~ "recent"
       refute result =~ "stale"
 
       # Filter: everything after two_hours_ago (both should appear since stale is exactly at boundary)
       result2 =
-        Landscape.build("test-room", since: DateTime.add(two_hours_ago, -1, :second), now: @now)
+        Landscape.build("test-room",
+          since: DateTime.add(two_hours_ago, -1, :second),
+          now: @now,
+          name: name
+        )
 
       assert result2 =~ "recent"
       assert result2 =~ "stale"
     end
 
     test "returns nil when all entries are before :since", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "old.json", %{
         room_name: "old",
         summary: "Ancient history",
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -86400, :second))
       })
 
+      name = start_landscape(dir)
       one_hour_ago = DateTime.add(@now, -3600, :second)
-      assert Landscape.build("test-room", since: one_hour_ago, now: @now) == nil
+      assert Landscape.build("test-room", since: one_hour_ago, now: @now, name: name) == nil
     end
 
     test "sorts entries by recency (most recent first)", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "older.json", %{
         room_name: "older",
         summary: "Older room",
@@ -176,17 +173,15 @@ defmodule Cranium.Context.LandscapeTest do
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -1800, :second))
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+
+      result = Landscape.build("test-room", now: @now, name: name)
       newer_pos = :binary.match(result, "newer") |> elem(0)
       older_pos = :binary.match(result, "older") |> elem(0)
       assert newer_pos < older_pos
     end
 
     test "skips malformed JSON files", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       File.write!(Path.join(dir, "broken.json"), "not json at all")
 
       write_hoard_summary(dir, "good.json", %{
@@ -194,67 +189,97 @@ defmodule Cranium.Context.LandscapeTest do
         summary: "Valid entry"
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+      result = Landscape.build("test-room", now: @now, name: name)
       assert result =~ "good"
     end
 
     test "skips files with empty summaries", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "empty.json", %{
         room_name: "empty",
         summary: ""
       })
 
-      assert Landscape.build("test-room", now: @now) == nil
+      name = start_landscape(dir)
+      assert Landscape.build("test-room", now: @now, name: name) == nil
+    end
+  end
+
+  describe "summary_updated/3 cache invalidation" do
+    test "updates cache with new summary", %{tmp_dir: dir} do
+      write_hoard_summary(dir, "existing.json", %{
+        room_name: "existing",
+        summary: "Old summary",
+        last_message_ts: DateTime.to_unix(DateTime.add(@now, -3600, :second))
+      })
+
+      name = start_landscape(dir)
+
+      # Verify old summary is served
+      result = Landscape.build("test-room", now: @now, name: name)
+      assert result =~ "Old summary"
+
+      # Push a summary update via cast
+      GenServer.cast(name, {:summary_updated, "existing", "New summary", @now})
+
+      # Cast is async — give it a moment to process
+      :sys.get_state(name)
+
+      result = Landscape.build("test-room", now: @now, name: name)
+      assert result =~ "New summary"
+      refute result =~ "Old summary"
+    end
+
+    test "adds new conversation to cache", %{tmp_dir: dir} do
+      name = start_landscape(dir)
+
+      # Empty initially
+      assert Landscape.build("test-room", now: @now, name: name) == nil
+
+      # Push a new summary
+      GenServer.cast(name, {:summary_updated, "new-room", "Brand new", @now})
+      :sys.get_state(name)
+
+      result = Landscape.build("test-room", now: @now, name: name)
+      assert result =~ "new-room"
+      assert result =~ "Brand new"
     end
   end
 
   describe "humanize_ago formatting" do
     test "just now for < 60 seconds", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "recent.json", %{
         room_name: "recent",
         summary: "Very recent",
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -30, :second))
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+      result = Landscape.build("test-room", now: @now, name: name)
       assert result =~ "just now"
     end
 
     test "minutes for < 1 hour", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "recent.json", %{
         room_name: "recent",
         summary: "Pretty recent",
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -900, :second))
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+      result = Landscape.build("test-room", now: @now, name: name)
       assert result =~ "15m ago"
     end
 
     test "days for >= 24 hours", %{tmp_dir: dir} do
-      Application.put_env(:cranium, :paths,
-        Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
-      )
-
       write_hoard_summary(dir, "old.json", %{
         room_name: "old",
         summary: "Old stuff",
         last_message_ts: DateTime.to_unix(DateTime.add(@now, -172_800, :second))
       })
 
-      result = Landscape.build("test-room", now: @now)
+      name = start_landscape(dir)
+      result = Landscape.build("test-room", now: @now, name: name)
       assert result =~ "2 days ago"
     end
   end

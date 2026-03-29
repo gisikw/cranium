@@ -28,6 +28,7 @@ defmodule Cranium.Epoch do
     :cc_session_id,
     :last_landscape_at,
     :interrupted_context,
+    :dispatch,
     status: :idle,
     stream_id: nil,
     turn_count: 0,
@@ -44,6 +45,7 @@ defmodule Cranium.Epoch do
           cc_session_id: String.t() | nil,
           last_landscape_at: DateTime.t() | nil,
           interrupted_context: String.t() | nil,
+          dispatch: Cranium.Dispatch.t() | nil,
           status: :idle | :processing | :inferring | :cancelled,
           stream_id: String.t() | nil,
           turn_count: non_neg_integer(),
@@ -203,6 +205,8 @@ defmodule Cranium.Epoch do
     msg_map = normalize_message(message)
     text = msg_map[:text] || ""
     ephemeral = msg_map[:ephemeral] == true
+    dispatch = msg_map[:dispatch]
+    state = %{state | dispatch: dispatch}
 
     # Derive last_invoked_at from most recent message timestamp
     last_invoked_at =
@@ -231,6 +235,7 @@ defmodule Cranium.Epoch do
       history_window: 50,
       now: DateTime.utc_now(),
       epoch_id: state.epoch_id,
+      dispatch: dispatch,
       epoch: %{
         last_invoked_at: last_invoked_at,
         saturation: state.saturation * 100,
@@ -402,7 +407,7 @@ defmodule Cranium.Epoch do
           {result, state}
       end
 
-    state = %{state | status: :idle, stream_id: nil, agent_pid: nil}
+    state = %{state | status: :idle, stream_id: nil, agent_pid: nil, dispatch: nil}
     {:reply, reply, state}
   end
 
@@ -469,7 +474,8 @@ defmodule Cranium.Epoch do
       attachments: Map.get(message, :attachments, []),
       origin: Map.get(message, :origin),
       model: Map.get(message, :model) || Map.get(message, "model"),
-      ephemeral: Map.get(message, :ephemeral, false)
+      ephemeral: Map.get(message, :ephemeral, false),
+      dispatch: Map.get(message, :dispatch)
     }
   end
 end

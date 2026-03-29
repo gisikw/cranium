@@ -8,6 +8,7 @@ defmodule Cranium.Application do
       ├── Cranium.Store.Repo          # Ecto connection pool
       ├── Cranium.Store               # Storage service with soft locking
       ├── Cranium.TTS.Cache            # Ephemeral TTS audio buffer
+      ├── Cranium.Context.Landscape   # Cross-conversation summary cache
       ├── Cranium.Ingress             # Input processing stage
       ├── Cranium.Context             # Context assembly stage
       ├── Cranium.Egress              # Output processing stage
@@ -46,6 +47,9 @@ defmodule Cranium.Application do
 
       # Nix devShell env cache (ETS table for PATH injection)
       Cranium.NixEnv,
+
+      # Context providers (GenServer processes, started before Context stage)
+      Cranium.Context.Landscape,
 
       # Pipeline stages
       Cranium.Ingress,

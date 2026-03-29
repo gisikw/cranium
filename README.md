@@ -17,7 +17,9 @@ These terms are settled and used consistently throughout the codebase.
 |------|-----------|---------------|------------|
 | **Conversation** | Persistent, named, indefinite interaction context. "nerve", "hearth", "personal-chat". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
 | **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. | `Cranium.Epoch` | `epoch_id` |
-| **Round** | A single trip through the pipeline. One user message in, one assistant response out (may include multiple tool call loops internally, but from the pipeline's perspective it's one round). | — (pipeline traversal) | `stream_id` |
+| **Pass** | A single trip through the pipeline. One user message in, one assistant response out (may include multiple turns internally, but from the pipeline's perspective it's one pass). | — (pipeline traversal) | `stream_id` |
+| **Dispatch** | Per-pass routing annotation stamped at ingest. Carries harness, model, renditions, and ephemeral flag. Providers receive the dispatch and key their caches on it. | `Cranium.Dispatch` | — |
+| **Turn** | A single dispatch to the model within a pass. A pass with tool calls contains multiple turns (send context → get response → execute tool → re-send). | — (within Agent loop) | — |
 | **Link** | A live connection between a client and a conversation. Receives output chunks, sends cancels, handles mode switching. When a client disconnects, the link drops but the conversation persists. | — (future) | — |
 | **Stage** | A pipeline processing unit. GenServer implementing `Cranium.Stage` behaviour. Six top-level stages: Ingress, Context, Agent, Egress, Effects, Store. | `Cranium.Stage` | — |
 | **Step** | A pure-function module within a stage. E.g., `CommandDetector` is a step within Ingress. | Step modules | — |
@@ -39,6 +41,7 @@ in v2 code:
 | `Session` (module) | `Epoch` |
 | `room` (in cross-room context) | `conversation` |
 | `RoomSummarizer` | `ConversationSummarizer` |
+| `round` (as a domain concept) | `pass` |
 
 ## Architecture
 
@@ -95,7 +98,7 @@ Builds the full inference context from the normalized message and persisted stat
 #### Agent — Inference & Tool Management
 
 Manages the LLM inference loop. This is a lightweight agent harness, not just an
-API call — it handles multi-turn tool use within a single invocation.
+API call — it handles multi-turn tool use within a single pass.
 
 | Step | Responsibility |
 |------|---------------|
@@ -163,7 +166,7 @@ This design anticipates:
 Each conversation has at most one active epoch at a time, enforced by
 `Cranium.Epoch.Registry` (an Elixir `Registry` with unique keys).
 
-An `Epoch` process coordinates the pipeline for a single invocation:
+An `Epoch` process coordinates the pipeline for a single pass:
 
 1. Ingress normalizes the incoming message
 2. Context assembles the full inference payload
