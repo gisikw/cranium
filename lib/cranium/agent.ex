@@ -210,13 +210,49 @@ defmodule Cranium.Agent do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
         result = receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
-        # Demonitor only if receive_loop didn't already (tool_use path does its own)
-        Process.demonitor(ref, [:flush])
+
+        # Ensure the backend process is fully terminated before returning.
+        # The receive_loop exits on {:llm_stop, "end_turn"} when the CC
+        # stream parser sees result.success, but the spawned process (and
+        # its claude CLI) may still be alive draining the port. Without
+        # this wait, a new pass can start a second claude --resume on the
+        # same CC session before the first process exits.
+        # The tool_use path demonitors and re-enters run_inference, so
+        # this only blocks on the final iteration.
+        await_backend_exit(llm_pid, ref)
         result
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp await_backend_exit(pid, ref) do
+    if Process.alive?(pid) do
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      after
+        5_000 ->
+          Logger.warning("Backend process still alive after 5s, sending shutdown")
+          Process.exit(pid, :shutdown)
+
+          receive do
+            {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+          after
+            2_000 ->
+              Logger.warning("Backend process still alive after shutdown, killing")
+              Process.exit(pid, :kill)
+
+              receive do
+                {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+              after
+                1_000 -> :ok
+              end
+          end
+      end
+    end
+
+    Process.demonitor(ref, [:flush])
   end
 
   defp receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts) do

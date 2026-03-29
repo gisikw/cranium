@@ -296,6 +296,10 @@ defmodule Cranium.Epoch do
     # Unregister agent — inference is done
     Registry.unregister(Cranium.Epoch.Registry, {state.conversation_id, :agent})
 
+    # Stop the Agent process. It's single-use and would otherwise linger
+    # as a zombie GenServer linked to this Epoch until the Epoch dies.
+    GenServer.stop(agent_pid, :normal, 5_000)
+
     # 5. Persist assistant response, track saturation, capture CC session ID
     {reply, state} =
       case result do
