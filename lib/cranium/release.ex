@@ -9,6 +9,7 @@ defmodule Cranium.Release do
 
   @app :cranium
 
+  @spec migrate() :: list()
   def migrate do
     load_app()
 
@@ -17,6 +18,7 @@ defmodule Cranium.Release do
     end
   end
 
+  @spec rollback(module(), non_neg_integer()) :: {:ok, term(), term()}
   def rollback(repo, version) do
     load_app()
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))

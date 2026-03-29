@@ -19,39 +19,24 @@ defmodule Cranium.Epoch do
 
   require Logger
 
-  defstruct [
-    :conversation_id,
-    :epoch_id,
-    :transport,
-    :transport_meta,
-    :agent_pid,
-    :cc_session_id,
-    :last_landscape_at,
-    :interrupted_context,
-    :dispatch,
-    status: :idle,
-    stream_id: nil,
-    turn_count: 0,
-    saturation: 0.0,
-    last_reminder_bucket: 0
-  ]
+  use TypedStruct
 
-  @type t :: %__MODULE__{
-          conversation_id: String.t(),
-          epoch_id: String.t() | nil,
-          transport: module() | nil,
-          transport_meta: map() | nil,
-          agent_pid: pid() | nil,
-          cc_session_id: String.t() | nil,
-          last_landscape_at: DateTime.t() | nil,
-          interrupted_context: String.t() | nil,
-          dispatch: Cranium.Dispatch.t() | nil,
-          status: :idle | :processing | :inferring | :cancelled,
-          stream_id: String.t() | nil,
-          turn_count: non_neg_integer(),
-          saturation: float(),
-          last_reminder_bucket: non_neg_integer()
-        }
+  typedstruct do
+    field :conversation_id, String.t()
+    field :epoch_id, String.t() | nil
+    field :transport, module() | nil
+    field :transport_meta, map() | nil
+    field :agent_pid, pid() | nil
+    field :cc_session_id, String.t() | nil
+    field :last_landscape_at, DateTime.t() | nil
+    field :interrupted_context, String.t() | nil
+    field :dispatch, Cranium.Dispatch.t() | nil
+    field :status, :idle | :processing | :inferring | :cancelled, default: :idle
+    field :stream_id, String.t() | nil
+    field :turn_count, non_neg_integer(), default: 0
+    field :saturation, float(), default: 0.0
+    field :last_reminder_bucket, non_neg_integer(), default: 0
+  end
 
   # --- Public API ---
 
@@ -148,6 +133,7 @@ defmodule Cranium.Epoch do
 
   # --- GenServer Implementation ---
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     GenServer.start_link(__MODULE__, opts, name: via(conversation_id))

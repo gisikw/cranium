@@ -15,21 +15,15 @@ defmodule Cranium.Dispatch do
   - `ephemeral` — if true, nothing persists to Store (fire and forget)
   """
 
-  @type t :: %__MODULE__{
-          conversation_id: String.t(),
-          harness: :claude_code | :api | :ollama | nil,
-          model: atom() | String.t() | nil,
-          renditions: [:text | :audio],
-          ephemeral: boolean()
-        }
+  use TypedStruct
 
-  defstruct [
-    :conversation_id,
-    :harness,
-    :model,
-    renditions: [:text],
-    ephemeral: false
-  ]
+  typedstruct do
+    field :conversation_id, String.t()
+    field :harness, :claude_code | :api | :ollama | nil
+    field :model, atom() | String.t() | nil
+    field :renditions, [:text | :audio], default: [:text]
+    field :ephemeral, boolean(), default: false
+  end
 
   @doc """
   Build a Dispatch from a submit request's parameters.

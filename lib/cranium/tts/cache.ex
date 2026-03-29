@@ -29,10 +29,16 @@ defmodule Cranium.TTS.Cache do
   @warming_poll_interval 200
   @warming_timeout 120_000
 
-  defstruct entries: %{}, cleanup_timers: %{}
+  use TypedStruct
+
+  typedstruct do
+    field :entries, map(), default: %{}
+    field :cleanup_timers, map(), default: %{}
+  end
 
   # --- Public API ---
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
@@ -44,6 +50,7 @@ defmodule Cranium.TTS.Cache do
 
   Returns `{:ok, audio_binary}` or `{:error, reason}`.
   """
+  @spec get(String.t(), non_neg_integer(), atom()) :: {:ok, binary()} | {:error, term()}
   def get(stream_id, index, name \\ __MODULE__) do
     case GenServer.call(name, {:get, stream_id, index}) do
       {:ok, audio} -> {:ok, audio}
@@ -56,6 +63,7 @@ defmodule Cranium.TTS.Cache do
   Mark a segment as warming (synthesis in progress). Prevents duplicate
   TTS requests when the client polls before the warm completes.
   """
+  @spec mark_warming(String.t(), non_neg_integer(), atom()) :: :ok
   def mark_warming(stream_id, index, name \\ __MODULE__) do
     GenServer.call(name, {:put, stream_id, index, :warming})
   end
@@ -63,6 +71,7 @@ defmodule Cranium.TTS.Cache do
   @doc """
   Pre-cache audio for a segment (eager warming complete).
   """
+  @spec put(String.t(), non_neg_integer(), binary() | :error, atom()) :: :ok
   def put(stream_id, index, audio, name \\ __MODULE__) do
     GenServer.call(name, {:put, stream_id, index, audio})
   end
@@ -71,6 +80,7 @@ defmodule Cranium.TTS.Cache do
   Schedule cleanup of all entries for a stream after the cleanup delay.
   Call this when the stream completes.
   """
+  @spec schedule_cleanup(String.t(), atom()) :: :ok
   def schedule_cleanup(stream_id, name \\ __MODULE__) do
     GenServer.cast(name, {:schedule_cleanup, stream_id})
   end

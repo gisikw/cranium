@@ -179,6 +179,7 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   end
 
   @doc false
+  @spec default_marker_tools() :: MapSet.t()
   def default_marker_tools do
     MapSet.new(~w(show show_code play_audio))
   end

@@ -11,11 +11,13 @@ defmodule Cranium.TTS.Warmer do
 
   require Logger
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @spec enqueue(String.t(), non_neg_integer(), String.t(), atom()) :: :ok
   def enqueue(stream_id, index, text, name \\ __MODULE__) do
     Cranium.Manifest.stamp_segment(stream_id, index, :warm_enqueued)
     GenServer.cast(name, {:enqueue, stream_id, index, text})

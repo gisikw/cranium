@@ -50,6 +50,7 @@ defmodule Cranium.Ingress do
 
   # --- Public API ---
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -64,6 +65,8 @@ defmodule Cranium.Ingress do
   end
 
   @doc false
+  @spec do_process(raw_event(), map()) ::
+          {:ok, normalized()} | {:command, atom(), map()} | {:error, term()}
   def do_process(event, context) do
     with {:ok, event} <- Cranium.Ingress.Deduplicator.check(event, context),
          {:ok, event} <- Cranium.Ingress.Transcriber.process(event, context),

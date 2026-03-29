@@ -22,10 +22,15 @@ defmodule Cranium.Manifest do
 
   require Logger
 
-  defstruct streams: %{}
+  use TypedStruct
+
+  typedstruct do
+    field :streams, map(), default: %{}
+  end
 
   # --- Public API ---
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
@@ -39,6 +44,7 @@ defmodule Cranium.Manifest do
     Controls which renditions are advertised in the JSON manifest.
   - `:name` — GenServer name (default `__MODULE__`, used by tests).
   """
+  @spec init_stream(String.t(), String.t(), keyword()) :: :ok
   def init_stream(stream_id, conversation_id, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     disposition = Keyword.get(opts, :disposition, ["text"])
@@ -46,26 +52,33 @@ defmodule Cranium.Manifest do
   end
 
   @doc "Add an utterance segment with text content. Audio URL is advertised but served lazily."
+  @spec add_utterance(String.t(), non_neg_integer(), String.t(), atom()) ::
+          :ok | {:error, :not_found}
   def add_utterance(stream_id, index, text, name \\ __MODULE__) do
     GenServer.call(name, {:add_utterance, stream_id, index, text})
   end
 
   @doc "Add a cue segment (SCTE-style marker from a tool call)."
+  @spec add_cue(String.t(), non_neg_integer(), atom(), term(), atom()) ::
+          :ok | {:error, :not_found}
   def add_cue(stream_id, index, cue_type, data, name \\ __MODULE__) do
     GenServer.call(name, {:add_cue, stream_id, index, cue_type, data})
   end
 
   @doc "Mark a stream as complete."
+  @spec complete(String.t(), atom()) :: :ok | {:error, :not_found}
   def complete(stream_id, name \\ __MODULE__) do
     GenServer.call(name, {:complete, stream_id})
   end
 
   @doc "Mark a stream as cancelled. Partial segments may exist."
+  @spec cancel(String.t(), atom()) :: :ok | {:error, :not_found}
   def cancel(stream_id, name \\ __MODULE__) do
     GenServer.call(name, {:cancel, stream_id})
   end
 
   @doc "Attach metadata (e.g. saturation, usage) to a stream manifest."
+  @spec set_metadata(String.t(), map(), atom()) :: :ok | {:error, :not_found}
   def set_metadata(stream_id, metadata, name \\ __MODULE__) when is_map(metadata) do
     GenServer.call(name, {:set_metadata, stream_id, metadata})
   end
@@ -74,6 +87,7 @@ defmodule Cranium.Manifest do
   Record a pipeline timing milestone. Stores monotonic time internally;
   wall-clock ISO8601 is derived at serialization.
   """
+  @spec stamp(String.t(), atom(), atom()) :: :ok
   def stamp(stream_id, milestone, name \\ __MODULE__) when is_atom(milestone) do
     GenServer.cast(name, {:stamp, stream_id, milestone, mono_now()})
   end
@@ -81,16 +95,19 @@ defmodule Cranium.Manifest do
   @doc """
   Record a per-segment timing milestone.
   """
+  @spec stamp_segment(String.t(), non_neg_integer(), atom(), atom()) :: :ok
   def stamp_segment(stream_id, index, milestone, name \\ __MODULE__) when is_atom(milestone) do
     GenServer.cast(name, {:stamp_segment, stream_id, index, milestone, mono_now()})
   end
 
   @doc "Get the manifest for a stream. Returns {:ok, manifest} or :not_found."
+  @spec get(String.t(), atom()) :: {:ok, map()} | :not_found
   def get(stream_id, name \\ __MODULE__) do
     GenServer.call(name, {:get, stream_id})
   end
 
   @doc "Get text content for a specific segment. Used by the HTTP transport."
+  @spec get_segment_text(String.t(), non_neg_integer(), atom()) :: {:ok, String.t()} | :not_found
   def get_segment_text(stream_id, index, name \\ __MODULE__) do
     GenServer.call(name, {:get_segment_text, stream_id, index})
   end

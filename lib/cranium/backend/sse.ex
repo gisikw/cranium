@@ -14,9 +14,11 @@ defmodule Cranium.Backend.SSE do
   Each event is a map with `:event` (type string) and `:data` (raw string).
   """
 
-  defstruct buffer: ""
+  use TypedStruct
 
-  @type t :: %__MODULE__{buffer: String.t()}
+  typedstruct do
+    field :buffer, String.t(), default: ""
+  end
 
   @type event :: %{event: String.t(), data: String.t()}
 

@@ -69,6 +69,7 @@ defmodule Cranium.Agent.Tools.Subagent do
   @impl true
   def name, do: "subagent"
 
+  @spec timeout() :: pos_integer()
   def timeout, do: 300_000
 
   @impl true

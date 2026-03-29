@@ -11,38 +11,47 @@ defmodule Cranium.Input.TakeRegistry do
 
   defmodule Take do
     @moduledoc false
-    defstruct [
-      :take_id,
-      :stream_id,
-      :conversation_id,
-      :disposition,
-      :origin,
-      :last_seq,
-      :completed_at,
-      :opened_at,
-      chunks: %{},
-      status: :open
-    ]
+    use TypedStruct
+
+    typedstruct do
+      field :take_id, String.t()
+      field :stream_id, String.t()
+      field :conversation_id, String.t()
+      field :disposition, [String.t()]
+      field :origin, String.t() | nil
+      field :last_seq, non_neg_integer() | nil
+      field :completed_at, integer() | nil
+      field :opened_at, integer() | nil
+      field :chunks, map(), default: %{}
+      field :status, :open | :sealed | :complete, default: :open
+    end
   end
 
   # --- Public API ---
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @spec open(String.t(), String.t(), String.t(), [String.t()], keyword()) ::
+          :ok | {:error, :conflict}
   def open(take_id, stream_id, conversation_id, disposition, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     origin = Keyword.get(opts, :origin)
     GenServer.call(name, {:open, take_id, stream_id, conversation_id, disposition, origin})
   end
 
+  @spec put_chunk(String.t(), non_neg_integer(), binary(), keyword()) ::
+          {:ok, :buffered} | {:ok, :complete, map()} | {:error, atom()}
   def put_chunk(take_id, seq, data, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.call(name, {:put_chunk, take_id, seq, data})
   end
 
+  @spec seal(String.t(), non_neg_integer(), keyword()) ::
+          {:ok, :complete, map()} | {:ok, :incomplete, [non_neg_integer()]} | {:error, atom()}
   def seal(take_id, last_seq, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.call(name, {:seal, take_id, last_seq})

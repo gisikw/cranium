@@ -1,10 +1,10 @@
 defmodule Cranium.Store.Epoch do
-  use Ecto.Schema
+  use TypedEctoSchema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
-  schema "epochs" do
+  typed_schema "epochs" do
     field :conversation_id, :string
     field :status, :string, default: "active"
     field :system_prompt, :string
@@ -17,6 +17,7 @@ defmodule Cranium.Store.Epoch do
     timestamps(type: :utc_datetime)
   end
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(epoch, attrs) do
     epoch
     |> cast(attrs, [

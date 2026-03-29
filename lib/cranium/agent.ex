@@ -48,31 +48,20 @@ defmodule Cranium.Agent do
 
   require Logger
 
-  defstruct [
-    :conversation_id,
-    :epoch_pid,
-    :stream_id,
-    :llm_backend,
-    :cc_session_id,
-    status: :idle,
-    messages: [],
-    tool_calls_pending: [],
-    partial_output: [],
-    usage: %{input_tokens: 0, output_tokens: 0}
-  ]
+  use TypedStruct
 
-  @type t :: %__MODULE__{
-          conversation_id: String.t(),
-          epoch_pid: pid() | nil,
-          stream_id: String.t() | nil,
-          llm_backend: module(),
-          cc_session_id: String.t() | nil,
-          status: :idle | :inferring | :tool_use | :cancelled,
-          messages: list(),
-          tool_calls_pending: list(),
-          partial_output: list(),
-          usage: map()
-        }
+  typedstruct do
+    field :conversation_id, String.t()
+    field :epoch_pid, pid() | nil
+    field :stream_id, String.t() | nil
+    field :llm_backend, module()
+    field :cc_session_id, String.t() | nil
+    field :status, :idle | :inferring | :tool_use | :cancelled, default: :idle
+    field :messages, list(), default: []
+    field :tool_calls_pending, list(), default: []
+    field :partial_output, list(), default: []
+    field :usage, map(), default: %{input_tokens: 0, output_tokens: 0}
+  end
 
   # --- Public API ---
 

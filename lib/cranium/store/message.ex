@@ -1,10 +1,10 @@
 defmodule Cranium.Store.Message do
-  use Ecto.Schema
+  use TypedEctoSchema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
-  schema "messages" do
+  typed_schema "messages" do
     field :conversation_id, :string
     field :epoch_id, :binary_id
     field :role, :string
@@ -14,6 +14,7 @@ defmodule Cranium.Store.Message do
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(message, attrs) do
     message
     |> cast(attrs, [:conversation_id, :epoch_id, :role, :content, :origin])

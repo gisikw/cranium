@@ -12,7 +12,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         beamPackages = pkgs.beamPackages;
         erlang = pkgs.erlang;
-        elixir = pkgs.elixir;
+        elixir = pkgs.elixir_1_19;
 
         mixNixDeps = import ./deps.nix {
           lib = pkgs.lib;
