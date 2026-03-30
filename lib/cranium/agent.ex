@@ -86,7 +86,7 @@ defmodule Cranium.Agent do
 
   Returns when inference is complete (including any tool call loops).
   """
-  @spec infer(pid(), map()) :: {:ok, map()} | {:error, term()}
+  @spec infer(pid(), map()) :: {:ok, map()} | {:error, :cancelled, map()} | {:error, term()}
   def infer(pid, context) do
     GenServer.call(pid, {:infer, context}, :infinity)
   end
