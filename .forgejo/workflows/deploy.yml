@@ -29,6 +29,9 @@ jobs:
       - name: Test
         run: nix develop 'path:.' -c just test
 
+      - name: Dialyzer
+        run: nix develop 'path:.' -c just dialyzer
+
       - name: Push to Attic
         run: attic push fort ./result
 

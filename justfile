@@ -31,8 +31,12 @@ test:
 fmt:
     mix format
 
-# Run all quality checks (format + compile warnings + tests)
-check: fmt build test
+# Run dialyzer
+dialyzer:
+    mix dialyzer
+
+# Run all quality checks (format + compile warnings + tests + dialyzer)
+check: fmt build test dialyzer
 
 # --- Build ---
 

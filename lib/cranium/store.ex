@@ -119,7 +119,7 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:save_summary, conversation_id, content})
   end
 
-  @spec get_all_summaries() :: {:ok, [map()]}
+  @spec get_all_summaries() :: {:ok, [map()]} | {:error, term()}
   def get_all_summaries do
     GenServer.call(__MODULE__, :get_all_summaries)
   end

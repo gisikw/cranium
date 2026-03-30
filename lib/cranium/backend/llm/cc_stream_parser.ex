@@ -48,7 +48,7 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   Returns `{:ok, [tagged_message]}` with zero or more tagged messages,
   or `:skip` for lines that should be ignored.
   """
-  @spec parse_line(String.t(), MapSet.t()) :: {:ok, [tagged_message()]} | :skip
+  @spec parse_line(String.t(), %{String.t() => true}) :: {:ok, [tagged_message()]} | :skip
   def parse_line(line, marker_tools \\ default_marker_tools()) do
     line = String.trim(line)
 
@@ -140,7 +140,7 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
        ) do
     case demangle_mcp_name(name) do
       {:ok, tool_name} ->
-        if MapSet.member?(marker_tools, tool_name) do
+        if Map.has_key?(marker_tools, tool_name) do
           [{:llm_tool_use, %{id: id, name: tool_name, input: input}}]
         else
           # MCP tool we don't recognize — skip
@@ -179,8 +179,8 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   end
 
   @doc false
-  @spec default_marker_tools() :: MapSet.t()
+  @spec default_marker_tools() :: %{String.t() => true}
   def default_marker_tools do
-    MapSet.new(~w(show show_code play_audio))
+    Map.new(~w(show show_code play_audio), &{&1, true})
   end
 end

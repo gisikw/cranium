@@ -66,6 +66,17 @@ Don't just ignore it.
 - Stream completion uses `{:stream_end, stream_id}`
 - Never use `Process.exit/2` for flow control — send explicit cancel messages
 
+### Registry Subscribers
+
+- Any GenServer that subscribes to a `StreamRegistry` topic **must** have a
+  catch-all `handle_info(_msg, state)` clause. Registry topics are shared buses —
+  the event vocabulary will grow, and a missing clause is a `FunctionClauseError`
+  crash on the next vocabulary expansion.
+- When adding a new event to the `Cranium.Event` vocabulary, audit all subscribers
+  for each broadcast scope used (`stream_raw`, `conversation`, `global`). Verify
+  every subscriber either handles or ignores the new shape. This is a required
+  step, not a nice-to-have.
+
 ## Pipeline Contracts
 
 ### Stage Interface

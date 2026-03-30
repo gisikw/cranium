@@ -20,7 +20,6 @@ defmodule Cranium do
   def process_message(conversation_id, message) do
     case Cranium.Epoch.start_or_get(conversation_id) do
       {:ok, epoch} -> Cranium.Epoch.submit(epoch, message)
-      {:error, :already_active} -> {:error, :already_active}
       {:error, reason} -> {:error, reason}
     end
   end

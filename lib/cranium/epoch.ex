@@ -43,7 +43,7 @@ defmodule Cranium.Epoch do
   @doc """
   Start a new epoch for a conversation, or return the existing one.
   """
-  @spec start_or_get(String.t(), keyword()) :: {:ok, pid()} | {:error, :already_active}
+  @spec start_or_get(String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def start_or_get(conversation_id, opts \\ []) do
     case lookup(conversation_id) do
       {:ok, pid} ->
