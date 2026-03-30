@@ -417,23 +417,8 @@ defmodule Cranium.Agent do
 
   # --- Private ---
 
-  # Broadcast a stream event to all registered subscribers via the StreamRegistry.
-  # Three topics per event:
-  #   {:stream_raw, stream_id}        — per-stream (Egress, per-stream SSE clients)
-  #   {:conversation, conversation_id} — conversation-level SSE firehose
-  #   {:global}                        — global SSE firehose (all conversations)
-  defp emit(stream_id, conversation_id, message) do
-    Registry.dispatch(Cranium.StreamRegistry, {:stream_raw, stream_id}, fn entries ->
-      for {pid, _value} <- entries, do: send(pid, message)
-    end)
-
-    Registry.dispatch(Cranium.StreamRegistry, {:conversation, conversation_id}, fn entries ->
-      for {pid, _value} <- entries, do: send(pid, message)
-    end)
-
-    Registry.dispatch(Cranium.StreamRegistry, {:global}, fn entries ->
-      for {pid, _value} <- entries, do: send(pid, message)
-    end)
+  defp emit(stream_id, conversation_id, event) do
+    Cranium.Event.broadcast(stream_id, conversation_id, event)
   end
 
   defp backend_module do
