@@ -174,6 +174,12 @@ defmodule Cranium.Egress do
     end
   end
 
+  # Catch-all for lifecycle events (e.g. :pass_complete) dispatched on the
+  # stream topic via Event.broadcast/3. Egress only cares about stream_start,
+  # chunk, and stream_end — everything else is safely ignored.
+  @impl GenServer
+  def handle_info(_msg, state), do: {:noreply, state}
+
   # --- Private ---
 
   # Flush any accumulated text as an utterance segment, ignoring word thresholds.
