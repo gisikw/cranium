@@ -283,7 +283,9 @@ defmodule Cranium.Epoch do
     # this blocked handle_call
     Registry.register(Cranium.Epoch.Registry, {state.conversation_id, :agent}, agent_pid)
 
-    egress_pid = Process.whereis(Cranium.Egress)
+    # Subscribe Egress to the raw stream before inference starts
+    :ok = GenServer.call(Cranium.Egress, {:subscribe_stream, stream_id})
+
     state = %{state | status: :inferring, agent_pid: agent_pid}
 
     unless ephemeral do
@@ -291,7 +293,7 @@ defmodule Cranium.Epoch do
     end
 
     Cranium.Manifest.stamp(stream_id, :inference_start)
-    result = Cranium.Agent.infer(agent_pid, context, egress_pid)
+    result = Cranium.Agent.infer(agent_pid, context)
 
     # Unregister agent — inference is done
     Registry.unregister(Cranium.Epoch.Registry, {state.conversation_id, :agent})

@@ -8,8 +8,13 @@ defmodule Cranium.AgentTest do
 
   setup do
     stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
-    egress = self()
-    {:ok, egress: egress}
+    :ok
+  end
+
+  # Subscribe the test process to a stream's raw events via the StreamRegistry.
+  # Must be called before Agent.infer so the test process receives broadcasts.
+  defp subscribe_stream(stream_id) do
+    Registry.register(Cranium.StreamRegistry, {:stream_raw, stream_id}, [])
   end
 
   defp start_agent do
@@ -18,7 +23,7 @@ defmodule Cranium.AgentTest do
   end
 
   describe "tool execution loop" do
-    test "executes a real tool and re-enters inference", %{egress: egress} do
+    test "executes a real tool and re-enters inference" do
       test_pid = self()
 
       # Register a test tool
@@ -56,7 +61,8 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s1"}
-      {:ok, result} = Cranium.Agent.infer(agent, context, egress)
+      subscribe_stream("s1")
+      {:ok, result} = Cranium.Agent.infer(agent, context)
 
       # Final output is from the second inference call
       assert result.output == "Done!"
@@ -73,7 +79,7 @@ defmodule Cranium.AgentTest do
       assert content =~ "hi"
     end
 
-    test "handles marker tools with fake success", %{egress: egress} do
+    test "handles marker tools with fake success" do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
         caller = self()
@@ -111,7 +117,8 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "show me"}], stream_id: "s2"}
-      {:ok, result} = Cranium.Agent.infer(agent, context, egress)
+      subscribe_stream("s2")
+      {:ok, result} = Cranium.Agent.infer(agent, context)
       assert result.output == "There you go"
 
       # Should have received the marker on the egress channel
@@ -119,7 +126,7 @@ defmodule Cranium.AgentTest do
                       {:marker, %{type: :marker, marker: :show, payload: %{"url" => "img.png"}}}}
     end
 
-    test "handles unknown tools with error result", %{egress: egress} do
+    test "handles unknown tools with error result" do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
         caller = self()
@@ -150,11 +157,12 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "use magic"}], stream_id: "s3"}
-      {:ok, result} = Cranium.Agent.infer(agent, context, egress)
+      subscribe_stream("s3")
+      {:ok, result} = Cranium.Agent.infer(agent, context)
       assert result.output == "Sorry, I cannot do that"
     end
 
-    test "passes tool definitions to LLM backend", %{egress: egress} do
+    test "passes tool definitions to LLM backend" do
       test_pid = self()
 
       Cranium.Backend.LLM.Mock
@@ -173,7 +181,8 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s5"}
-      {:ok, _result} = Cranium.Agent.infer(agent, context, egress)
+      subscribe_stream("s5")
+      {:ok, _result} = Cranium.Agent.infer(agent, context)
 
       assert_receive {:opts_received, opts}
       tools = Keyword.get(opts, :tools)
@@ -183,7 +192,7 @@ defmodule Cranium.AgentTest do
       assert "show" in names
     end
 
-    test "cancel terminates LLM process mid-inference", %{egress: egress} do
+    test "cancel terminates LLM process mid-inference" do
       test_pid = self()
 
       Cranium.Backend.LLM.Mock
@@ -204,11 +213,12 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-cancel"}
+      subscribe_stream("s-cancel")
 
       # Run infer in a separate process so we can send cancel
       task =
         Task.async(fn ->
-          Cranium.Agent.infer(agent, context, egress)
+          Cranium.Agent.infer(agent, context)
         end)
 
       # Wait for LLM to start streaming, then cancel
@@ -221,7 +231,7 @@ defmodule Cranium.AgentTest do
       assert partial.output == "Starting..."
     end
 
-    test "keeps last usage snapshot across tool use rounds", %{egress: egress} do
+    test "keeps last usage snapshot across tool use rounds" do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
         caller = self()
@@ -250,7 +260,8 @@ defmodule Cranium.AgentTest do
 
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s4"}
-      {:ok, result} = Cranium.Agent.infer(agent, context, egress)
+      subscribe_stream("s4")
+      {:ok, result} = Cranium.Agent.infer(agent, context)
 
       # Last snapshot wins — reflects actual context window state
       assert result.usage.input_tokens == 150

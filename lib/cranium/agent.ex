@@ -79,12 +79,13 @@ defmodule Cranium.Agent do
   @doc """
   Begin inference with the assembled context.
 
-  `egress_pid` receives streaming output chunks.
+  Streams output via `Cranium.StreamRegistry` — subscribers register for
+  `{:stream_raw, stream_id}` before this call.
   Returns when inference is complete (including any tool call loops).
   """
-  @spec infer(pid(), map(), pid()) :: {:ok, map()} | {:error, term()}
-  def infer(pid, context, egress_pid) do
-    GenServer.call(pid, {:infer, context, egress_pid}, :infinity)
+  @spec infer(pid(), map()) :: {:ok, map()} | {:error, term()}
+  def infer(pid, context) do
+    GenServer.call(pid, {:infer, context}, :infinity)
   end
 
   # --- GenServer Implementation ---
@@ -107,7 +108,7 @@ defmodule Cranium.Agent do
   end
 
   @impl true
-  def handle_call({:infer, context, egress_pid}, _from, state) do
+  def handle_call({:infer, context}, _from, state) do
     stream_id = context[:stream_id] || Cranium.Stage.new_stream_id()
 
     messages = context[:messages] || []
@@ -122,16 +123,17 @@ defmodule Cranium.Agent do
         usage: %{input_tokens: 0, output_tokens: 0}
     }
 
-    # Signal stream start to Egress
+    # Signal stream start to all subscribers
     metadata = %{
       conversation_id: state.conversation_id,
       content_type: :llm_response,
       mode: Map.get(context, :mode, :text),
       disposition: Map.get(context, :disposition, ["text"]),
+      dispatch: context[:dispatch],
       source: :agent
     }
 
-    send(egress_pid, {:stream_start, stream_id, metadata})
+    emit(stream_id, {:stream_start, stream_id, metadata})
 
     # Start the LLM backend stream — skip tool definitions for managed-loop backends
     tools =
@@ -152,9 +154,9 @@ defmodule Cranium.Agent do
       effort_level: if("audio" in disposition, do: "low")
     ]
 
-    result = run_inference(state, egress_pid, stream_id, messages, opts)
+    result = run_inference(state, stream_id, messages, opts)
 
-    send(egress_pid, {:stream_end, stream_id})
+    emit(stream_id, {:stream_end, stream_id})
 
     case result do
       {:ok, final_state} ->
@@ -203,13 +205,13 @@ defmodule Cranium.Agent do
 
   # --- Inference Loop ---
 
-  defp run_inference(state, egress_pid, stream_id, messages, opts) do
+  defp run_inference(state, stream_id, messages, opts) do
     state = %{state | messages: messages, tool_calls_pending: []}
 
     case state.llm_backend.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        result = receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+        result = receive_loop(state, stream_id, llm_pid, ref, opts)
 
         # Ensure the backend process is fully terminated before returning.
         # The receive_loop exits on {:llm_stop, "end_turn"} when the CC
@@ -255,16 +257,16 @@ defmodule Cranium.Agent do
     Process.demonitor(ref, [:flush])
   end
 
-  defp receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts) do
+  defp receive_loop(state, stream_id, llm_pid, ref, opts) do
     receive do
       {:llm_text, text} ->
         if state.partial_output == [] do
           Cranium.Manifest.stamp(stream_id, :first_token)
         end
 
-        send(egress_pid, {:chunk, stream_id, text})
+        emit(stream_id, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
-        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+        receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:llm_tool_use, tool_call} ->
         if state.llm_backend.manages_tool_loop?() do
@@ -272,30 +274,30 @@ defmodule Cranium.Agent do
           case Cranium.Agent.ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
               {_result, marker} = Cranium.Agent.MarkerEmitter.handle(marker_type, input)
-              send(egress_pid, {:chunk, stream_id, {:marker, marker}})
+              emit(stream_id, {:chunk, stream_id, {:marker, marker}})
 
             _ ->
               :ok
           end
 
-          receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+          receive_loop(state, stream_id, llm_pid, ref, opts)
         else
           # Anthropic path: accumulate for batch execution
           state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
-          receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+          receive_loop(state, stream_id, llm_pid, ref, opts)
         end
 
       {:llm_usage, usage} ->
         merged = merge_usage(state.usage, usage)
-        receive_loop(%{state | usage: merged}, egress_pid, stream_id, llm_pid, ref, opts)
+        receive_loop(%{state | usage: merged}, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_use, tool_data} ->
-        send(egress_pid, {:chunk, stream_id, {:tool_use, tool_data}})
-        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+        emit(stream_id, {:chunk, stream_id, {:tool_use, tool_data}})
+        receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
-        send(egress_pid, {:chunk, stream_id, {:tool_result, result_data}})
-        receive_loop(state, egress_pid, stream_id, llm_pid, ref, opts)
+        emit(stream_id, {:chunk, stream_id, {:tool_result, result_data}})
+        receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
         # Persist eagerly so a mid-inference process restart doesn't lose the
@@ -307,7 +309,6 @@ defmodule Cranium.Agent do
 
         receive_loop(
           %{state | cc_session_id: session_id},
-          egress_pid,
           stream_id,
           llm_pid,
           ref,
@@ -319,7 +320,7 @@ defmodule Cranium.Agent do
 
       {:llm_stop, "tool_use"} ->
         Process.demonitor(ref, [:flush])
-        execute_tools_and_continue(state, egress_pid, stream_id, opts)
+        execute_tools_and_continue(state, stream_id, opts)
 
       {:llm_stop, {:error, _status, _body} = error} ->
         {:error, error}
@@ -347,7 +348,7 @@ defmodule Cranium.Agent do
     end
   end
 
-  defp execute_tools_and_continue(state, egress_pid, stream_id, opts) do
+  defp execute_tools_and_continue(state, stream_id, opts) do
     alias Cranium.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
 
     tool_calls = Enum.reverse(state.tool_calls_pending)
@@ -364,7 +365,7 @@ defmodule Cranium.Agent do
           case ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
               {result_text, marker} = MarkerEmitter.handle(marker_type, input)
-              send(egress_pid, {:chunk, stream_id, {:marker, marker}})
+              emit(stream_id, {:chunk, stream_id, {:marker, marker}})
               result_text
 
             {:execute, module, input} ->
@@ -389,7 +390,7 @@ defmodule Cranium.Agent do
 
     # Clear pending state and re-enter inference
     state = %{state | partial_output: [], tool_calls_pending: []}
-    run_inference(state, egress_pid, stream_id, updated_messages, opts)
+    run_inference(state, stream_id, updated_messages, opts)
   end
 
   defp build_assistant_content(partial_output, tool_calls) do
@@ -412,6 +413,14 @@ defmodule Cranium.Agent do
   defp merge_usage(_existing, new), do: new
 
   # --- Private ---
+
+  # Broadcast a stream event to all registered subscribers via the StreamRegistry.
+  # Egress, SSE handlers, and any future consumers subscribe before inference starts.
+  defp emit(stream_id, message) do
+    Registry.dispatch(Cranium.StreamRegistry, {:stream_raw, stream_id}, fn entries ->
+      for {pid, _value} <- entries, do: send(pid, message)
+    end)
+  end
 
   defp backend_module do
     Application.get_env(:cranium, :backends)[:llm] || Cranium.Backend.LLM.Anthropic

@@ -159,6 +159,32 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  get "/v1/streams/:id/events" do
+    conn =
+      conn
+      |> put_resp_header("content-type", "text/event-stream")
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> send_chunked(200)
+
+    # Subscribe before checking state to avoid missing events in the gap
+    Registry.register(Cranium.StreamRegistry, {:stream_raw, id}, [])
+
+    # Check if stream already completed (late connect)
+    case Cranium.Manifest.get(id) do
+      {:ok, %{"status" => "complete"}} ->
+        send_manifest_as_events(conn, id)
+
+      {:ok, %{"status" => "cancelled"}} ->
+        chunk(conn, sse_event("stream_end", %{stream_id: id, reason: "cancelled"}))
+        conn
+
+      _ ->
+        # Stream in progress or not yet started — enter live loop
+        sse_loop(conn, id)
+    end
+  end
+
   get "/v1/streams/:id/manifest" do
     case Cranium.Manifest.get(id) do
       {:ok, manifest} ->
@@ -417,6 +443,80 @@ defmodule Cranium.Transport.HTTP do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(404, Jason.encode!(%{"error" => "not found"}))
+  end
+
+  # --- SSE helpers ---
+
+  defp sse_loop(conn, stream_id) do
+    receive do
+      {:stream_start, ^stream_id, metadata} ->
+        dispatch = Map.get(metadata, :dispatch)
+
+        data = %{
+          stream_id: stream_id,
+          conversation_id: metadata[:conversation_id],
+          harness: dispatch && dispatch.harness,
+          model: dispatch && dispatch.model,
+          renditions: dispatch && dispatch.renditions
+        }
+
+        {:ok, conn} = chunk(conn, sse_event("stream_start", data))
+        sse_loop(conn, stream_id)
+
+      {:chunk, ^stream_id, text} when is_binary(text) ->
+        {:ok, conn} = chunk(conn, sse_event("chunk", %{stream_id: stream_id, content: text}))
+        sse_loop(conn, stream_id)
+
+      {:chunk, ^stream_id, {:marker, marker}} ->
+        {:ok, conn} =
+          chunk(
+            conn,
+            sse_event("cue", %{stream_id: stream_id, cue_type: "marker", data: marker})
+          )
+
+        sse_loop(conn, stream_id)
+
+      {:chunk, ^stream_id, {:tool_use, data}} ->
+        {:ok, conn} =
+          chunk(conn, sse_event("tool_use", %{stream_id: stream_id, data: data}))
+
+        sse_loop(conn, stream_id)
+
+      {:chunk, ^stream_id, {:tool_result, data}} ->
+        {:ok, conn} =
+          chunk(conn, sse_event("tool_result", %{stream_id: stream_id, data: data}))
+
+        sse_loop(conn, stream_id)
+
+      {:stream_end, ^stream_id} ->
+        chunk(conn, sse_event("stream_end", %{stream_id: stream_id}))
+        conn
+    after
+      30_000 ->
+        # SSE keepalive comment (prevents proxy/LB timeouts)
+        case chunk(conn, ": keepalive\n\n") do
+          {:ok, conn} -> sse_loop(conn, stream_id)
+          {:error, _} -> conn
+        end
+    end
+  end
+
+  defp send_manifest_as_events(conn, stream_id) do
+    {:ok, manifest} = Cranium.Manifest.get(stream_id)
+
+    conn =
+      Enum.reduce(manifest["segments"], conn, fn seg, conn ->
+        event_type = if seg["type"] == "utterance", do: "chunk", else: "cue"
+        {:ok, conn} = chunk(conn, sse_event(event_type, seg))
+        conn
+      end)
+
+    chunk(conn, sse_event("stream_end", %{stream_id: stream_id}))
+    conn
+  end
+
+  defp sse_event(event_type, data) do
+    "event: #{event_type}\ndata: #{Jason.encode!(data)}\n\n"
   end
 
   defp trigger_text_inference(result, take_id) do

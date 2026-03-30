@@ -84,6 +84,12 @@ defmodule Cranium.Egress do
   end
 
   @impl GenServer
+  def handle_call({:subscribe_stream, stream_id}, _from, state) do
+    {:ok, _} = Registry.register(Cranium.StreamRegistry, {:stream_raw, stream_id}, [])
+    {:reply, :ok, state}
+  end
+
+  @impl GenServer
   def handle_call({:process, output, context}, _from, state) do
     result = process(output, context)
     {:reply, result, state}

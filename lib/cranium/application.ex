@@ -51,6 +51,9 @@ defmodule Cranium.Application do
       # Context providers (GenServer processes, started before Context stage)
       Cranium.Context.Landscape,
 
+      # Stream event registry (duplicate-key Registry for pub/sub fanout)
+      {Registry, keys: :duplicate, name: Cranium.StreamRegistry},
+
       # Pipeline stages
       Cranium.Ingress,
       Cranium.Context,
