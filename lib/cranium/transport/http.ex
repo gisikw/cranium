@@ -585,34 +585,42 @@ defmodule Cranium.Transport.HTTP do
 
       # -- Lifecycle events --
 
-      {:message_received, _conversation_id, meta} ->
-        case chunk(conn, sse_event("message_received", meta)) do
+      {:message_received, conversation_id, meta} ->
+        data = Map.put(meta, :conversation_id, conversation_id)
+
+        case chunk(conn, sse_event("message_received", data)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
 
-      {:pass_complete, _conversation_id, stream_id, meta} ->
-        data = Map.put(meta, :stream_id, stream_id)
+      {:pass_complete, conversation_id, stream_id, meta} ->
+        data = meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
 
         case chunk(conn, sse_event("pass_complete", data)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
 
-      {:epoch_started, _conversation_id, meta} ->
-        case chunk(conn, sse_event("epoch_started", meta)) do
+      {:epoch_started, conversation_id, meta} ->
+        data = Map.put(meta, :conversation_id, conversation_id)
+
+        case chunk(conn, sse_event("epoch_started", data)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
 
-      {:epoch_cleared, _conversation_id, meta} ->
-        case chunk(conn, sse_event("epoch_cleared", meta)) do
+      {:epoch_cleared, conversation_id, meta} ->
+        data = Map.put(meta, :conversation_id, conversation_id)
+
+        case chunk(conn, sse_event("epoch_cleared", data)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
 
-      {:handoff_complete, _conversation_id, meta} ->
-        case chunk(conn, sse_event("handoff_complete", meta)) do
+      {:handoff_complete, conversation_id, meta} ->
+        data = Map.put(meta, :conversation_id, conversation_id)
+
+        case chunk(conn, sse_event("handoff_complete", data)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
