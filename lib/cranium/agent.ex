@@ -79,8 +79,11 @@ defmodule Cranium.Agent do
   @doc """
   Begin inference with the assembled context.
 
-  Streams output via `Cranium.StreamRegistry` — subscribers register for
-  `{:stream_raw, stream_id}` before this call.
+  Streams output via `Cranium.StreamRegistry` on three topics:
+  - `{:stream_raw, stream_id}` — per-stream subscribers
+  - `{:conversation, conversation_id}` — conversation-level firehose
+  - `{:global}` — global firehose (all conversations)
+
   Returns when inference is complete (including any tool call loops).
   """
   @spec infer(pid(), map()) :: {:ok, map()} | {:error, term()}
@@ -133,7 +136,7 @@ defmodule Cranium.Agent do
       source: :agent
     }
 
-    emit(stream_id, {:stream_start, stream_id, metadata})
+    emit(stream_id, state.conversation_id, {:stream_start, stream_id, metadata})
 
     # Start the LLM backend stream — skip tool definitions for managed-loop backends
     tools =
@@ -156,7 +159,7 @@ defmodule Cranium.Agent do
 
     result = run_inference(state, stream_id, messages, opts)
 
-    emit(stream_id, {:stream_end, stream_id})
+    emit(stream_id, state.conversation_id, {:stream_end, stream_id})
 
     case result do
       {:ok, final_state} ->
@@ -264,7 +267,7 @@ defmodule Cranium.Agent do
           Cranium.Manifest.stamp(stream_id, :first_token)
         end
 
-        emit(stream_id, {:chunk, stream_id, text})
+        emit(stream_id, state.conversation_id, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
@@ -274,7 +277,7 @@ defmodule Cranium.Agent do
           case Cranium.Agent.ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
               {_result, marker} = Cranium.Agent.MarkerEmitter.handle(marker_type, input)
-              emit(stream_id, {:chunk, stream_id, {:marker, marker}})
+              emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
 
             _ ->
               :ok
@@ -292,11 +295,11 @@ defmodule Cranium.Agent do
         receive_loop(%{state | usage: merged}, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_use, tool_data} ->
-        emit(stream_id, {:chunk, stream_id, {:tool_use, tool_data}})
+        emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_use, tool_data}})
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
-        emit(stream_id, {:chunk, stream_id, {:tool_result, result_data}})
+        emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_result, result_data}})
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
@@ -365,7 +368,7 @@ defmodule Cranium.Agent do
           case ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
               {result_text, marker} = MarkerEmitter.handle(marker_type, input)
-              emit(stream_id, {:chunk, stream_id, {:marker, marker}})
+              emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
               result_text
 
             {:execute, module, input} ->
@@ -415,9 +418,20 @@ defmodule Cranium.Agent do
   # --- Private ---
 
   # Broadcast a stream event to all registered subscribers via the StreamRegistry.
-  # Egress, SSE handlers, and any future consumers subscribe before inference starts.
-  defp emit(stream_id, message) do
+  # Three topics per event:
+  #   {:stream_raw, stream_id}        — per-stream (Egress, per-stream SSE clients)
+  #   {:conversation, conversation_id} — conversation-level SSE firehose
+  #   {:global}                        — global SSE firehose (all conversations)
+  defp emit(stream_id, conversation_id, message) do
     Registry.dispatch(Cranium.StreamRegistry, {:stream_raw, stream_id}, fn entries ->
+      for {pid, _value} <- entries, do: send(pid, message)
+    end)
+
+    Registry.dispatch(Cranium.StreamRegistry, {:conversation, conversation_id}, fn entries ->
+      for {pid, _value} <- entries, do: send(pid, message)
+    end)
+
+    Registry.dispatch(Cranium.StreamRegistry, {:global}, fn entries ->
       for {pid, _value} <- entries, do: send(pid, message)
     end)
   end

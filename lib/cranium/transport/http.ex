@@ -4,9 +4,12 @@ defmodule Cranium.Transport.HTTP do
 
   Endpoints:
   - `POST /v1/submit` — accept input, create epoch, return stream_id
+  - `GET /v1/streams/:id/events` — per-stream SSE (single pass)
   - `GET /v1/streams/:id/manifest` — segment manifest with current status
   - `GET /v1/streams/:id/segments/:n/:rendition` — individual segment content
   - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
+  - `GET /v1/conversations/:id/events` — conversation-level SSE (all passes)
+  - `GET /v1/events` — global SSE firehose (all conversations)
   - `POST /v1/input/start` — open a chunked audio take
   - `PUT /v1/input/:id/:seq` — append numbered audio chunk
   - `POST /v1/input/:id/done` — seal a take
@@ -183,6 +186,30 @@ defmodule Cranium.Transport.HTTP do
         # Stream in progress or not yet started — enter live loop
         sse_loop(conn, id)
     end
+  end
+
+  get "/v1/conversations/:id/events" do
+    conn =
+      conn
+      |> put_resp_header("content-type", "text/event-stream")
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> send_chunked(200)
+
+    Registry.register(Cranium.StreamRegistry, {:conversation, id}, [])
+    multi_stream_sse_loop(conn)
+  end
+
+  get "/v1/events" do
+    conn =
+      conn
+      |> put_resp_header("content-type", "text/event-stream")
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> send_chunked(200)
+
+    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    multi_stream_sse_loop(conn)
   end
 
   get "/v1/streams/:id/manifest" do
@@ -496,6 +523,69 @@ defmodule Cranium.Transport.HTTP do
         # SSE keepalive comment (prevents proxy/LB timeouts)
         case chunk(conn, ": keepalive\n\n") do
           {:ok, conn} -> sse_loop(conn, stream_id)
+          {:error, _} -> conn
+        end
+    end
+  end
+
+  # Long-lived SSE loop for conversation-level and global firehose endpoints.
+  # Unlike sse_loop/2, this does not exit on stream_end — it survives across
+  # multiple passes, relaying events from any stream that matches the
+  # registered topic.
+  defp multi_stream_sse_loop(conn) do
+    receive do
+      {:stream_start, stream_id, metadata} ->
+        dispatch = Map.get(metadata, :dispatch)
+
+        data = %{
+          stream_id: stream_id,
+          conversation_id: metadata[:conversation_id],
+          harness: dispatch && dispatch.harness,
+          model: dispatch && dispatch.model,
+          renditions: dispatch && dispatch.renditions
+        }
+
+        case chunk(conn, sse_event("stream_start", data)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:chunk, stream_id, text} when is_binary(text) ->
+        case chunk(conn, sse_event("chunk", %{stream_id: stream_id, content: text})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:chunk, stream_id, {:marker, marker}} ->
+        case chunk(
+               conn,
+               sse_event("cue", %{stream_id: stream_id, cue_type: "marker", data: marker})
+             ) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:chunk, stream_id, {:tool_use, data}} ->
+        case chunk(conn, sse_event("tool_use", %{stream_id: stream_id, data: data})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:chunk, stream_id, {:tool_result, data}} ->
+        case chunk(conn, sse_event("tool_result", %{stream_id: stream_id, data: data})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:stream_end, stream_id} ->
+        case chunk(conn, sse_event("stream_end", %{stream_id: stream_id})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+    after
+      30_000 ->
+        case chunk(conn, ": keepalive\n\n") do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
     end

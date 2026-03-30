@@ -17,6 +17,14 @@ defmodule Cranium.AgentTest do
     Registry.register(Cranium.StreamRegistry, {:stream_raw, stream_id}, [])
   end
 
+  defp subscribe_conversation(conversation_id) do
+    Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+  end
+
+  defp subscribe_global do
+    Registry.register(Cranium.StreamRegistry, {:global}, [])
+  end
+
   defp start_agent do
     {:ok, pid} = Cranium.Agent.start_link(conversation_id: "test-agent")
     pid
@@ -266,6 +274,48 @@ defmodule Cranium.AgentTest do
       # Last snapshot wins — reflects actual context window state
       assert result.usage.input_tokens == 150
       assert result.usage.output_tokens == 30
+    end
+  end
+
+  describe "conversation and global dispatch" do
+    test "events are broadcast on conversation and global topics" do
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "hello"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-conv"}
+
+      # Subscribe on all three topics
+      subscribe_stream("s-conv")
+      subscribe_conversation("test-agent")
+      subscribe_global()
+
+      {:ok, _result} = Cranium.Agent.infer(agent, context)
+
+      # Per-stream topic (existing behavior)
+      assert_received {:stream_start, "s-conv", _}
+      assert_received {:chunk, "s-conv", "hello"}
+      assert_received {:stream_end, "s-conv"}
+
+      # Conversation topic
+      assert_received {:stream_start, "s-conv", %{conversation_id: "test-agent"}}
+      assert_received {:chunk, "s-conv", "hello"}
+      assert_received {:stream_end, "s-conv"}
+
+      # Global topic
+      assert_received {:stream_start, "s-conv", %{conversation_id: "test-agent"}}
+      assert_received {:chunk, "s-conv", "hello"}
+      assert_received {:stream_end, "s-conv"}
     end
   end
 end
