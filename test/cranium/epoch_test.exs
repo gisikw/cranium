@@ -12,6 +12,14 @@ defmodule Cranium.EpochTest do
   # started by the application supervisor. DataCase handles DB sandbox.
   setup do
     stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
+
+    # Terminate leftover Epoch processes from previous tests so stale children
+    # don't crash (losing sandbox access), breach max_restarts, and take down
+    # the DynamicSupervisor along with the current test's Epoch.
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Epoch.Supervisor) do
+      DynamicSupervisor.terminate_child(Cranium.Epoch.Supervisor, pid)
+    end
+
     :ok
   end
 
