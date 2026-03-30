@@ -34,7 +34,7 @@
           pname = "cranium";
           version = "0.1.0";
           src = ./.;
-          inherit mixNixDeps;
+          inherit mixNixDeps elixir;
 
           # Override configurePhase to use ln -sfn instead of ln -sv.
           # The upstream builder's ln -sv fails when deps.compile has

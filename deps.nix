@@ -47,6 +47,19 @@ let
       beamDeps = [];
     };
 
+    dialyxir = buildMix rec {
+      name = "dialyxir";
+      version = "1.4.7";
+
+      src = fetchHex {
+        pkg = "dialyxir";
+        version = "${version}";
+        sha256 = "b34527202e6eb8cee198efec110996c25c5898f43a4094df157f8d28f27d9efe";
+      };
+
+      beamDeps = [ erlex ];
+    };
+
     ecto = buildMix rec {
       name = "ecto";
       version = "3.13.5";
@@ -71,6 +84,19 @@ let
       };
 
       beamDeps = [ db_connection ecto postgrex telemetry ];
+    };
+
+    erlex = buildMix rec {
+      name = "erlex";
+      version = "0.2.8";
+
+      src = fetchHex {
+        pkg = "erlex";
+        version = "${version}";
+        sha256 = "9d66ff9fedf69e49dc3fd12831e12a8a37b76f8651dd21cd45fcf5561a8a7590";
+      };
+
+      beamDeps = [];
     };
 
     finch = buildMix rec {
@@ -266,6 +292,32 @@ let
       };
 
       beamDeps = [ telemetry ];
+    };
+
+    typed_ecto_schema = buildMix rec {
+      name = "typed_ecto_schema";
+      version = "0.4.3";
+
+      src = fetchHex {
+        pkg = "typed_ecto_schema";
+        version = "${version}";
+        sha256 = "dcbd9b35b9fda5fa9258e0ae629a99cf4473bd7adfb85785d3f71dfe7a9b2bc0";
+      };
+
+      beamDeps = [ ecto ];
+    };
+
+    typed_struct = buildMix rec {
+      name = "typed_struct";
+      version = "0.3.0";
+
+      src = fetchHex {
+        pkg = "typed_struct";
+        version = "${version}";
+        sha256 = "c50bd5c3a61fe4e198a8504f939be3d3c85903b382bde4865579bc23111d1b6d";
+      };
+
+      beamDeps = [];
     };
 
     websock = buildMix rec {
