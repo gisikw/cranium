@@ -65,6 +65,9 @@ defmodule Cranium.Effects.HandoffWriter do
                 Cranium.Store.save_handoff(epoch_id, text)
                 write_to_hoard(conversation_id, text)
 
+                Cranium.Event.broadcast(conversation_id,
+                  {:handoff_complete, conversation_id, %{epoch_id: epoch_id}})
+
                 Logger.info("Handoff complete",
                   conversation_id: conversation_id,
                   stage: :effects,

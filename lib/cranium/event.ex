@@ -19,10 +19,12 @@ defmodule Cranium.Event do
 
   **Lifecycle events** — emitted by Epoch, Effects, etc.:
 
-  - `{:epoch_started, conversation_id, epoch_id}` — new epoch created
-  - `{:epoch_cleared, conversation_id, epoch_id}` — epoch cleared (handoff triggered)
+  - `{:message_received, conversation_id, %{text, origin, stream_id}}` — inbound message normalized
+  - `{:pass_complete, conversation_id, stream_id, %{saturation, turn_count, reason}}` — inference pass finished
+  - `{:epoch_started, conversation_id, %{epoch_id}}` — new epoch created
+  - `{:epoch_cleared, conversation_id, %{epoch_id, source}}` — epoch cleared (handoff triggered)
   - `{:saturation_changed, conversation_id, value}` — context window saturation updated
-  - `{:handoff_complete, conversation_id, epoch_id}` — handoff generation finished
+  - `{:handoff_complete, conversation_id, %{epoch_id}}` — handoff generation finished
   - `{:status_changed, conversation_id, status}` — epoch status transition
 
   **Rendition events** — emitted by Egress/TTS pipeline:
@@ -47,10 +49,12 @@ defmodule Cranium.Event do
   # -- Lifecycle events (Epoch, Effects) --
 
   @type lifecycle_event ::
-          {:epoch_started, conversation_id :: String.t(), epoch_id :: String.t()}
-          | {:epoch_cleared, conversation_id :: String.t(), epoch_id :: String.t()}
+          {:message_received, conversation_id :: String.t(), map()}
+          | {:pass_complete, conversation_id :: String.t(), stream_id :: String.t(), map()}
+          | {:epoch_started, conversation_id :: String.t(), map()}
+          | {:epoch_cleared, conversation_id :: String.t(), map()}
           | {:saturation_changed, conversation_id :: String.t(), value :: float()}
-          | {:handoff_complete, conversation_id :: String.t(), epoch_id :: String.t()}
+          | {:handoff_complete, conversation_id :: String.t(), map()}
           | {:status_changed, conversation_id :: String.t(),
              status :: :idle | :processing | :inferring | :cancelled}
 

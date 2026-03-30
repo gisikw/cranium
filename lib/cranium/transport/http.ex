@@ -114,7 +114,7 @@ defmodule Cranium.Transport.HTTP do
     # Check for commands before dispatching to inference
     case text do
       "!clear" ->
-        Cranium.Epoch.clear(epoch_pid)
+        Cranium.Epoch.clear(epoch_pid, source: origin || "submit")
         Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
         Cranium.Manifest.complete(stream_id)
 
@@ -448,7 +448,7 @@ defmodule Cranium.Transport.HTTP do
         # Without this, clear times out if the GenServer is blocked in a submit.
         Cranium.Epoch.cancel(conversation_id)
 
-        Cranium.Epoch.clear(pid)
+        Cranium.Epoch.clear(pid, source: "api")
         Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
 
         conn
@@ -579,6 +579,40 @@ defmodule Cranium.Transport.HTTP do
 
       {:stream_end, stream_id} ->
         case chunk(conn, sse_event("stream_end", %{stream_id: stream_id})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      # -- Lifecycle events --
+
+      {:message_received, _conversation_id, meta} ->
+        case chunk(conn, sse_event("message_received", meta)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:pass_complete, _conversation_id, stream_id, meta} ->
+        data = Map.put(meta, :stream_id, stream_id)
+
+        case chunk(conn, sse_event("pass_complete", data)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:epoch_started, _conversation_id, meta} ->
+        case chunk(conn, sse_event("epoch_started", meta)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:epoch_cleared, _conversation_id, meta} ->
+        case chunk(conn, sse_event("epoch_cleared", meta)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:handoff_complete, _conversation_id, meta} ->
+        case chunk(conn, sse_event("handoff_complete", meta)) do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end

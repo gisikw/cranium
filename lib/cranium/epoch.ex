@@ -82,10 +82,13 @@ defmodule Cranium.Epoch do
 
   @doc """
   Clear the epoch — trigger handoff and reset.
+
+  Options:
+  - `:source` — origin of the clear (e.g. "matrix", "api")
   """
-  @spec clear(pid()) :: :ok
-  def clear(pid) do
-    GenServer.call(pid, :clear, 30_000)
+  @spec clear(pid(), keyword()) :: :ok
+  def clear(pid, opts \\ []) do
+    GenServer.call(pid, {:clear, opts}, 30_000)
   end
 
   @doc """
@@ -180,6 +183,8 @@ defmodule Cranium.Epoch do
       transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
 
+    Cranium.Event.broadcast(conversation_id, {:epoch_started, conversation_id, %{epoch_id: epoch_id}})
+
     {:ok, state}
   end
 
@@ -193,6 +198,15 @@ defmodule Cranium.Epoch do
     ephemeral = msg_map[:ephemeral] == true
     dispatch = msg_map[:dispatch]
     state = %{state | dispatch: dispatch}
+
+    # Broadcast message_received so firehose clients see inbound messages
+    unless ephemeral do
+      Cranium.Event.broadcast(state.conversation_id, {:message_received, state.conversation_id, %{
+        text: text,
+        origin: msg_map[:origin],
+        stream_id: state.stream_id
+      }})
+    end
 
     # Derive last_invoked_at from most recent message timestamp
     last_invoked_at =
@@ -345,6 +359,16 @@ defmodule Cranium.Epoch do
             })
           end
 
+          # Emit pass_complete so firehose clients get post-inference metadata
+          unless ephemeral do
+            Cranium.Event.broadcast(stream_id, state.conversation_id,
+              {:pass_complete, state.conversation_id, stream_id, %{
+                saturation: saturation,
+                turn_count: new_count,
+                reason: :complete
+              }})
+          end
+
           {result,
            %{
              state
@@ -384,6 +408,11 @@ defmodule Cranium.Epoch do
             })
           end
 
+          unless ephemeral do
+            Cranium.Event.broadcast(stream_id, state.conversation_id,
+              {:pass_complete, state.conversation_id, stream_id, %{reason: :cancelled}})
+          end
+
           {{:error, :cancelled},
            %{
              state
@@ -394,6 +423,11 @@ defmodule Cranium.Epoch do
         {:error, _reason} ->
           unless ephemeral do
             Cranium.Store.update_epoch(state.epoch_id, %{status: "active"})
+          end
+
+          unless ephemeral do
+            Cranium.Event.broadcast(stream_id, state.conversation_id,
+              {:pass_complete, state.conversation_id, stream_id, %{reason: :error}})
           end
 
           {result, state}
@@ -413,10 +447,15 @@ defmodule Cranium.Epoch do
   end
 
   @impl true
-  def handle_call(:clear, _from, state) do
+  def handle_call({:clear, opts}, _from, state) do
     Logger.info("Clearing epoch", stage: :epoch)
+    source = Keyword.get(opts, :source)
 
     Cranium.Store.update_epoch(state.epoch_id, %{status: "cleared"})
+
+    Cranium.Event.broadcast(state.conversation_id,
+      {:epoch_cleared, state.conversation_id, %{epoch_id: state.epoch_id, source: source}})
+
     Cranium.Effects.generate_handoff(state.conversation_id, state.epoch_id, state.cc_session_id)
 
     {:ok, new_epoch_id} = Cranium.Store.create_epoch(state.conversation_id)
