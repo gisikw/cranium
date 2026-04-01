@@ -67,7 +67,13 @@ defmodule Cranium.Application do
       {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one},
 
       # HTTP transport
-      {Bandit, plug: Cranium.Transport.HTTP, port: http_port()}
+      {Bandit, plug: Cranium.Transport.HTTP, port: http_port()},
+
+      # Revised Hierarchy
+      Cranium.Transport,
+      Cranium.Media,
+      Cranium.Persistence,
+      Cranium.Inference
     ]
 
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
