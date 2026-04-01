@@ -70,6 +70,7 @@ defmodule Cranium.Application do
       {Bandit, plug: Cranium.Transport.HTTP, port: http_port()},
 
       # Revised Hierarchy
+      Cranium.Events,
       Cranium.Transport,
       Cranium.Media,
       Cranium.Persistence,

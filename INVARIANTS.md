@@ -10,20 +10,26 @@ Don't just ignore it.
 
 Cranium is an OTP application, not a web framework. The architecture is an ant
 colony of independent actors communicating via messages — not a left-to-right
-pipeline of data transformations. Three rules enforce this:
+pipeline of data transformations. Four rules enforce this:
 
 1. **Every module is a GenServer or is private to one.** No free-floating
    modules with public APIs that get composed from the outside. If it exists,
    it's an actor (GenServer) or it's internal logic that a specific actor owns.
    The actor is the unit of public interface.
 
-2. **Actors communicate only through PubSub or call/cast.** No importing
+2. **Actors communicate only through PubSub or call.** No importing
    another actor's internal modules. No reaching into another actor's data
    structures. Message passing or nothing. The only shared types are the ones
-   in `Cranium.Event` (the message vocabulary) and `Cranium.Store` (the
+   in `Cranium.Messages` (the message vocabulary) and `Cranium.Store` (the
    persistence boundary).
 
-3. **Pipelines live inside actors, never between them.** The `|>` operator
+3. **No `GenServer.cast`.** If you need a response, use `call`. If you're
+   announcing an event, use PubSub (`send/2` via Registry dispatch). `cast`
+   is the worst of both — point-to-point like a call but with no delivery
+   guarantee and no backpressure. It hides failures. Use events or calls,
+   never the middle ground.
+
+4. **Pipelines live inside actors, never between them.** The `|>` operator
    and functional composition are for transforming data *within* a single
    actor's message handler (`handle_info`, `handle_call`, etc.). Pipelines
    never cross an actor boundary. If you're piping the output of one module
@@ -85,13 +91,13 @@ level. That drift is a bug in cranium, not a style preference.
 - GenServer state is a struct, never a bare map
 - Timeouts are explicit, never infinite (except for epoch idle — that uses
   `:hibernate` instead)
-- `handle_call` is for synchronous queries; `handle_cast` is for fire-and-forget
-  mutations; `handle_info` is for async messages and streaming chunks
+- `handle_call` is for synchronous queries; `handle_info` is for async messages
+  and streaming chunks
 
 ### Process Communication
 
-- Pipeline stages communicate via message passing, not direct function calls on
-  shared state
+- Actors communicate via message passing, not direct function calls on shared
+  state
 - Streaming chunks use `send/2` with tagged tuples: `{:chunk, stream_id, data}`
 - Stream completion uses `{:stream_end, stream_id}`
 - Never use `Process.exit/2` for flow control — send explicit cancel messages
