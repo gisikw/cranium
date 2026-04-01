@@ -6,6 +6,36 @@ Violations are bugs, not style issues. No grandfather clauses.
 If an invariant no longer serves the project, remove it explicitly with rationale.
 Don't just ignore it.
 
+## Architecture: Actors, Not Pipelines
+
+Cranium is an OTP application, not a web framework. The architecture is an ant
+colony of independent actors communicating via messages — not a left-to-right
+pipeline of data transformations. Three rules enforce this:
+
+1. **Every module is a GenServer or is private to one.** No free-floating
+   modules with public APIs that get composed from the outside. If it exists,
+   it's an actor (GenServer) or it's internal logic that a specific actor owns.
+   The actor is the unit of public interface.
+
+2. **Actors communicate only through PubSub or call/cast.** No importing
+   another actor's internal modules. No reaching into another actor's data
+   structures. Message passing or nothing. The only shared types are the ones
+   in `Cranium.Event` (the message vocabulary) and `Cranium.Store` (the
+   persistence boundary).
+
+3. **Pipelines live inside actors, never between them.** The `|>` operator
+   and functional composition are for transforming data *within* a single
+   actor's message handler (`handle_info`, `handle_call`, etc.). Pipelines
+   never cross an actor boundary. If you're piping the output of one module
+   into another at the top level, you're building a web app — stop and use
+   message passing instead.
+
+These rules exist because Elixir's community conventions push toward
+Phoenix-style request/response pipelines, and the training data for AI
+agents is overwhelmingly shaped by those conventions. Without explicit
+guardrails, code will drift toward pipeline composition at the architecture
+level. That drift is a bug in cranium, not a style preference.
+
 ## Code Organization
 
 - Decision logic is pure: functions take data, return decisions, no I/O
@@ -77,38 +107,27 @@ Don't just ignore it.
   every subscriber either handles or ignores the new shape. This is a required
   step, not a nice-to-have.
 
-## Pipeline Contracts
-
-### Stage Interface
-
-Every pipeline stage implements the `Cranium.Stage` behaviour:
-- `process/2` for complete-message processing
-- `handle_chunk/3` and `handle_stream_end/2` for streaming (optional)
-
-Stages that don't support streaming buffer input and process on completion.
-Stages that support streaming may forward chunks incrementally.
+## Actor Contracts
 
 ### Streaming
 
-- Every stage caches streamed input until downstream delivery is confirmed
-- Cache is cleared on successful delivery, not on stream completion
-- If streaming fails, cached data enables retry without upstream re-request
 - Stream IDs are unique per invocation (not per conversation — concurrent
   retries must not collide)
+- Streaming chunks are messages (`{:chunk, stream_id, data}`), not function
+  returns. Actors that produce or consume streams communicate via PubSub.
 
 ### Backend Swappability
 
 - STT, TTS, and LLM backends implement Elixir behaviours
 - Backend modules are configured at the application level, not hardcoded
-- No stage code may reference a specific backend implementation directly —
+- No actor may reference a specific backend implementation directly —
   always go through the behaviour
-- Backend configuration is resolved at startup and injected into stage state
+- Backend configuration is resolved at startup and injected into actor state
 
 ### Epoch Isolation
 
 - At most one active epoch per conversation (enforced by Registry, not convention)
 - Epoch crash in conversation A must not affect conversation B
-- An epoch coordinates pipeline stages — it does not bypass them
 - Epochs do not hold conversation history in process state — history lives
   in Store
 
@@ -117,7 +136,7 @@ Stages that support streaming may forward chunks incrementally.
 ### Ecto
 
 - All database access goes through `Cranium.Store` — no direct `Repo` calls
-  from pipeline stages
+  from other actors
 - Migrations are forward-only (no rollback logic required, but migrations must
   be idempotent)
 - Schemas define `@type t` for each entity
@@ -134,10 +153,10 @@ Stages that support streaming may forward chunks incrementally.
 ### Strategy
 
 - Pure decision functions get unit tests (fast, no GenServer needed)
-- Stage GenServers get integration tests (start the stage, send messages,
+- Actor GenServers get integration tests (start the actor, send messages,
   assert output)
 - Backend behaviours have test implementations (in-memory, deterministic)
-- Full pipeline tests use test backends (no network, no real LLM calls)
+- Full system tests use test backends (no network, no real LLM calls)
 - Ecto tests use the sandbox adapter for isolation
 
 ### Requirements
