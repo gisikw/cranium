@@ -12,6 +12,6 @@ defmodule Cranium.Events do
   def broadcast(topic, message) do
     Registry.dispatch(@registry, topic, fn entries ->
       for {pid, _value} <- entries, do: send(pid, message)
-    end
+    end)
   end
 end
