@@ -3,13 +3,14 @@ defmodule Cranium.Ingress do
   Input processing stage.
 
   Receives raw input from transports and produces a normalized message
-  ready for context assembly. Decomposes into four steps:
+  ready for context assembly. Decomposes into three steps:
 
   - `Deduplicator` — reject duplicate events
-  - `Transcriber` — audio → text via STT backend
   - `ImageProcessor` — download/store images, produce references
   - `CommandDetector` — detect control commands (!clear, !cancel),
     emit pipeline signals
+
+  Audio transcription is handled upstream by `Cranium.Media.Transcoder`.
 
   ## Message Flow
 
@@ -69,7 +70,6 @@ defmodule Cranium.Ingress do
           {:ok, normalized()} | {:command, atom(), map()} | {:error, term()}
   def do_process(event, context) do
     with {:ok, event} <- Cranium.Ingress.Deduplicator.check(event, context),
-         {:ok, event} <- Cranium.Ingress.Transcriber.process(event, context),
          {:ok, event} <- Cranium.Ingress.ImageProcessor.process(event, context) do
       Cranium.Ingress.CommandDetector.process(event, context)
     end

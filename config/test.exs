@@ -8,7 +8,6 @@ config :cranium, Cranium.Store.Repo,
 
 # Use test backends
 config :cranium, :backends,
-  stt: Cranium.Backend.STT.Mock,
   tts: Cranium.Backend.TTS.Mock,
   llm: Cranium.Backend.LLM.Mock,
   tts_url: "http://localhost:9999/v1/audio/speech",
