@@ -50,36 +50,6 @@ defmodule Cranium.Transport.HTTP do
     model = conn.body_params["model"]
     ephemeral = conn.body_params["ephemeral"] == true
 
-    # Extract text — either directly or by transcribing audio
-    text =
-      case {conn.body_params["text"], conn.body_params["audio"]} do
-        {text, _} when is_binary(text) and text != "" ->
-          text
-
-        {_, %Plug.Upload{path: path}} ->
-          audio = File.read!(path)
-          stt = Application.get_env(:cranium, :backends)[:stt] || Cranium.Backend.STT.Whisper
-
-          case stt.transcribe(audio, []) do
-            {:ok, transcribed} ->
-              Logger.info("STT: transcribed #{byte_size(audio)} bytes", transport: :http)
-              "[Transcribed from audio]\n#{transcribed}"
-
-            {:error, reason} ->
-              Logger.error("STT failed: #{inspect(reason)}", transport: :http)
-              nil
-          end
-
-        _ ->
-          nil
-      end
-
-    # Get or start an epoch for this conversation
-    epoch_pid =
-      case Cranium.Epoch.start_or_get(conversation_id) do
-        {:ok, pid} -> pid
-      end
-
     # Generate a stream_id for manifest tracking
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
@@ -94,8 +64,12 @@ defmodule Cranium.Transport.HTTP do
         ephemeral: ephemeral
       })
 
-    message = %{
-      text: text,
+    # Audio path: publish segment to Events, let Transcoder + TranscriptionListener handle it
+    # Text path: dispatch to Epoch directly (unchanged)
+    text = conn.body_params["text"]
+    audio = conn.body_params["audio"]
+
+    legacy_meta = %{
       system: system,
       conversation_id: conversation_id,
       stream_id: stream_id,
@@ -106,59 +80,108 @@ defmodule Cranium.Transport.HTTP do
       dispatch: dispatch
     }
 
-    Logger.info(
-      "Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text || "", 0..80))}",
-      transport: :http
-    )
+    cond do
+      is_binary(text) and text != "" ->
+        do_submit_text(conn, text, legacy_meta)
 
-    # Check for commands before dispatching to inference
-    case text do
-      "!clear" ->
-        Cranium.Epoch.clear(epoch_pid, source: origin || "submit")
-        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
-        Cranium.Manifest.complete(stream_id)
+      match?(%Plug.Upload{}, audio) ->
+        audio_bytes = File.read!(audio.path)
 
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "clear"}))
-
-      "!cancel" ->
-        result = Cranium.Epoch.cancel(conversation_id)
-
-        Logger.info("Cancel result: #{inspect(result)}",
-          conversation_id: conversation_id,
+        Logger.info(
+          "Submit (audio): stream=#{stream_id} conversation=#{conversation_id} size=#{byte_size(audio_bytes)}",
           transport: :http
         )
 
-        Cranium.Manifest.complete(stream_id)
+        segment = %Cranium.Messages.Segment{
+          direction: :inbound,
+          audio: audio_bytes,
+          conversation_id: conversation_id,
+          legacy_metadata: legacy_meta
+        }
+
+        Cranium.Events.broadcast({:segment_received, segment})
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => stream_id, "command" => "cancel"}))
+        |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
+
+      true ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "missing text or audio"}))
+    end
+  end
+
+  defp do_submit_text(conn, text, meta) do
+    epoch_pid =
+      case Cranium.Epoch.start_or_get(meta.conversation_id) do
+        {:ok, pid} -> pid
+      end
+
+    message = %{
+      text: text,
+      system: meta.system,
+      conversation_id: meta.conversation_id,
+      stream_id: meta.stream_id,
+      disposition: meta.disposition,
+      origin: meta.origin,
+      model: meta.model,
+      ephemeral: meta.ephemeral,
+      dispatch: meta.dispatch
+    }
+
+    Logger.info(
+      "Submit: stream=#{meta.stream_id} conversation=#{meta.conversation_id} disposition=#{inspect(meta.disposition)} text=#{inspect(String.slice(text, 0..80))}",
+      transport: :http
+    )
+
+    case text do
+      "!clear" ->
+        Cranium.Epoch.clear(epoch_pid, source: meta.origin || "submit")
+        Logger.info("Cleared epoch", conversation_id: meta.conversation_id, transport: :http)
+        Cranium.Manifest.complete(meta.stream_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"stream_id" => meta.stream_id, "command" => "clear"}))
+
+      "!cancel" ->
+        result = Cranium.Epoch.cancel(meta.conversation_id)
+
+        Logger.info("Cancel result: #{inspect(result)}",
+          conversation_id: meta.conversation_id,
+          transport: :http
+        )
+
+        Cranium.Manifest.complete(meta.stream_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"stream_id" => meta.stream_id, "command" => "cancel"}))
 
       _ ->
-        # Run inference asynchronously
         Task.start(fn ->
           case Cranium.Epoch.submit(epoch_pid, message) do
             {:ok, _result} ->
-              Cranium.TTS.Cache.schedule_cleanup(stream_id)
+              Cranium.TTS.Cache.schedule_cleanup(meta.stream_id)
 
             {:error, :cancelled} ->
-              Logger.info("Submit cancelled: stream=#{stream_id}", transport: :http)
-              Cranium.Manifest.cancel(stream_id)
+              Logger.info("Submit cancelled: stream=#{meta.stream_id}", transport: :http)
+              Cranium.Manifest.cancel(meta.stream_id)
 
             {:error, reason} ->
-              Logger.error("Submit failed: stream=#{stream_id} reason=#{inspect(reason)}",
+              Logger.error(
+                "Submit failed: stream=#{meta.stream_id} reason=#{inspect(reason)}",
                 transport: :http
               )
 
-              Cranium.Manifest.complete(stream_id)
+              Cranium.Manifest.complete(meta.stream_id)
           end
         end)
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
+        |> send_resp(202, Jason.encode!(%{"stream_id" => meta.stream_id}))
     end
   end
 
@@ -309,49 +332,18 @@ defmodule Cranium.Transport.HTTP do
               transport: :http
             )
 
-            stt = Application.get_env(:cranium, :backends)[:stt] || Cranium.Backend.STT.Whisper
+            segment = %Cranium.Messages.Segment{
+              direction: :inbound,
+              audio: audio,
+              conversation_id: id,
+              legacy_metadata: %{take_id: id, seq: seq_int}
+            }
 
-            case stt.transcribe(audio, []) do
-              {:ok, text} ->
-                Logger.info(
-                  "Chunk STT: take=#{id} seq=#{seq_int} transcribed #{byte_size(audio)} bytes",
-                  transport: :http
-                )
+            Cranium.Events.broadcast({:segment_received, segment})
 
-                case Cranium.Input.TakeRegistry.put_chunk(id, seq_int, text) do
-                  {:ok, :buffered} ->
-                    conn
-                    |> put_resp_content_type("application/json")
-                    |> send_resp(200, Jason.encode!(%{"status" => "buffered"}))
-
-                  {:ok, :complete, result} ->
-                    trigger_text_inference(result, id)
-
-                    conn
-                    |> put_resp_content_type("application/json")
-                    |> send_resp(200, Jason.encode!(%{"status" => "complete"}))
-
-                  {:error, :not_found} ->
-                    conn
-                    |> put_resp_content_type("application/json")
-                    |> send_resp(404, Jason.encode!(%{"error" => "take not found"}))
-
-                  {:error, :already_complete} ->
-                    conn
-                    |> put_resp_content_type("application/json")
-                    |> send_resp(409, Jason.encode!(%{"error" => "take already complete"}))
-                end
-
-              {:error, reason} ->
-                Logger.error(
-                  "Chunk STT failed: take=#{id} seq=#{seq_int} reason=#{inspect(reason)}",
-                  transport: :http
-                )
-
-                conn
-                |> put_resp_content_type("application/json")
-                |> send_resp(502, Jason.encode!(%{"error" => "transcription failed"}))
-            end
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(202, Jason.encode!(%{"status" => "accepted"}))
 
           _ ->
             conn
