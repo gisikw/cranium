@@ -1,4 +1,4 @@
-defmodule Cranium.Transport.HTTPTest do
+defmodule Cranium.LegacyTransport.HTTPTest do
   use ExUnit.Case, async: false
 
   @moduletag :capture_log

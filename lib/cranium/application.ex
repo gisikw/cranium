@@ -66,11 +66,14 @@ defmodule Cranium.Application do
       {Registry, keys: :unique, name: Cranium.Epoch.Registry},
       {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one},
 
-      # HTTP transport
+      # HTTP transport (Bandit doesn't depend on Events, so it can start early)
       {Bandit, plug: Cranium.LegacyTransport.HTTP, port: http_port()},
 
       # Revised Hierarchy
       Cranium.Events,
+
+      # Legacy transport bridge (must start after Events)
+      Cranium.LegacyTransport,
       Cranium.Transport,
       Cranium.Media,
       Cranium.Persistence,
