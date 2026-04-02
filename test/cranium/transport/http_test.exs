@@ -5,7 +5,7 @@ defmodule Cranium.Transport.HTTPTest do
 
   import Mox
 
-  alias Cranium.Transport.HTTP
+  alias Cranium.LegacyTransport.HTTP
   alias Cranium.Manifest
   alias Cranium.TTS.Cache
 

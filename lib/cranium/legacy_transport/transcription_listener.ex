@@ -1,4 +1,4 @@
-defmodule Cranium.Transport.TranscriptionListener do
+defmodule Cranium.LegacyTransport.TranscriptionListener do
   @moduledoc """
   Temporary bridge: listens for transcription_complete events from the new
   Cranium.Media.Transcoder actor and dispatches to the legacy Epoch pipeline.

@@ -1,4 +1,4 @@
-defmodule Cranium.Transport do
+defmodule Cranium.LegacyTransport do
   use Supervisor
 
   def start_link(opts) do
@@ -7,7 +7,9 @@ defmodule Cranium.Transport do
 
   @impl true
   def init(_opts) do
-    children = [ ]
+    children = [
+      Cranium.LegacyTransport.TranscriptionListener
+    ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end

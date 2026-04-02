@@ -1,4 +1,4 @@
-defmodule Cranium.Transport.HTTP do
+defmodule Cranium.LegacyTransport.HTTP do
   @moduledoc """
   HTTP transport for cranium v2.
 
