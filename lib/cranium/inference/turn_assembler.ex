@@ -20,7 +20,7 @@ defmodule Cranium.Inference.TurnAssembler do
 
   alias Cranium.Messages.{PassHeader, TextInput, TakeComplete}
 
-  @stale_timeout_ms :timer.minutes(5)
+  @stale_timeout_ms :timer.minutes(20)
   @sweep_interval_ms :timer.minutes(1)
 
   def start_link(opts) do

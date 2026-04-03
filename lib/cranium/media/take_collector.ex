@@ -17,7 +17,7 @@ defmodule Cranium.Media.TakeCollector do
 
   alias Cranium.Messages.{Transcription, TakeComplete}
 
-  @stale_timeout_ms :timer.minutes(5)
+  @stale_timeout_ms :timer.minutes(20)
   @sweep_interval_ms :timer.minutes(1)
 
   defmodule TakeState do

@@ -2,18 +2,15 @@ defmodule Cranium.Inference.SystemPrompt do
   @moduledoc """
   System prompt provider.
 
-  Assembles the system prompt from an identity document and (on fresh epochs)
-  the handoff from the previous epoch. Caches the identity document on init
-  so it's read from disk once, not per pass.
+  Assembles the system prompt from an identity document and the handoff from
+  the previous epoch. Caches identity on init (read from disk once) and
+  caches the resolved handoff per-conversation so the system prompt is
+  **stable across all turns** in an epoch.
 
-  ## Contribute
-
-  `contribute/2` returns the assembled system prompt string. Options:
-
-  - `:is_fresh` — whether this is the first turn of the epoch. When true,
-    appends the previous epoch's handoff as a `<room-handoff>` block.
-  - `:identity` — optional identity override (e.g., from transport). When
-    provided, replaces the cached identity document for this call only.
+  Cache lifecycle: on `is_fresh`, any existing cache for that conversation is
+  invalidated and re-resolved. On subsequent turns, the cached value is
+  returned. A cached `:none` means "looked it up, nothing there" — avoids
+  repeated DB/disk reads for conversations with no handoff.
   """
 
   use GenServer
@@ -28,7 +25,7 @@ defmodule Cranium.Inference.SystemPrompt do
 
   ## Options
 
-  - `:is_fresh` — boolean, whether this is the first turn (triggers handoff inclusion)
+  - `:is_fresh` — boolean, whether this is the first turn (invalidates + re-resolves handoff cache)
   - `:identity` — optional override string (replaces cached identity for this call)
   """
   @spec contribute(String.t(), keyword()) :: String.t()
@@ -40,7 +37,7 @@ defmodule Cranium.Inference.SystemPrompt do
 
   @impl true
   def init(_opts) do
-    {:ok, %{identity: ""}, {:continue, :load_identity}}
+    {:ok, %{identity: "", handoffs: %{}}, {:continue, :load_identity}}
   end
 
   @impl true
@@ -60,9 +57,26 @@ defmodule Cranium.Inference.SystemPrompt do
         _ -> state.identity
       end
 
-    handoff =
+    # is_fresh means new epoch — invalidate any stale cache before lookup
+    handoffs =
       if is_fresh do
-        resolve_handoff(conversation_id)
+        Map.delete(state.handoffs, conversation_id)
+      else
+        state.handoffs
+      end
+
+    {handoff, handoffs} =
+      case Map.get(handoffs, conversation_id) do
+        nil ->
+          content = resolve_handoff(conversation_id)
+          cached = content || :none
+          {content, Map.put(handoffs, conversation_id, cached)}
+
+        :none ->
+          {nil, handoffs}
+
+        cached ->
+          {cached, handoffs}
       end
 
     system_prompt =
@@ -71,7 +85,7 @@ defmodule Cranium.Inference.SystemPrompt do
         content -> identity <> "\n\n<room-handoff>\n" <> content <> "\n</room-handoff>"
       end
 
-    {:reply, system_prompt, state}
+    {:reply, system_prompt, %{state | handoffs: handoffs}}
   end
 
   # --- Private ---

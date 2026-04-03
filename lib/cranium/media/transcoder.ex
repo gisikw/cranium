@@ -19,7 +19,7 @@ defmodule Cranium.Media.Transcoder do
 
   @impl true
   def handle_info(:sweep, %{stt_cache: stt_cache} = state) do
-    cutoff = System.monotonic_time(:second) - 300
+    cutoff = System.monotonic_time(:second) - 1200
     :ets.select_delete(stt_cache, [{{:_, :_, :"$1"}, [{:<, :"$1", cutoff}], [true]}])
     schedule_sweep()
     {:noreply, state}
