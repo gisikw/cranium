@@ -24,6 +24,13 @@ defmodule Cranium.Inference.HarnessTest do
     :ok
   end
 
+  # Flush Persistence.Effects mailbox to ensure async Store mutations complete.
+  # GenServer messages are ordered: if pass_complete is in the mailbox before
+  # :flush, the flush response guarantees mutations are done.
+  defp flush_effects do
+    GenServer.call(Cranium.Persistence.Effects, :flush)
+  end
+
   describe "compute_saturation/1" do
     test "returns 0.0 for zero tokens" do
       assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 0}) == 0.0
@@ -79,17 +86,21 @@ defmodule Cranium.Inference.HarnessTest do
       Cranium.Events.broadcast({:pass_header, header})
       Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}})
 
-      # Wait for pass_complete
+      # Wait for pass_complete (enriched payload from Harness)
       assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 1, reason: :complete}}, 5000
       assert sat == 0.5
 
-      # Verify Store was updated
+      # Flush Effects to ensure async Store mutations complete
+      flush_effects()
+
+      # Verify Store was updated (by Persistence.Effects)
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
       assert epoch.saturation == 0.5
       assert epoch.turn_count == 1
       assert epoch.status == "active"
 
-      # Verify user message was persisted
+      # Verify user message was persisted (by TurnAssembler)
+      # and assistant message was persisted (by Persistence.Effects)
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
       assert length(messages) >= 2
       assert Enum.any?(messages, fn m -> m.role == :user end)
@@ -145,7 +156,10 @@ defmodule Cranium.Inference.HarnessTest do
       # Wait for pass_complete with cancelled reason
       assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{reason: :cancelled}}, 5000
 
-      # Verify interrupted_context was stored
+      # Flush Effects to ensure async Store mutations complete
+      flush_effects()
+
+      # Verify interrupted_context was stored (by Persistence.Effects)
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
       assert epoch.interrupted_context == "partial output"
     end
@@ -194,6 +208,9 @@ defmodule Cranium.Inference.HarnessTest do
       # Both passes should complete (second queued, dispatched after first)
       assert_receive {:pass_complete, ^conversation_id, _, %{reason: :complete}}, 5000
       assert_receive {:pass_complete, ^conversation_id, _, %{reason: :complete}}, 5000
+
+      # Flush Effects to ensure async Store mutations complete
+      flush_effects()
 
       # Verify two turns were counted
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)

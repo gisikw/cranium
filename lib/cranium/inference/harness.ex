@@ -3,7 +3,8 @@ defmodule Cranium.Inference.Harness do
   Per-conversation inference executor.
 
   Receives assembled turns from TurnAssembler, manages the Agent process
-  lifecycle, and emits pass_complete/pass_cancelled events.
+  lifecycle, and emits pass_complete events. Post-inference state
+  mutations and backpressure signaling are handled by Persistence.Effects.
 
   ## Cancel
 
@@ -12,11 +13,11 @@ defmodule Cranium.Inference.Harness do
   agent PID in ConversationRegistry. The Agent's receive loop handles
   the cancel cast and returns {:error, :cancelled, partial}.
 
-  ## Temporary Bookkeeping
+  ## Bridge Calls
 
-  Post-inference Store mutations (persist assistant message, compute
-  saturation, update cc_session_id, etc.) live here temporarily.
-  Phase 4 will extract them to a Persistence/Effects subscriber.
+  Manifest and TTS.Cache calls remain here as bridges until Transport
+  and Media actors are built (Phase 5+). These are notification calls,
+  not state mutations.
   """
 
   use GenServer
@@ -117,11 +118,9 @@ defmodule Cranium.Inference.Harness do
     # Stop the Agent process (single-use)
     GenServer.stop(agent_pid, :normal, 5_000)
 
-    # --- Temporary bookkeeping (moves to Effects in Phase 4) ---
+    # Emit pass events and handle bridge calls.
+    # Store mutations + pass_done are handled by Persistence.Effects.
     handle_inference_result(result, turn, state)
-
-    # Signal backpressure release to TurnAssembler
-    signal_pass_done(cid, stream_id)
 
     {:noreply, state}
   end
@@ -129,46 +128,30 @@ defmodule Cranium.Inference.Harness do
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # --- Post-inference bookkeeping ---
+  # --- Post-inference: emit events + bridge calls ---
 
   defp handle_inference_result({:ok, %{output: output, usage: usage} = agent_result}, turn, _state) do
     cid = turn.conversation_id
-    epoch_id = turn.epoch_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
-
-    # Persist assistant response
-    unless ephemeral do
-      if output != "" do
-        Cranium.Store.append_message(cid, epoch_id, %{
-          role: :assistant,
-          content: output
-        })
-      end
-    end
 
     saturation = compute_saturation(usage)
     new_count = (turn[:turn_count] || 0) + 1
     cc_session_id = agent_result[:cc_session_id] || turn[:cc_session_id]
 
-    unless ephemeral do
-      # Generate cross-conversation summary every N turns
-      summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
-
-      if summary_interval > 0 and rem(new_count, summary_interval) == 0 do
-        Cranium.Effects.generate_summary(cid, cc_session_id)
-      end
-
-      Cranium.Store.update_epoch(epoch_id, %{
-        status: "active",
+    # Emit pass_complete — Persistence.Effects handles Store mutations + pass_done
+    Cranium.Event.broadcast(stream_id, cid,
+      {:pass_complete, cid, stream_id, %{
+        reason: :complete,
+        epoch_id: turn.epoch_id,
+        output: output,
         saturation: saturation,
         turn_count: new_count,
         cc_session_id: cc_session_id,
-        interrupted_context: nil
-      })
-    end
+        ephemeral: ephemeral
+      }})
 
-    # Push saturation to manifest
+    # Bridge: push saturation to manifest
     if agent_stream_id = agent_result[:stream_id] do
       Cranium.Manifest.set_metadata(agent_stream_id, %{
         "saturation" => Float.round(saturation, 3),
@@ -176,90 +159,49 @@ defmodule Cranium.Inference.Harness do
       })
     end
 
-    # Emit pass_complete for firehose
-    unless ephemeral do
-      Cranium.Event.broadcast(stream_id, cid,
-        {:pass_complete, cid, stream_id, %{
-          saturation: saturation,
-          turn_count: new_count,
-          reason: :complete
-        }})
-    end
-
-    # TTS cache cleanup
+    # Bridge: TTS cache cleanup
     Cranium.TTS.Cache.schedule_cleanup(stream_id)
   end
 
   defp handle_inference_result({:error, :cancelled, partial}, turn, _state) do
     cid = turn.conversation_id
-    epoch_id = turn.epoch_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
     output = partial[:output] || ""
-
-    # Persist partial assistant response so history isn't gapped
-    unless ephemeral do
-      if output != "" do
-        Cranium.Store.append_message(cid, epoch_id, %{
-          role: :assistant,
-          content: output
-        })
-      end
-    end
-
-    # Truncate for context injection (matching v1's 2000 char limit)
-    interrupted =
-      if not ephemeral and output != "" do
-        if String.length(output) > 2000,
-          do: String.slice(output, 0, 2000) <> "\n\n[...output truncated...]",
-          else: output
-      end
-
     cc_session_id = partial[:cc_session_id] || turn[:cc_session_id]
 
-    unless ephemeral do
-      Cranium.Store.update_epoch(epoch_id, %{
-        status: "active",
+    # Emit pass_complete (cancelled) — Persistence.Effects handles Store mutations + pass_done
+    Cranium.Event.broadcast(stream_id, cid,
+      {:pass_complete, cid, stream_id, %{
+        reason: :cancelled,
+        epoch_id: turn.epoch_id,
+        output: output,
         cc_session_id: cc_session_id,
-        interrupted_context: interrupted
-      })
-    end
+        ephemeral: ephemeral
+      }})
 
-    unless ephemeral do
-      Cranium.Event.broadcast(stream_id, cid,
-        {:pass_complete, cid, stream_id, %{reason: :cancelled}})
-    end
-
-    # Manifest cancel
+    # Bridge: manifest cancel
     Cranium.Manifest.cancel(stream_id)
   end
 
   defp handle_inference_result({:error, _reason}, turn, _state) do
     cid = turn.conversation_id
-    epoch_id = turn.epoch_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
 
-    unless ephemeral do
-      Cranium.Store.update_epoch(epoch_id, %{status: "active"})
-    end
+    # Emit pass_complete (error) — Persistence.Effects handles Store mutations + pass_done
+    Cranium.Event.broadcast(stream_id, cid,
+      {:pass_complete, cid, stream_id, %{
+        reason: :error,
+        epoch_id: turn.epoch_id,
+        ephemeral: ephemeral
+      }})
 
-    unless ephemeral do
-      Cranium.Event.broadcast(stream_id, cid,
-        {:pass_complete, cid, stream_id, %{reason: :error}})
-    end
-
+    # Bridge: manifest complete
     Cranium.Manifest.complete(stream_id)
   end
 
   # --- Helpers ---
-
-  defp signal_pass_done(conversation_id, stream_id) do
-    case Registry.lookup(@registry, {conversation_id, :turn_assembler}) do
-      [{pid, _}] -> send(pid, {:pass_done, stream_id})
-      [] -> :ok
-    end
-  end
 
   @doc false
   def compute_saturation(usage) do
@@ -274,5 +216,4 @@ defmodule Cranium.Inference.Harness do
 
     min(total / max_context_tokens, 1.0)
   end
-
 end
