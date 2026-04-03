@@ -9,7 +9,8 @@ defmodule Cranium.Media do
   def init(_opts) do
     children = [
       Cranium.Media.Storage,
-      Cranium.Media.Transcoder
+      Cranium.Media.Transcoder,
+      Cranium.Media.TakeCollector
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

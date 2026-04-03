@@ -1,7 +1,7 @@
 defmodule Cranium.Inference.TurnAssembler do
   @moduledoc """
-  Correlates PassHeaders with content (TextInput or single-segment
-  transcriptions) and dispatches assembled turns to the Epoch pipeline.
+  Correlates PassHeaders with content (TextInput or TakeComplete) and
+  dispatches assembled turns to the Epoch pipeline.
 
   For each pass, Transport emits a PassHeader (routing metadata) and a
   content message (TextInput for text, segment_received for audio).
@@ -10,17 +10,15 @@ defmodule Cranium.Inference.TurnAssembler do
 
   Media uses take_id; Inference uses pass_id. For audio passes,
   PassHeader carries both and TurnAssembler maintains a take_id → pass_id
-  index for correlation.
-
-  The chunked audio path (multi-segment takes) is still handled by
-  TranscriptionListener + TakeRegistry. TurnAssembler ignores
-  transcriptions that carry a seq (chunked segments).
+  index for correlation. TakeCollector (Media) handles both single-segment
+  and multi-segment transcription assembly, emitting take_complete events
+  that TurnAssembler correlates with PassHeaders.
   """
 
   use GenServer
   require Logger
 
-  alias Cranium.Messages.{PassHeader, TextInput, Transcription}
+  alias Cranium.Messages.{PassHeader, TextInput, TakeComplete}
 
   @stale_timeout_ms :timer.minutes(5)
   @sweep_interval_ms :timer.minutes(1)
@@ -63,22 +61,22 @@ defmodule Cranium.Inference.TurnAssembler do
     {:noreply, maybe_dispatch(state, pass_id)}
   end
 
-  # --- Single-segment transcription (submit audio path, no seq) ---
+  # --- TakeComplete (audio path — both single-segment and chunked) ---
 
   @impl true
   def handle_info(
-        {:transcription_complete, %Transcription{seq: nil, take_id: take_id} = t},
+        {:take_complete, %TakeComplete{take_id: take_id} = tc},
         state
       )
       when not is_nil(take_id) do
     case Map.get(state.take_index, take_id) do
       nil ->
-        Logger.warning("TurnAssembler: transcription for unknown take=#{take_id}")
+        Logger.warning("TurnAssembler: take_complete for unknown take=#{take_id}")
         {:noreply, state}
 
       pass_id ->
-        Logger.debug("TurnAssembler: transcription received take=#{take_id} pass=#{pass_id}")
-        state = put_field(state, pass_id, :input, t)
+        Logger.debug("TurnAssembler: take_complete received take=#{take_id} pass=#{pass_id}")
+        state = put_field(state, pass_id, :input, tc)
         {:noreply, maybe_dispatch(state, pass_id)}
     end
   end
@@ -145,7 +143,7 @@ defmodule Cranium.Inference.TurnAssembler do
     text =
       case input do
         %TextInput{text: text} -> text
-        %Transcription{text: text} -> "[Transcribed from audio]\n#{text}"
+        %TakeComplete{text: text} -> "[Transcribed from audio]\n#{text}"
       end
 
     Logger.info(

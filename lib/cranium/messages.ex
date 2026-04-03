@@ -38,4 +38,16 @@ defmodule Cranium.Messages do
     defstruct [:text, :failure, :take_id, :seq]
   end
 
+  defmodule TakeComplete do
+    @moduledoc """
+    Assembled transcription for a complete take, emitted by TakeCollector.
+
+    For single-segment audio (seq: nil), emitted immediately after transcription.
+    For multi-segment takes, emitted after all chunks are transcribed and the
+    take is sealed.
+    """
+    @enforce_keys [:take_id, :text]
+    defstruct [:take_id, :text]
+  end
+
 end

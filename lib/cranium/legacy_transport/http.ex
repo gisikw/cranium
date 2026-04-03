@@ -281,6 +281,18 @@ defmodule Cranium.LegacyTransport.HTTP do
     :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
     Cranium.Manifest.stamp(stream_id, :submitted)
 
+    # Bridge: emit PassHeader so TurnAssembler can correlate chunked takes
+    header = %Cranium.Messages.PassHeader{
+      pass_id: take_id,
+      conversation_id: conversation_id,
+      stream_id: stream_id,
+      take_id: take_id,
+      disposition: disposition,
+      origin: origin
+    }
+
+    Cranium.Events.broadcast({:pass_header, header})
+
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, Jason.encode!(%{"take_id" => take_id, "stream_id" => stream_id}))
@@ -326,10 +338,11 @@ defmodule Cranium.LegacyTransport.HTTP do
   post "/v1/input/:id/done" do
     case conn.body_params["last_seq"] do
       last_seq when is_integer(last_seq) ->
-        case Cranium.Input.TakeRegistry.seal(id, last_seq) do
-          {:ok, :complete, result} ->
-            trigger_text_inference(result, id)
+        # Broadcast seal for TakeCollector (completion dispatch now via actors)
+        Cranium.Events.broadcast({:take_sealed, id, last_seq})
 
+        case Cranium.Input.TakeRegistry.seal(id, last_seq) do
+          {:ok, :complete, _result} ->
             conn
             |> put_resp_content_type("application/json")
             |> send_resp(200, Jason.encode!(%{"missing" => []}))
@@ -606,45 +619,6 @@ defmodule Cranium.LegacyTransport.HTTP do
 
   defp sse_event(event_type, data) do
     "event: #{event_type}\ndata: #{Jason.encode!(data)}\n\n"
-  end
-
-  defp trigger_text_inference(result, take_id) do
-    Task.start(fn ->
-      content_key = result.disposition |> List.first("text") |> String.to_atom()
-      raw_text = Map.fetch!(result, content_key)
-      text = if content_key == :audio, do: "[Transcribed from audio]\n#{raw_text}", else: raw_text
-
-      Logger.info("Input complete: take=#{take_id} text=#{inspect(String.slice(text, 0..80))}",
-        transport: :http
-      )
-
-      case Cranium.Epoch.start_or_get(result.conversation_id) do
-        {:ok, epoch_pid} ->
-          message = %{
-            text: text,
-            conversation_id: result.conversation_id,
-            stream_id: result.stream_id,
-            disposition: result.disposition,
-            origin: result.origin
-          }
-
-          case Cranium.Epoch.submit(epoch_pid, message) do
-            {:ok, _} ->
-              Cranium.TTS.Cache.schedule_cleanup(result.stream_id)
-
-            {:error, :cancelled} ->
-              Logger.info("Input submit cancelled: take=#{take_id}", transport: :http)
-              Cranium.Manifest.cancel(result.stream_id)
-
-            {:error, reason} ->
-              Logger.error("Input submit failed: take=#{take_id} reason=#{inspect(reason)}",
-                transport: :http
-              )
-
-              Cranium.Manifest.complete(result.stream_id)
-          end
-      end
-    end)
   end
 
   defp parse_disposition(list) when is_list(list), do: list
