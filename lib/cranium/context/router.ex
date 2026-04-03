@@ -1,40 +1,10 @@
 defmodule Cranium.Context.Router do
   @moduledoc """
-  Maps conversations to working directories and project context.
+  Routing utilities for mapping conversations to project directories.
 
-  Given a conversation name (e.g., "nerve"), checks if a matching directory
-  exists under the configured projects path. If so, the epoch runs in that
-  directory, giving the agent access to project-specific files,
-  INVARIANTS.md, etc.
-
-  Also determines whether this is a fresh epoch or a resumed one,
-  which affects downstream context assembly.
+  Pure functions used by Epoch, HandoffWriter, and ConversationSummarizer.
+  Will move to Transport when Transport actors exist.
   """
-
-  @spec process(map(), map()) :: {:ok, map()}
-  def process(message, context) do
-    conversation_id = message.conversation_id
-    projects_dir = Map.get(context, :projects_dir, "~/Projects")
-
-    working_dir = resolve_project_dir(conversation_id, projects_dir)
-    epoch_state = Cranium.Store.get_epoch(conversation_id)
-
-    is_fresh =
-      case epoch_state do
-        :not_found -> true
-        {:ok, %{turn_count: 0}} -> true
-        _ -> false
-      end
-
-    enriched =
-      Map.merge(message, %{
-        working_dir: working_dir,
-        epoch_state: epoch_state,
-        is_fresh: is_fresh
-      })
-
-    {:ok, enriched}
-  end
 
   @doc """
   Resolve a conversation name to a project directory, if one exists.

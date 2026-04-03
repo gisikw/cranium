@@ -8,7 +8,7 @@ defmodule Cranium.Inference do
   @impl true
   def init(_opts) do
     children = [
-      Cranium.Inference.TurnAssembler,
+      Cranium.Inference.TurnAssembly,
       Cranium.Inference.Harness
     ]
 

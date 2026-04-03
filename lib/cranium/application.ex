@@ -10,7 +10,6 @@ defmodule Cranium.Application do
       ├── Cranium.TTS.Cache            # Ephemeral TTS audio buffer
       ├── Cranium.Context.Landscape   # Cross-conversation summary cache
       ├── Cranium.Ingress             # Input processing stage
-      ├── Cranium.Context             # Context assembly stage
       ├── Cranium.Egress              # Output processing stage
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
       ├── Cranium.Epoch.Registry      # One-epoch-per-conversation enforcement
@@ -54,9 +53,8 @@ defmodule Cranium.Application do
       # Stream event registry (duplicate-key Registry for pub/sub fanout)
       {Registry, keys: :duplicate, name: Cranium.StreamRegistry},
 
-      # Pipeline stages
+      # Pipeline stages (legacy — Ingress and Egress to be dissolved into actors)
       Cranium.Ingress,
-      Cranium.Context,
       Cranium.Egress,
 
       # Async effects (handoffs, summaries)

@@ -219,23 +219,30 @@ defmodule Cranium.Epoch do
         end
       end
 
-    # 1. Assemble context via full pipeline (Router → PromptBuilder → TurnInjector → HistoryManager)
-    #    Note: persist AFTER assembly so HistoryManager doesn't fetch the current
-    #    message from history (it appends the enriched version with system-reminders).
-    normalized = %{
-      conversation_id: state.conversation_id,
+    # 1. Resolve routing context (was Context.Router)
+    projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
+    working_dir = Cranium.Context.Router.resolve_project_dir(state.conversation_id, projects_dir)
+    is_fresh = state.turn_count == 0
+
+    # 2. System prompt (was Context.PromptBuilder)
+    system_prompt =
+      Cranium.Inference.SystemPrompt.contribute(
+        state.conversation_id,
+        is_fresh: is_fresh,
+        identity: msg_map[:system]
+      )
+
+    # 3. Turn injections (was Context.TurnInjector via Context.process)
+    #    Note: persist AFTER injection so History doesn't fetch the current
+    #    message (it appends the enriched version with system-reminders).
+    injection_message = %{
       text: text,
-      attachments: Map.get(msg_map, :attachments, [])
+      conversation_id: state.conversation_id,
+      is_fresh: is_fresh
     }
 
-    pipeline_ctx = %{
-      identity: msg_map[:system],
-      projects_dir: Application.get_env(:cranium, :projects_dir, "~/Projects"),
-      mode: Map.get(msg_map, :mode, :text),
-      history_window: 50,
+    injection_ctx = %{
       now: DateTime.utc_now(),
-      epoch_id: state.epoch_id,
-      dispatch: dispatch,
       epoch: %{
         last_invoked_at: last_invoked_at,
         saturation: state.saturation * 100,
@@ -245,24 +252,25 @@ defmodule Cranium.Epoch do
       }
     }
 
-    {:ok, enriched} = Cranium.Context.process(normalized, pipeline_ctx)
+    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
+
     stream_id = msg_map[:stream_id] || state.stream_id
     Cranium.Manifest.stamp(stream_id, :context_assembled)
 
     # Track landscape injection for delta filtering on subsequent idle returns
     state =
-      if enriched[:landscape_injected],
+      if injected[:landscape_injected],
         do: %{state | last_landscape_at: DateTime.utc_now()},
         else: state
 
     # Only advance reminder bucket when a saturation warning was actually injected
     state =
-      if enriched[:saturation_warned_bucket],
-        do: %{state | last_reminder_bucket: enriched[:saturation_warned_bucket]},
+      if injected[:saturation_warned_bucket],
+        do: %{state | last_reminder_bucket: injected[:saturation_warned_bucket]},
         else: state
 
-    # 2. Persist enriched user message (includes system-reminders from TurnInjector)
-    enriched_text = enriched[:text] || text
+    # 4. Persist enriched user message (includes system-reminders from TurnInjector)
+    enriched_text = injected[:text] || text
 
     unless ephemeral do
       Cranium.Store.append_message(state.conversation_id, state.epoch_id, %{
@@ -272,16 +280,26 @@ defmodule Cranium.Epoch do
       })
     end
 
-    # 3. Map pipeline output to Agent context
+    # 5. History (was Context.HistoryManager)
+    messages =
+      Cranium.Inference.History.contribute(
+        state.conversation_id,
+        epoch_id: state.epoch_id,
+        window: 50,
+        text: enriched_text,
+        attachments: Map.get(msg_map, :attachments, [])
+      )
+
+    # 6. Build Agent context
     context = %{
-      system: enriched[:system_prompt],
-      messages: enriched[:messages],
+      system: system_prompt,
+      messages: messages,
       mode: Map.get(msg_map, :mode, :text),
       conversation_id: state.conversation_id,
       stream_id: msg_map[:stream_id] || state.stream_id,
       disposition: Map.get(msg_map, :disposition, ["text"]),
       cc_session_id: if(ephemeral, do: nil, else: state.cc_session_id),
-      working_dir: enriched[:working_dir] || Map.get(msg_map, :working_dir),
+      working_dir: working_dir || Map.get(msg_map, :working_dir),
       model: msg_map[:model],
       ephemeral: ephemeral
     }
