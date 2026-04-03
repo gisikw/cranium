@@ -16,11 +16,6 @@ defmodule Cranium.Inference.HarnessTest do
       DynamicSupervisor.terminate_child(Cranium.Inference.ConversationDynamicSupervisor, pid)
     end
 
-    # Clean up leftover Epoch processes
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Epoch.Supervisor) do
-      DynamicSupervisor.terminate_child(Cranium.Epoch.Supervisor, pid)
-    end
-
     :ok
   end
 

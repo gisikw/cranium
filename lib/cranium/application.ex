@@ -11,8 +11,6 @@ defmodule Cranium.Application do
       ├── Cranium.Context.Landscape   # Cross-conversation summary cache
       ├── Cranium.Ingress             # Input processing stage (legacy)
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
-      ├── Cranium.Epoch.Registry      # One-epoch-per-conversation enforcement
-      ├── Cranium.Epoch.Supervisor    # Per-conversation epoch processes
       ├── Cranium.Events              # Registry-based pub/sub
       ├── Cranium.Transport           # Wire protocol actors
       ├── Cranium.Media               # Media processing actors
@@ -32,9 +30,9 @@ defmodule Cranium.Application do
                   ├── TurnAssembler
                   └── Harness
 
-  Agent processes are started per-epoch (inside Epoch), not as top-level
-  children. Transports (Matrix, Hearth) will be added as children once
-  implemented.
+  Agent processes are started per-conversation (inside Harness), not as
+  top-level children. Transports (Matrix, Hearth) will be added as
+  children once implemented.
   """
 
   use Application
@@ -75,10 +73,6 @@ defmodule Cranium.Application do
 
       # Async effects (handoffs, summaries)
       {Task.Supervisor, name: Cranium.Effects.Supervisor},
-
-      # Epoch management
-      {Registry, keys: :unique, name: Cranium.Epoch.Registry},
-      {DynamicSupervisor, name: Cranium.Epoch.Supervisor, strategy: :one_for_one},
 
       # HTTP transport (Bandit doesn't depend on Events, so it can start early)
       {Bandit, plug: Cranium.LegacyTransport.HTTP, port: http_port()},

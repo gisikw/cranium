@@ -16,7 +16,7 @@ These terms are settled and used consistently throughout the codebase.
 | Term | Definition | Elixir module | Identifier |
 |------|-----------|---------------|------------|
 | **Conversation** | Persistent, named, indefinite interaction context. "nerve", "hearth", "personal-chat". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
-| **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. | `Cranium.Epoch` | `epoch_id` |
+| **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. Persisted in Store, no dedicated GenServer. | `Cranium.Store.Epoch` (schema) | `epoch_id` |
 | **Pass** | A single trip through the pipeline. One user message in, one assistant response out (may include multiple turns internally, but from the pipeline's perspective it's one pass). | — (pipeline traversal) | `stream_id` |
 | **Dispatch** | Per-pass routing annotation stamped at ingest. Carries harness, model, renditions, and ephemeral flag. Providers receive the dispatch and key their caches on it. | `Cranium.Dispatch` | — |
 | **Turn** | A single dispatch to the model within a pass. A pass with tool calls contains multiple turns (send context → get response → execute tool → re-send). | — (within Agent loop) | — |
@@ -161,21 +161,20 @@ This design anticipates:
 - LLM backends that support streaming prefill (vLLM)
 - SSE from the Anthropic API, enabling output processing before inference completes
 
-### Epoch Coordination
+### Epoch Lifecycle
 
-Each conversation has at most one active epoch at a time, enforced by
-`Cranium.Epoch.Registry` (an Elixir `Registry` with unique keys).
+Each conversation has at most one active epoch at a time, tracked in Store.
+Epoch state (saturation, turn count, cc_session_id) is persisted in the
+database — there is no dedicated Epoch GenServer.
 
-An `Epoch` process coordinates the pipeline for a single pass:
+Per-conversation infrastructure (TurnAssembler + Harness) is started on
+demand under `ConversationDynamicSupervisor`. TurnAssembler assembles
+context, Harness runs inference, and `Persistence.Effects` handles
+post-inference state mutations.
 
-1. Ingress normalizes the incoming message
-2. Context assembles the full inference payload
-3. Agent runs inference (streaming)
-4. Egress transforms and delivers output
-5. Effects trigger as appropriate (handoffs, summaries)
-6. Store is updated throughout
-
-Epochs are spawned by transports and supervised by a `DynamicSupervisor`.
+Epoch clearing (`!clear`) is handled directly by `Cranium.clear_epoch/1`:
+cancel active inference, mark the old epoch as cleared, generate a handoff
+document (async), and create a fresh epoch.
 
 ### Backend Swappability
 
@@ -514,8 +513,6 @@ lib/
   cranium/
     application.ex                 # OTP supervision tree
     stage.ex                       # Stage behaviour (shared streaming interface)
-
-    epoch.ex                       # Per-conversation epoch coordinator
 
     ingress.ex                     # Input processing stage
     ingress/

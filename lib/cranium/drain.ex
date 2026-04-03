@@ -68,22 +68,13 @@ defmodule Cranium.Drain do
 
   # --- Internals ---
 
+  # An active inference is signaled by a {conversation_id, :agent} key
+  # in ConversationRegistry — Harness registers this during inference
+  # and unregisters after completion.
   defp active_round_count do
-    Cranium.Epoch.Supervisor
-    |> DynamicSupervisor.which_children()
-    |> Enum.count(fn {_, pid, _, _} ->
-      is_pid(pid) && epoch_busy?(pid)
-    end)
-  end
-
-  defp epoch_busy?(pid) do
-    try do
-      case GenServer.call(pid, :get_status, 1_000) do
-        %{status: status} when status in [:processing, :inferring] -> true
-        _ -> false
-      end
-    catch
-      :exit, _ -> false
-    end
+    Registry.select(Cranium.Inference.ConversationRegistry, [
+      {{:"$1", :_, :_}, [{:is_tuple, :"$1"}, {:==, {:element, 2, :"$1"}, :agent}], [true]}
+    ])
+    |> length()
   end
 end

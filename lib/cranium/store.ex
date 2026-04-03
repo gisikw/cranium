@@ -180,7 +180,7 @@ defmodule Cranium.Store do
   defp do_handle_call({:get_epoch, conversation_id}, _from, state) do
     result =
       from(e in Epoch,
-        where: e.conversation_id == ^conversation_id,
+        where: e.conversation_id == ^conversation_id and e.status != "cleared",
         order_by: [desc: e.inserted_at],
         limit: 1
       )

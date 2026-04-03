@@ -117,10 +117,7 @@ defmodule Cranium.LegacyTransport.HTTP do
 
     case text do
       "!clear" ->
-        case Cranium.Epoch.start_or_get(header.conversation_id) do
-          {:ok, pid} ->
-            Cranium.Epoch.clear(pid, source: header.origin || "submit")
-        end
+        Cranium.clear_epoch(header.conversation_id, source: header.origin || "submit")
 
         Logger.info("Cleared epoch", conversation_id: header.conversation_id, transport: :http)
         Cranium.Manifest.complete(header.stream_id)
@@ -386,11 +383,11 @@ defmodule Cranium.LegacyTransport.HTTP do
 
     # Check if a handoff is currently being generated (Registry auto-clears on Task exit)
     handoff_generating =
-      Registry.lookup(Cranium.Epoch.Registry, {conversation_id, :handoff}) != []
+      Registry.lookup(Cranium.Inference.ConversationRegistry, {conversation_id, :handoff}) != []
 
-    # Check if an Epoch process is alive for this conversation
+    # Check if a per-conversation supervisor is alive
     has_process =
-      case Cranium.Epoch.lookup(conversation_id) do
+      case Cranium.Inference.Conversation.lookup(conversation_id) do
         {:ok, _pid} -> true
         :not_found -> false
       end
@@ -421,28 +418,12 @@ defmodule Cranium.LegacyTransport.HTTP do
   post "/v1/clear" do
     conversation_id = conn.body_params["conversation_id"] || "default"
 
-    case Cranium.Epoch.start_or_get(conversation_id) do
-      {:ok, pid} ->
-        # Cancel any in-flight inference first so the Epoch GenServer unblocks.
-        # Without this, clear times out if the GenServer is blocked in a submit.
-        Cranium.cancel(conversation_id)
+    Cranium.clear_epoch(conversation_id, source: "api")
+    Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
 
-        Cranium.Epoch.clear(pid, source: "api")
-        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
-
-      {:error, reason} ->
-        Logger.error("Failed to start epoch for clear: #{inspect(reason)}",
-          conversation_id: conversation_id
-        )
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(500, Jason.encode!(%{"error" => "failed to start epoch"}))
-    end
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
   end
 
   match _ do

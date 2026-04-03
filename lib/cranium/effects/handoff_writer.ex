@@ -25,9 +25,9 @@ defmodule Cranium.Effects.HandoffWriter do
 
   @spec generate(String.t(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def generate(conversation_id, epoch_id, cc_session_id) do
-    # Register in Epoch Registry so clients can detect in-flight handoffs.
+    # Register so clients can detect in-flight handoffs.
     # Auto-unregisters when this Task process exits (success or crash).
-    Registry.register(Cranium.Epoch.Registry, {conversation_id, :handoff}, true)
+    Registry.register(Cranium.Inference.ConversationRegistry, {conversation_id, :handoff}, true)
 
     case cc_session_id do
       nil ->
