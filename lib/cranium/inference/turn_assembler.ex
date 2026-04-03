@@ -1,5 +1,7 @@
 defmodule Cranium.Inference.TurnAssembler do
   @moduledoc """
+  Per-conversation turn assembler.
+
   Correlates PassHeaders with content (TextInput or TakeComplete) and
   dispatches assembled turns to the Epoch pipeline.
 
@@ -13,6 +15,14 @@ defmodule Cranium.Inference.TurnAssembler do
   index for correlation. TakeCollector (Media) handles both single-segment
   and multi-segment transcription assembly, emitting take_complete events
   that TurnAssembler correlates with PassHeaders.
+
+  ## Per-Conversation Model
+
+  Each conversation gets its own TurnAssembler, started as part of a
+  Conversation supervisor pair (with Harness). Subscribes globally to
+  Events and filters by conversation_id — PassHeaders carry conversation_id,
+  and TextInput/TakeComplete only match if their pass_id/take_id is already
+  indexed from a prior PassHeader for this conversation.
   """
 
   use GenServer
@@ -24,20 +34,31 @@ defmodule Cranium.Inference.TurnAssembler do
   @sweep_interval_ms :timer.minutes(1)
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
+    GenServer.start_link(__MODULE__, opts, name: via(conversation_id))
+  end
+
+  defp via(conversation_id) do
+    {:via, Registry, {Cranium.Inference.ConversationRegistry, {conversation_id, :turn_assembler}}}
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
+    Logger.metadata(conversation_id: conversation_id)
     Cranium.Events.subscribe()
     schedule_sweep()
-    {:ok, %{pending: %{}, take_index: %{}}}
+    {:ok, %{conversation_id: conversation_id, pending: %{}, take_index: %{}}}
   end
 
   # --- PassHeader arrives: cache and check for matching content ---
+  # Only process headers for our conversation.
 
   @impl true
-  def handle_info({:pass_header, %PassHeader{pass_id: pass_id} = header}, state) do
+  def handle_info(
+        {:pass_header, %PassHeader{pass_id: pass_id, conversation_id: cid} = header},
+        %{conversation_id: cid} = state
+      ) do
     Logger.debug("TurnAssembler: header received pass=#{pass_id}")
     state = put_field(state, pass_id, :header, header)
 
@@ -56,9 +77,14 @@ defmodule Cranium.Inference.TurnAssembler do
 
   @impl true
   def handle_info({:text_input, %TextInput{pass_id: pass_id} = input}, state) do
-    Logger.debug("TurnAssembler: text_input received pass=#{pass_id}")
-    state = put_field(state, pass_id, :input, input)
-    {:noreply, maybe_dispatch(state, pass_id)}
+    # Only process if pass_id is in our pending map (indexed from a prior PassHeader)
+    if Map.has_key?(state.pending, pass_id) do
+      Logger.debug("TurnAssembler: text_input received pass=#{pass_id}")
+      state = put_field(state, pass_id, :input, input)
+      {:noreply, maybe_dispatch(state, pass_id)}
+    else
+      {:noreply, state}
+    end
   end
 
   # --- TakeComplete (audio path — both single-segment and chunked) ---
@@ -71,7 +97,7 @@ defmodule Cranium.Inference.TurnAssembler do
       when not is_nil(take_id) do
     case Map.get(state.take_index, take_id) do
       nil ->
-        Logger.warning("TurnAssembler: take_complete for unknown take=#{take_id}")
+        # Not our conversation's take — ignore silently
         {:noreply, state}
 
       pass_id ->

@@ -92,6 +92,9 @@ defmodule Cranium.LegacyTransport.HTTP do
 
         header = %{header | take_id: pass_id}
 
+        # Ensure per-conversation TurnAssembler exists before broadcasting
+        Cranium.Inference.Conversation.start_or_get(conversation_id)
+
         Cranium.Events.broadcast({:pass_header, header})
         Cranium.Events.broadcast({:segment_received, segment})
 
@@ -141,6 +144,9 @@ defmodule Cranium.LegacyTransport.HTTP do
         |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "cancel"}))
 
       _ ->
+        # Ensure per-conversation TurnAssembler exists before broadcasting
+        Cranium.Inference.Conversation.start_or_get(header.conversation_id)
+
         Cranium.Events.broadcast({:pass_header, header})
         Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}})
 
@@ -290,6 +296,9 @@ defmodule Cranium.LegacyTransport.HTTP do
       disposition: disposition,
       origin: origin
     }
+
+    # Ensure per-conversation TurnAssembler exists before broadcasting
+    Cranium.Inference.Conversation.start_or_get(conversation_id)
 
     Cranium.Events.broadcast({:pass_header, header})
 

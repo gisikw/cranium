@@ -1,15 +1,12 @@
 defmodule Cranium.Inference.TurnAssembly do
   @moduledoc """
-  Supervisor for the turn assembly domain.
+  Supervisor for singleton context providers.
 
-  Groups the actors responsible for collecting everything needed to build
-  a complete inference turn: the assembler itself (correlates input) and
-  the context providers it will eventually call directly.
+  SystemPrompt and History are shared across all conversations — they're
+  stateless (or cache globally) and serve any TurnAssembler that calls them.
 
-  Epoch currently calls the providers (SystemPrompt, History) because it
-  holds the state they need (turn_count, epoch_id). When Epoch's state
-  management is externalized, TurnAssembler takes over those calls and
-  this supervisor's call flow matches its supervision hierarchy.
+  TurnAssembler itself is per-conversation, started by Conversation
+  supervisors under ConversationDynamicSupervisor.
   """
 
   use Supervisor
@@ -22,8 +19,7 @@ defmodule Cranium.Inference.TurnAssembly do
   def init(_opts) do
     children = [
       Cranium.Inference.SystemPrompt,
-      Cranium.Inference.History,
-      Cranium.Inference.TurnAssembler
+      Cranium.Inference.History
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

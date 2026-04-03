@@ -151,7 +151,8 @@ defmodule Cranium.Epoch do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     Logger.metadata(conversation_id: conversation_id)
 
-    {epoch_id, turn_count, saturation, last_reminder_bucket, cc_session_id} =
+    {epoch_id, turn_count, saturation, last_reminder_bucket, cc_session_id,
+     last_landscape_at, interrupted_context} =
       case Cranium.Store.get_epoch(conversation_id) do
         {:ok,
          %{
@@ -160,16 +161,18 @@ defmodule Cranium.Epoch do
            turn_count: tc,
            saturation: sat,
            last_reminder_bucket: lrb,
-           cc_session_id: ccid
+           cc_session_id: ccid,
+           last_landscape_at: lla,
+           interrupted_context: ic
          }}
         when status != "cleared" ->
           Logger.info("Epoch resumed", epoch_id: id, turn_count: tc)
-          {id, tc, sat || 0.0, lrb || 0, ccid}
+          {id, tc, sat || 0.0, lrb || 0, ccid, lla, ic}
 
         _ ->
           {:ok, id} = Cranium.Store.create_epoch(conversation_id)
           Logger.info("Epoch started", epoch_id: id)
-          {id, 0, 0.0, 0, nil}
+          {id, 0, 0.0, 0, nil, nil, nil}
       end
 
     state = %__MODULE__{
@@ -179,6 +182,8 @@ defmodule Cranium.Epoch do
       saturation: saturation,
       last_reminder_bucket: last_reminder_bucket,
       cc_session_id: cc_session_id,
+      last_landscape_at: last_landscape_at,
+      interrupted_context: interrupted_context,
       transport: Keyword.get(opts, :transport),
       transport_meta: Keyword.get(opts, :transport_meta, %{})
     }
@@ -259,15 +264,25 @@ defmodule Cranium.Epoch do
 
     # Track landscape injection for delta filtering on subsequent idle returns
     state =
-      if injected[:landscape_injected],
-        do: %{state | last_landscape_at: DateTime.utc_now()},
-        else: state
+      if injected[:landscape_injected] do
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+        Cranium.Store.update_epoch(state.epoch_id, %{last_landscape_at: now})
+        %{state | last_landscape_at: now}
+      else
+        state
+      end
 
     # Only advance reminder bucket when a saturation warning was actually injected
     state =
-      if injected[:saturation_warned_bucket],
-        do: %{state | last_reminder_bucket: injected[:saturation_warned_bucket]},
-        else: state
+      if injected[:saturation_warned_bucket] do
+        Cranium.Store.update_epoch(state.epoch_id, %{
+          last_reminder_bucket: injected[:saturation_warned_bucket]
+        })
+
+        %{state | last_reminder_bucket: injected[:saturation_warned_bucket]}
+      else
+        state
+      end
 
     # 4. Persist enriched user message (includes system-reminders from TurnInjector)
     enriched_text = injected[:text] || text
@@ -365,7 +380,8 @@ defmodule Cranium.Epoch do
               saturation: saturation,
               turn_count: new_count,
               last_reminder_bucket: state.last_reminder_bucket,
-              cc_session_id: cc_session_id
+              cc_session_id: cc_session_id,
+              interrupted_context: nil
             })
           end
 
@@ -422,7 +438,8 @@ defmodule Cranium.Epoch do
           unless ephemeral do
             Cranium.Store.update_epoch(state.epoch_id, %{
               status: "active",
-              cc_session_id: cc_session_id
+              cc_session_id: cc_session_id,
+              interrupted_context: interrupted
             })
           end
 

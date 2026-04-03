@@ -22,11 +22,15 @@ defmodule Cranium.Application do
       │   └── OutputSegmenter
       ├── Cranium.Persistence         # Temporal state actors
       └── Cranium.Inference           # Inference actors
-          ├── TurnAssembly
+          ├── TurnAssembly            # Singleton providers
           │   ├── SystemPrompt
-          │   ├── History
-          │   └── TurnAssembler
-          └── Harness
+          │   └── History
+          ├── ConversationRegistry    # Per-conversation process lookup
+          └── ConversationDynamicSupervisor
+              └── per conversation:
+                  Conversation (:one_for_all)
+                  ├── TurnAssembler
+                  └── Harness
 
   Agent processes are started per-epoch (inside Epoch), not as top-level
   children. Transports (Matrix, Hearth) will be added as children once

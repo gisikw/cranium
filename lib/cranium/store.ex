@@ -105,6 +105,20 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:clear_epoch, conversation_id})
   end
 
+  @doc """
+  Get the injection context for a conversation's active epoch.
+
+  Returns the fields TurnInjector needs: saturation, last_reminder_bucket,
+  last_landscape_at, interrupted_context. Also includes epoch_id, turn_count,
+  and cc_session_id for TurnAssembler's broader context assembly needs.
+
+  Returns :not_found if no active epoch exists.
+  """
+  @spec get_injection_context(String.t()) :: {:ok, map()} | :not_found
+  def get_injection_context(conversation_id) do
+    GenServer.call(__MODULE__, {:get_injection_context, conversation_id})
+  end
+
   # Message timestamp queries
 
   @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
@@ -272,6 +286,43 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
+  defp do_handle_call({:get_injection_context, conversation_id}, _from, state) do
+    result =
+      from(e in Epoch,
+        where: e.conversation_id == ^conversation_id and e.status != "cleared",
+        order_by: [desc: e.inserted_at],
+        limit: 1
+      )
+      |> Repo.one()
+      |> case do
+        nil ->
+          :not_found
+
+        epoch ->
+          # Get last_invoked_at from most recent message in this epoch
+          last_invoked_at =
+            from(m in Message,
+              where: m.epoch_id == ^epoch.id,
+              select: max(m.inserted_at)
+            )
+            |> Repo.one()
+
+          {:ok,
+           %{
+             epoch_id: epoch.id,
+             turn_count: epoch.turn_count || 0,
+             saturation: (epoch.saturation || 0.0) * 100,
+             last_reminder_bucket: epoch.last_reminder_bucket || 0,
+             last_landscape_at: epoch.last_landscape_at,
+             interrupted_context: epoch.interrupted_context,
+             cc_session_id: epoch.cc_session_id,
+             last_invoked_at: last_invoked_at
+           }}
+      end
+
+    {:reply, result, state}
+  end
+
   defp do_handle_call({:get_last_message_at, epoch_id}, _from, state) do
     result =
       from(m in Message,
@@ -355,6 +406,8 @@ defmodule Cranium.Store do
       handoff: e.handoff,
       last_reminder_bucket: e.last_reminder_bucket,
       cc_session_id: e.cc_session_id,
+      last_landscape_at: e.last_landscape_at,
+      interrupted_context: e.interrupted_context,
       inserted_at: e.inserted_at,
       updated_at: e.updated_at
     }
