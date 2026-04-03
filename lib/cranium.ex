@@ -46,9 +46,14 @@ defmodule Cranium do
   """
   @spec cancel(String.t()) :: :ok | {:error, term()}
   def cancel(conversation_id) do
-    case Cranium.Epoch.cancel(conversation_id) do
+    # Try Harness (new path) first, fall back to Epoch (legacy)
+    case Cranium.Inference.Harness.cancel(conversation_id) do
       :ok -> :ok
-      :not_found -> {:error, :no_active_epoch}
+      :not_found ->
+        case Cranium.Epoch.cancel(conversation_id) do
+          :ok -> :ok
+          :not_found -> {:error, :no_active_epoch}
+        end
     end
   end
 end

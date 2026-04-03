@@ -16,8 +16,6 @@ defmodule Cranium.Context.TurnInjector do
     above 50% context utilization
   - **Interrupted context** — if the previous invocation was cancelled,
     include a breadcrumb summarizing what was in progress
-  - **Resume breadcrumb** — after a process restart, include context about
-    the prior epoch state
 
   ## Design Note
 
@@ -75,7 +73,6 @@ defmodule Cranium.Context.TurnInjector do
       |> maybe_prepend(landscape_block)
       |> maybe_add_saturation(message, context)
       |> maybe_add_interrupted(message, context)
-      |> maybe_add_resume(message, context)
       |> Enum.reverse()
 
     saturation_bucket = saturation_fired_bucket(context)
@@ -143,22 +140,6 @@ defmodule Cranium.Context.TurnInjector do
       ctx ->
         reminder =
           "<system-reminder>Your previous response was interrupted. Here's what you were working on:\n\n#{ctx}</system-reminder>"
-
-        [reminder | injections]
-    end
-  end
-
-  defp maybe_add_resume(injections, _message, context) do
-    case get_in(context, [:epoch, :resume_breadcrumb]) do
-      nil ->
-        injections
-
-      "" ->
-        injections
-
-      crumb ->
-        reminder =
-          "<system-reminder>Epoch was restarted. Previous context:\n\n#{crumb}</system-reminder>"
 
         [reminder | injections]
     end

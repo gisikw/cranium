@@ -1,0 +1,203 @@
+defmodule Cranium.Inference.HarnessTest do
+  use CraniumTest.DataCase, async: false
+
+  @moduletag :capture_log
+
+  import Mox
+
+  setup :set_mox_global
+  setup :verify_on_exit!
+
+  setup do
+    stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
+
+    # Clean up any leftover conversation supervisors
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Inference.ConversationDynamicSupervisor) do
+      DynamicSupervisor.terminate_child(Cranium.Inference.ConversationDynamicSupervisor, pid)
+    end
+
+    # Clean up leftover Epoch processes
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Epoch.Supervisor) do
+      DynamicSupervisor.terminate_child(Cranium.Epoch.Supervisor, pid)
+    end
+
+    :ok
+  end
+
+  describe "compute_saturation/1" do
+    test "returns 0.0 for zero tokens" do
+      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 0}) == 0.0
+    end
+
+    test "returns 0.5 at midpoint" do
+      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) == 0.5
+    end
+
+    test "clamps to 1.0 over limit" do
+      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 300_000}) == 1.0
+    end
+  end
+
+  describe "TurnAssembler → Harness integration" do
+    test "assembles context and runs inference on PassHeader + TextInput" do
+      conversation_id = "test-harness-#{System.unique_integer([:positive])}"
+      pass_id = "pass-#{System.unique_integer([:positive])}"
+      stream_id = "stream-#{System.unique_integer([:positive])}"
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "hello from harness"})
+            send(caller, {:llm_usage, %{input_tokens: 99_000, output_tokens: 1_000}})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      # Subscribe to pass_complete events
+      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+
+      # Start per-conversation infrastructure
+      {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
+
+      # Broadcast PassHeader + TextInput (mimics what LegacyTransport does)
+      header = %Cranium.Messages.PassHeader{
+        pass_id: pass_id,
+        conversation_id: conversation_id,
+        stream_id: stream_id,
+        model: nil,
+        disposition: ["text"],
+        ephemeral: false,
+        system: nil,
+        origin: "test"
+      }
+
+      Cranium.Events.broadcast({:pass_header, header})
+      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}})
+
+      # Wait for pass_complete
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 1, reason: :complete}}, 5000
+      assert sat == 0.5
+
+      # Verify Store was updated
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.saturation == 0.5
+      assert epoch.turn_count == 1
+      assert epoch.status == "active"
+
+      # Verify user message was persisted
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+      assert length(messages) >= 2
+      assert Enum.any?(messages, fn m -> m.role == :user end)
+      assert Enum.any?(messages, fn m -> m.role == :assistant and m.content == "hello from harness" end)
+    end
+
+    test "handles cancellation and stores interrupted context" do
+      conversation_id = "test-cancel-#{System.unique_integer([:positive])}"
+      pass_id = "pass-#{System.unique_integer([:positive])}"
+      stream_id = "stream-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "partial output"})
+            # Signal test to cancel, then wait to be killed
+            send(test_pid, :inference_started)
+            Process.sleep(:infinity)
+          end)
+
+        {:ok, pid}
+      end)
+
+      # Subscribe to pass_complete events
+      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+
+      {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
+
+      header = %Cranium.Messages.PassHeader{
+        pass_id: pass_id,
+        conversation_id: conversation_id,
+        stream_id: stream_id,
+        model: nil,
+        disposition: ["text"],
+        ephemeral: false,
+        system: nil,
+        origin: "test"
+      }
+
+      Cranium.Events.broadcast({:pass_header, header})
+      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "cancel me"}})
+
+      # Wait for inference to start, then cancel
+      assert_receive :inference_started, 5000
+      # Small delay to ensure Agent has registered
+      Process.sleep(50)
+      assert :ok = Cranium.Inference.Harness.cancel(conversation_id)
+
+      # Wait for pass_complete with cancelled reason
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{reason: :cancelled}}, 5000
+
+      # Verify interrupted_context was stored
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.interrupted_context == "partial output"
+    end
+
+    test "backpressure queues second pass until first completes" do
+      conversation_id = "test-backpressure-#{System.unique_integer([:positive])}"
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, 2, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "response"})
+            send(caller, {:llm_usage, %{input_tokens: 1_000, output_tokens: 100}})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+
+      {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
+
+      # Send two passes in rapid succession
+      for i <- 1..2 do
+        pass_id = "pass-#{i}-#{System.unique_integer([:positive])}"
+        stream_id = "stream-#{i}-#{System.unique_integer([:positive])}"
+
+        header = %Cranium.Messages.PassHeader{
+          pass_id: pass_id,
+          conversation_id: conversation_id,
+          stream_id: stream_id,
+          model: nil,
+          disposition: ["text"],
+          ephemeral: false,
+          system: nil,
+          origin: "test"
+        }
+
+        Cranium.Events.broadcast({:pass_header, header})
+        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "msg #{i}"}})
+      end
+
+      # Both passes should complete (second queued, dispatched after first)
+      assert_receive {:pass_complete, ^conversation_id, _, %{reason: :complete}}, 5000
+      assert_receive {:pass_complete, ^conversation_id, _, %{reason: :complete}}, 5000
+
+      # Verify two turns were counted
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.turn_count == 2
+    end
+  end
+end

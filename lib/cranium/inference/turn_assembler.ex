@@ -2,8 +2,9 @@ defmodule Cranium.Inference.TurnAssembler do
   @moduledoc """
   Per-conversation turn assembler.
 
-  Correlates PassHeaders with content (TextInput or TakeComplete) and
-  dispatches assembled turns to the Epoch pipeline.
+  Correlates PassHeaders with content (TextInput or TakeComplete), performs
+  context assembly (epoch resolution, system prompt, turn injection, history),
+  and dispatches assembled turns to the Harness for inference.
 
   For each pass, Transport emits a PassHeader (routing metadata) and a
   content message (TextInput for text, segment_received for audio).
@@ -23,6 +24,12 @@ defmodule Cranium.Inference.TurnAssembler do
   Events and filters by conversation_id — PassHeaders carry conversation_id,
   and TextInput/TakeComplete only match if their pass_id/take_id is already
   indexed from a prior PassHeader for this conversation.
+
+  ## Backpressure
+
+  TurnAssembler won't assemble a new turn until the prior pass completes.
+  If a second pair arrives while a pass is in flight, it queues. On
+  pass_done from Harness, the queued pair is dispatched.
   """
 
   use GenServer
@@ -32,6 +39,7 @@ defmodule Cranium.Inference.TurnAssembler do
 
   @stale_timeout_ms :timer.minutes(20)
   @sweep_interval_ms :timer.minutes(1)
+  @registry Cranium.Inference.ConversationRegistry
 
   def start_link(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
@@ -39,7 +47,7 @@ defmodule Cranium.Inference.TurnAssembler do
   end
 
   defp via(conversation_id) do
-    {:via, Registry, {Cranium.Inference.ConversationRegistry, {conversation_id, :turn_assembler}}}
+    {:via, Registry, {@registry, {conversation_id, :turn_assembler}}}
   end
 
   @impl true
@@ -48,7 +56,15 @@ defmodule Cranium.Inference.TurnAssembler do
     Logger.metadata(conversation_id: conversation_id)
     Cranium.Events.subscribe()
     schedule_sweep()
-    {:ok, %{conversation_id: conversation_id, pending: %{}, take_index: %{}}}
+
+    {:ok,
+     %{
+       conversation_id: conversation_id,
+       pending: %{},
+       take_index: %{},
+       active_pass: nil,
+       queued: nil
+     }}
   end
 
   # --- PassHeader arrives: cache and check for matching content ---
@@ -107,6 +123,23 @@ defmodule Cranium.Inference.TurnAssembler do
     end
   end
 
+  # --- Backpressure: Harness signals pass completion ---
+
+  @impl true
+  def handle_info({:pass_done, _stream_id}, state) do
+    state = %{state | active_pass: nil}
+
+    # Dispatch queued pair if any
+    case state.queued do
+      {header, input} ->
+        state = %{state | queued: nil}
+        {:noreply, assemble_and_dispatch(state, header, input)}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   # --- Sweep stale entries ---
 
   @impl true
@@ -150,77 +183,171 @@ defmodule Cranium.Inference.TurnAssembler do
   defp maybe_dispatch(state, pass_id) do
     case Map.get(state.pending, pass_id) do
       %{header: %PassHeader{} = header, input: input} when not is_nil(input) ->
-        dispatch_to_epoch(header, input)
-
         # Clean up take_index if this pass had a take
         take_index =
           if header.take_id,
             do: Map.delete(state.take_index, header.take_id),
             else: state.take_index
 
-        %{state | pending: Map.delete(state.pending, pass_id), take_index: take_index}
+        state = %{state | pending: Map.delete(state.pending, pass_id), take_index: take_index}
+
+        if state.active_pass do
+          # A pass is already in flight — queue this pair
+          Logger.info("TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass})")
+          %{state | queued: {header, input}}
+        else
+          assemble_and_dispatch(state, header, input)
+        end
 
       _ ->
         state
     end
   end
 
-  defp dispatch_to_epoch(%PassHeader{} = header, input) do
+  # --- Context Assembly ---
+  # This was previously Epoch.submit's context pipeline.
+
+  defp assemble_and_dispatch(state, %PassHeader{} = header, input) do
     text =
       case input do
         %TextInput{text: text} -> text
         %TakeComplete{text: text} -> "[Transcribed from audio]\n#{text}"
       end
 
+    ephemeral = header.ephemeral == true
+    stream_id = header.stream_id
+
     Logger.info(
-      "TurnAssembler: dispatching pass=#{header.pass_id} conversation=#{header.conversation_id}",
+      "TurnAssembler: assembling pass=#{header.pass_id} conversation=#{header.conversation_id}",
       transport: :turn_assembler
     )
 
-    Task.start(fn ->
-      case Cranium.Epoch.start_or_get(header.conversation_id) do
-        {:ok, epoch_pid} ->
-          dispatch =
-            Cranium.Dispatch.from_submit(%{
-              conversation_id: header.conversation_id,
-              model: header.model,
-              disposition: header.disposition,
-              ephemeral: header.ephemeral
-            })
+    # 1. Resolve epoch from Store (get existing or create fresh)
+    {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(header.conversation_id)
 
-          message = %{
-            text: text,
-            system: header.system,
-            conversation_id: header.conversation_id,
-            stream_id: header.stream_id,
-            disposition: header.disposition,
-            origin: header.origin,
-            model: header.model,
-            ephemeral: header.ephemeral,
-            dispatch: dispatch
-          }
+    epoch_id = epoch_ctx.epoch_id
+    turn_count = epoch_ctx.turn_count
+    is_fresh = turn_count == 0
 
-          case Cranium.Epoch.submit(epoch_pid, message) do
-            {:ok, _} ->
-              Cranium.TTS.Cache.schedule_cleanup(header.stream_id)
+    # 2. Broadcast message_received so firehose clients see inbound messages
+    unless ephemeral do
+      Cranium.Event.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
+        text: text,
+        origin: header.origin,
+        stream_id: stream_id
+      }})
+    end
 
-            {:error, :cancelled} ->
-              Logger.info("TurnAssembler: submit cancelled pass=#{header.pass_id}",
-                transport: :turn_assembler
-              )
+    # 3. Resolve routing context
+    projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
+    working_dir = Cranium.Context.Router.resolve_project_dir(header.conversation_id, projects_dir)
 
-              Cranium.Manifest.cancel(header.stream_id)
+    # 4. System prompt
+    system_prompt =
+      Cranium.Inference.SystemPrompt.contribute(
+        header.conversation_id,
+        is_fresh: is_fresh,
+        identity: header.system
+      )
 
-            {:error, reason} ->
-              Logger.error(
-                "TurnAssembler: submit failed pass=#{header.pass_id} reason=#{inspect(reason)}",
-                transport: :turn_assembler
-              )
+    # 5. Turn injections
+    injection_message = %{
+      text: text,
+      conversation_id: header.conversation_id,
+      is_fresh: is_fresh
+    }
 
-              Cranium.Manifest.complete(header.stream_id)
-          end
-      end
-    end)
+    injection_ctx = %{
+      now: DateTime.utc_now(),
+      epoch: %{
+        last_invoked_at: epoch_ctx.last_invoked_at,
+        saturation: epoch_ctx.saturation,
+        last_reminder_bucket: epoch_ctx.last_reminder_bucket,
+        last_landscape_at: epoch_ctx.last_landscape_at,
+        interrupted_context: epoch_ctx.interrupted_context
+      }
+    }
+
+    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
+
+    Cranium.Manifest.stamp(stream_id, :context_assembled)
+
+    # 6. Write injection flags to Store immediately
+    injection_flags = %{
+      landscape_injected: injected[:landscape_injected] || false,
+      saturation_warned_bucket: injected[:saturation_warned_bucket]
+    }
+
+    if injection_flags.landscape_injected do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      Cranium.Store.update_epoch(epoch_id, %{last_landscape_at: now})
+    end
+
+    if injection_flags.saturation_warned_bucket do
+      Cranium.Store.update_epoch(epoch_id, %{
+        last_reminder_bucket: injection_flags.saturation_warned_bucket
+      })
+    end
+
+    # 7. Persist enriched user message
+    enriched_text = injected[:text] || text
+
+    unless ephemeral do
+      Cranium.Store.append_message(header.conversation_id, epoch_id, %{
+        role: :user,
+        content: enriched_text,
+        origin: header.origin
+      })
+    end
+
+    # 8. History
+    messages =
+      Cranium.Inference.History.contribute(
+        header.conversation_id,
+        epoch_id: epoch_id,
+        window: 50,
+        text: enriched_text,
+        attachments: Map.get(header, :attachments, [])
+      )
+
+    # 9. Build Dispatch for OutputSegmenter metadata
+    dispatch =
+      Cranium.Dispatch.from_submit(%{
+        conversation_id: header.conversation_id,
+        model: header.model,
+        disposition: header.disposition,
+        ephemeral: header.ephemeral
+      })
+
+    # 10. Emit turn_ready to Harness
+    turn = %{
+      system: system_prompt,
+      messages: messages,
+      mode: :text,
+      conversation_id: header.conversation_id,
+      stream_id: stream_id,
+      disposition: header.disposition || ["text"],
+      cc_session_id: unless(ephemeral, do: epoch_ctx.cc_session_id),
+      working_dir: working_dir,
+      model: header.model,
+      ephemeral: ephemeral,
+      dispatch: dispatch,
+      epoch_id: epoch_id,
+      turn_count: turn_count,
+      injection_flags: injection_flags,
+      origin: header.origin,
+      pass_id: header.pass_id
+    }
+
+    case Registry.lookup(@registry, {header.conversation_id, :harness}) do
+      [{pid, _}] ->
+        send(pid, {:turn_ready, turn})
+
+      [] ->
+        Logger.error("TurnAssembler: no Harness found for conversation=#{header.conversation_id}")
+    end
+
+    %{state | active_pass: stream_id}
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)

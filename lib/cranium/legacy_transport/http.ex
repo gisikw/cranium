@@ -130,7 +130,7 @@ defmodule Cranium.LegacyTransport.HTTP do
         |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "clear"}))
 
       "!cancel" ->
-        result = Cranium.Epoch.cancel(header.conversation_id)
+        result = Cranium.cancel(header.conversation_id)
 
         Logger.info("Cancel result: #{inspect(result)}",
           conversation_id: header.conversation_id,
@@ -425,7 +425,7 @@ defmodule Cranium.LegacyTransport.HTTP do
       {:ok, pid} ->
         # Cancel any in-flight inference first so the Epoch GenServer unblocks.
         # Without this, clear times out if the GenServer is blocked in a submit.
-        Cranium.Epoch.cancel(conversation_id)
+        Cranium.cancel(conversation_id)
 
         Cranium.Epoch.clear(pid, source: "api")
         Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
