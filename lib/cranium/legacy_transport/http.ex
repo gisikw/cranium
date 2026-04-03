@@ -55,34 +55,25 @@ defmodule Cranium.LegacyTransport.HTTP do
     Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
     Cranium.Manifest.stamp(stream_id, :submitted)
 
-    # Stamp routing dispatch at ingest
-    dispatch =
-      Cranium.Dispatch.from_submit(%{
-        conversation_id: conversation_id,
-        model: model,
-        disposition: disposition,
-        ephemeral: ephemeral
-      })
-
-    # Audio path: publish segment to Events, let Transcoder + TranscriptionListener handle it
-    # Text path: dispatch to Epoch directly (unchanged)
     text = conn.body_params["text"]
     audio = conn.body_params["audio"]
 
-    legacy_meta = %{
-      system: system,
+    pass_id = Cranium.Stage.new_stream_id()
+
+    header = %Cranium.Messages.PassHeader{
+      pass_id: pass_id,
       conversation_id: conversation_id,
       stream_id: stream_id,
-      disposition: disposition,
+      system: system,
       origin: origin,
       model: model,
       ephemeral: ephemeral,
-      dispatch: dispatch
+      disposition: disposition
     }
 
     cond do
       is_binary(text) and text != "" ->
-        do_submit_text(conn, text, legacy_meta)
+        do_submit_text(conn, text, header)
 
       match?(%Plug.Upload{}, audio) ->
         audio_bytes = File.read!(audio.path)
@@ -92,13 +83,16 @@ defmodule Cranium.LegacyTransport.HTTP do
           transport: :http
         )
 
+        # Same ID as pass_id — Media calls it take_id, Inference calls it pass_id
         segment = %Cranium.Messages.Segment{
           direction: :inbound,
           audio: audio_bytes,
-          conversation_id: conversation_id,
-          legacy_metadata: legacy_meta
+          take_id: pass_id
         }
 
+        header = %{header | take_id: pass_id}
+
+        Cranium.Events.broadcast({:pass_header, header})
         Cranium.Events.broadcast({:segment_received, segment})
 
         conn
@@ -112,76 +106,47 @@ defmodule Cranium.LegacyTransport.HTTP do
     end
   end
 
-  defp do_submit_text(conn, text, meta) do
-    epoch_pid =
-      case Cranium.Epoch.start_or_get(meta.conversation_id) do
-        {:ok, pid} -> pid
-      end
-
-    message = %{
-      text: text,
-      system: meta.system,
-      conversation_id: meta.conversation_id,
-      stream_id: meta.stream_id,
-      disposition: meta.disposition,
-      origin: meta.origin,
-      model: meta.model,
-      ephemeral: meta.ephemeral,
-      dispatch: meta.dispatch
-    }
-
+  defp do_submit_text(conn, text, %Cranium.Messages.PassHeader{} = header) do
     Logger.info(
-      "Submit: stream=#{meta.stream_id} conversation=#{meta.conversation_id} disposition=#{inspect(meta.disposition)} text=#{inspect(String.slice(text, 0..80))}",
+      "Submit: stream=#{header.stream_id} conversation=#{header.conversation_id} disposition=#{inspect(header.disposition)} text=#{inspect(String.slice(text, 0..80))}",
       transport: :http
     )
 
     case text do
       "!clear" ->
-        Cranium.Epoch.clear(epoch_pid, source: meta.origin || "submit")
-        Logger.info("Cleared epoch", conversation_id: meta.conversation_id, transport: :http)
-        Cranium.Manifest.complete(meta.stream_id)
+        case Cranium.Epoch.start_or_get(header.conversation_id) do
+          {:ok, pid} ->
+            Cranium.Epoch.clear(pid, source: header.origin || "submit")
+        end
+
+        Logger.info("Cleared epoch", conversation_id: header.conversation_id, transport: :http)
+        Cranium.Manifest.complete(header.stream_id)
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => meta.stream_id, "command" => "clear"}))
+        |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "clear"}))
 
       "!cancel" ->
-        result = Cranium.Epoch.cancel(meta.conversation_id)
+        result = Cranium.Epoch.cancel(header.conversation_id)
 
         Logger.info("Cancel result: #{inspect(result)}",
-          conversation_id: meta.conversation_id,
+          conversation_id: header.conversation_id,
           transport: :http
         )
 
-        Cranium.Manifest.complete(meta.stream_id)
+        Cranium.Manifest.complete(header.stream_id)
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => meta.stream_id, "command" => "cancel"}))
+        |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "cancel"}))
 
       _ ->
-        Task.start(fn ->
-          case Cranium.Epoch.submit(epoch_pid, message) do
-            {:ok, _result} ->
-              Cranium.TTS.Cache.schedule_cleanup(meta.stream_id)
-
-            {:error, :cancelled} ->
-              Logger.info("Submit cancelled: stream=#{meta.stream_id}", transport: :http)
-              Cranium.Manifest.cancel(meta.stream_id)
-
-            {:error, reason} ->
-              Logger.error(
-                "Submit failed: stream=#{meta.stream_id} reason=#{inspect(reason)}",
-                transport: :http
-              )
-
-              Cranium.Manifest.complete(meta.stream_id)
-          end
-        end)
+        Cranium.Events.broadcast({:pass_header, header})
+        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}})
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(202, Jason.encode!(%{"stream_id" => meta.stream_id}))
+        |> send_resp(202, Jason.encode!(%{"stream_id" => header.stream_id}))
     end
   end
 
@@ -335,8 +300,8 @@ defmodule Cranium.LegacyTransport.HTTP do
             segment = %Cranium.Messages.Segment{
               direction: :inbound,
               audio: audio,
-              conversation_id: id,
-              legacy_metadata: %{take_id: id, seq: seq_int}
+              take_id: id,
+              seq: seq_int
             }
 
             Cranium.Events.broadcast({:segment_received, segment})

@@ -56,17 +56,25 @@ defmodule Cranium.Media.Transcoder do
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, :timer.minutes(1))
 
-  defp emit_transcription(text, %Segment{conversation_id: cid, legacy_metadata: meta}) do
+  defp emit_transcription(text, %Segment{} = seg) do
     Cranium.Events.broadcast(
       {:transcription_complete,
-       %Transcription{text: text, conversation_id: cid, legacy_metadata: meta}}
+       %Transcription{
+         text: text,
+         take_id: seg.take_id,
+         seq: seg.seq
+       }}
     )
   end
 
-  defp emit_transcription_failure(reason, %Segment{conversation_id: cid, legacy_metadata: meta}) do
+  defp emit_transcription_failure(reason, %Segment{} = seg) do
     Cranium.Events.broadcast(
       {:transcription_failed,
-       %Transcription{failure: reason, conversation_id: cid, legacy_metadata: meta}}
+       %Transcription{
+         failure: reason,
+         take_id: seg.take_id,
+         seq: seg.seq
+       }}
     )
   end
 end

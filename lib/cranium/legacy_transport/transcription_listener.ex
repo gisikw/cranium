@@ -1,11 +1,15 @@
 defmodule Cranium.LegacyTransport.TranscriptionListener do
   @moduledoc """
-  Temporary bridge: listens for transcription_complete events from the new
-  Cranium.Media.Transcoder actor and dispatches to the legacy Epoch pipeline.
+  Temporary bridge: handles the chunked audio path only.
 
-  This exists to let the new OTP actor handle STT while the rest of the
-  pipeline remains unchanged. Will be removed once the full actor hierarchy
-  replaces the Epoch/pipeline system.
+  Listens for transcription_complete events from the Transcoder and routes
+  transcribed chunks back into TakeRegistry for reassembly. When a take
+  completes, dispatches to the Epoch pipeline.
+
+  The submit path (text and single-audio) is now handled by
+  Cranium.Inference.TurnAssembler via PassHeader/TextInput correlation.
+
+  Will be removed once TakeCollector replaces TakeRegistry.
   """
 
   use GenServer
@@ -23,13 +27,16 @@ defmodule Cranium.LegacyTransport.TranscriptionListener do
     {:ok, %{}}
   end
 
-  # Chunked path: route transcribed text back into TakeRegistry
+  # Chunked path: route transcribed text back into TakeRegistry.
+  # Sequenced transcriptions (seq != nil) are chunked audio; single-segment
+  # transcriptions (seq == nil) are handled by TurnAssembler.
   @impl true
   def handle_info(
         {:transcription_complete,
-         %Transcription{text: text, legacy_metadata: %{take_id: take_id, seq: seq}}},
+         %Transcription{text: text, take_id: take_id, seq: seq}},
         state
-      ) do
+      )
+      when not is_nil(seq) do
     Logger.info(
       "TranscriptionListener: chunk transcribed take=#{take_id} seq=#{seq}",
       transport: :http
@@ -52,66 +59,14 @@ defmodule Cranium.LegacyTransport.TranscriptionListener do
     {:noreply, state}
   end
 
-  # Submit path: dispatch to Epoch
-  @impl true
-  def handle_info(
-        {:transcription_complete, %Transcription{text: text, legacy_metadata: meta}},
-        state
-      )
-      when is_map(meta) do
-    body = "[Transcribed from audio]\n#{text}"
-
-    epoch_pid =
-      case Cranium.Epoch.start_or_get(meta.conversation_id) do
-        {:ok, pid} -> pid
-      end
-
-    message = %{
-      text: body,
-      system: meta[:system],
-      conversation_id: meta.conversation_id,
-      stream_id: meta.stream_id,
-      disposition: meta[:disposition],
-      origin: meta[:origin],
-      model: meta[:model],
-      ephemeral: meta[:ephemeral],
-      dispatch: meta[:dispatch]
-    }
-
-    Logger.info(
-      "TranscriptionListener: dispatching stream=#{meta.stream_id} conversation=#{meta.conversation_id}",
-      transport: :http
-    )
-
-    Task.start(fn ->
-      case Cranium.Epoch.submit(epoch_pid, message) do
-        {:ok, _result} ->
-          Cranium.TTS.Cache.schedule_cleanup(meta.stream_id)
-
-        {:error, :cancelled} ->
-          Logger.info("Submit cancelled: stream=#{meta.stream_id}", transport: :http)
-          Cranium.Manifest.cancel(meta.stream_id)
-
-        {:error, reason} ->
-          Logger.error(
-            "Submit failed: stream=#{meta.stream_id} reason=#{inspect(reason)}",
-            transport: :http
-          )
-
-          Cranium.Manifest.complete(meta.stream_id)
-      end
-    end)
-
-    {:noreply, state}
-  end
-
   # Chunked path failure
   @impl true
   def handle_info(
         {:transcription_failed,
-         %Transcription{legacy_metadata: %{take_id: take_id, seq: seq}}},
+         %Transcription{take_id: take_id, seq: seq}},
         state
-      ) do
+      )
+      when not is_nil(seq) do
     Logger.error(
       "TranscriptionListener: chunk STT failed take=#{take_id} seq=#{seq}",
       transport: :http
@@ -120,24 +75,10 @@ defmodule Cranium.LegacyTransport.TranscriptionListener do
     {:noreply, state}
   end
 
-  # Submit path failure
-  @impl true
-  def handle_info({:transcription_failed, %Transcription{legacy_metadata: meta}}, state)
-      when is_map(meta) do
-    Logger.error(
-      "TranscriptionListener: STT failed for stream=#{meta.stream_id}",
-      transport: :http
-    )
-
-    Cranium.Manifest.complete(meta.stream_id)
-    {:noreply, state}
-  end
-
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Mirrors Transport.HTTP.trigger_text_inference/2 — assembles the completed
-  # take result into a message and submits to the Epoch pipeline.
+  # Assembles the completed take result into a message and submits to Epoch.
   defp trigger_text_inference(result, take_id) do
     Task.start(fn ->
       content_key = result.disposition |> List.first("text") |> String.to_atom()
