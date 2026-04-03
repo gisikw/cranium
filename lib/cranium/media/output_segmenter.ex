@@ -1,44 +1,31 @@
-defmodule Cranium.Egress do
+defmodule Cranium.Media.OutputSegmenter do
   @moduledoc """
-  Output processing stage.
+  Segments streaming agent output into deliverable units.
 
-  Transforms streaming agent output into deliverable formats. This stage
-  is streaming-native — it receives chunks from the Agent and forwards
-  processed output to transports.
+  Receives raw stream events (stream_start, chunk, stream_end) from the Agent
+  via StreamRegistry and produces segments for downstream consumers. Each
+  segment is pushed to the Manifest (for pull-based clients) and broadcast as
+  a `{:segment_ready, ...}` event (for future Transport actors).
 
-  Decomposes into two steps:
+  ## Segmentation Strategy
 
-  - `Chunker` — segments streaming text into deliverable units. In voice
-    mode, chunks at sentence boundaries for natural TTS pacing. In text
-    mode, chunks at paragraph breaks for readable streaming.
-  - `Synthesizer` — routes text chunks through TTS backend when in voice
-    mode. Pass-through in text mode.
+  Text accumulates in a per-stream buffer. When a paragraph boundary (`\\n\\n`)
+  is detected, everything before it is emitted as one or more segments. On
+  stream end, remaining text becomes the final segment.
 
-  ## Incremental Manifest Population
-
-  Egress pushes segments to the Manifest as they arrive. Text accumulates
-  in a per-stream buffer. When a paragraph boundary (`\\n\\n`) is detected,
-  everything before it is emitted as one or more segments. On stream end,
-  remaining text becomes the final segment.
-
-  When the client's disposition includes "audio", Egress eagerly warms
-  the TTS cache for each emitted segment.
-
-  ## Mode
-
-  Egress operates in one of two modes, set per-session:
-
-  - `:text` — chunks are delivered as text to the transport
-  - `:voice` — chunks are synthesized to audio, then delivered
-
-  The model doesn't know which mode it's in. Mode is a session-level flag
-  that the transport can toggle.
+  When the client's disposition includes "audio", the segmenter uses adaptive
+  lead-time chunking to keep TTS synthesis ahead of playback. Batch sizes are
+  derived from estimated lead time — how far ahead synthesized audio is relative
+  to wall clock. When lead time is low (aggressive mode), segments are emitted
+  at sentence boundaries for faster synthesis turnaround. When lead time is
+  comfortable (relaxed mode), segments are emitted at paragraph boundaries for
+  better prosody.
 
   ## Markers
 
-  SCTE markers from the Agent pass through Egress without modification.
-  They're positional cues for the transport — "show this image here,"
-  "display this code block here." The transport decides how to render them.
+  SCTE markers from the Agent pass through without modification. They're
+  positional cues for the transport — "show this image here," "display this
+  code block here." The transport decides how to render them.
   """
 
   use GenServer
@@ -59,27 +46,11 @@ defmodule Cranium.Egress do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
-  @doc """
-  Process a complete output through chunking and optional synthesis.
-  """
-  @spec process(term(), map()) :: {:ok, [term()]}
-  def process(output, context) do
-    mode = Map.get(context, :mode, :text)
-
-    with {:ok, chunks} <- Cranium.Egress.Chunker.process(output, context) do
-      if mode == :voice do
-        Cranium.Egress.Synthesizer.process(chunks, context)
-      else
-        {:ok, chunks}
-      end
-    end
-  end
-
   # --- GenServer Implementation ---
 
   @impl GenServer
   def init(_opts) do
-    Logger.info("Egress stage started", stage: :egress)
+    Logger.info("OutputSegmenter started", stage: :output_segmenter)
     {:ok, %__MODULE__{}}
   end
 
@@ -90,15 +61,9 @@ defmodule Cranium.Egress do
   end
 
   @impl GenServer
-  def handle_call({:process, output, context}, _from, state) do
-    result = process(output, context)
-    {:reply, result, state}
-  end
-
-  @impl GenServer
   def handle_info({:stream_start, stream_id, metadata}, state) do
     Logger.debug("Stream started",
-      stage: :egress,
+      stage: :output_segmenter,
       stream_id: stream_id,
       mode: Map.get(metadata, :mode, :text)
     )
@@ -175,8 +140,8 @@ defmodule Cranium.Egress do
   end
 
   # Catch-all for lifecycle events (e.g. :pass_complete) dispatched on the
-  # stream topic via Event.broadcast/3. Egress only cares about stream_start,
-  # chunk, and stream_end — everything else is safely ignored.
+  # stream topic via Event.broadcast/3. OutputSegmenter only cares about
+  # stream_start, chunk, and stream_end — everything else is safely ignored.
   @impl GenServer
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -201,8 +166,8 @@ defmodule Cranium.Egress do
   @subsequent_batch_words 100
 
   # Adaptive lead-time chunking constants.
-  # When audio disposition is active, Egress estimates how far ahead the
-  # TTS pipeline is relative to playback. The batch size is derived from
+  # When audio disposition is active, OutputSegmenter estimates how far ahead
+  # the TTS pipeline is relative to playback. The batch size is derived from
   # lead time: lead must cover the chunk's synthesis time, or the client
   # stalls waiting for audio. The warmer is sequential — the entire chunk
   # must finish synthesizing before any of its audio is available.
@@ -280,7 +245,7 @@ defmodule Cranium.Egress do
 
               Logger.debug(
                 "Aggressive emit (para): segment=#{idx} words=#{word_count(para)} safe=#{max_words} lead_time=#{lead_time_ms(s)}ms",
-                stage: :egress,
+                stage: :output_segmenter,
                 stream_id: stream_id
               )
 
@@ -289,7 +254,7 @@ defmodule Cranium.Egress do
               # Paragraph too large for runway — sentence-split it
               Logger.debug(
                 "Aggressive split (para too large): words=#{word_count(para)} safe=#{max_words} lead_time=#{lead_time_ms(s)}ms",
-                stage: :egress,
+                stage: :output_segmenter,
                 stream_id: stream_id
               )
 
@@ -313,7 +278,7 @@ defmodule Cranium.Egress do
 
             Logger.debug(
               "Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",
-              stage: :egress,
+              stage: :output_segmenter,
               stream_id: stream_id
             )
 
@@ -344,7 +309,7 @@ defmodule Cranium.Egress do
 
         Logger.debug(
           "Aggressive emit (sentence from para): segment=#{index} words=#{word_count(emittable)}",
-          stage: :egress,
+          stage: :output_segmenter,
           stream_id: stream_id
         )
 
@@ -387,7 +352,7 @@ defmodule Cranium.Egress do
     if new_index > original_index do
       Logger.debug(
         "Relaxed emit: threshold=#{threshold} lead_time=#{lead_time_ms(stream)}ms",
-        stage: :egress,
+        stage: :output_segmenter,
         stream_id: stream_id
       )
 
@@ -479,14 +444,19 @@ defmodule Cranium.Egress do
   end
 
   defp emit_segment(stream_id, index, text, disposition) do
+    # Populate manifest (bridge — moves to Transport when Transport is built)
     Cranium.Manifest.add_utterance(stream_id, index, text)
 
     if "audio" in disposition do
       warm_tts(stream_id, index, text)
     end
 
+    # Broadcast segment_ready for future Transport consumption
+    renditions = if "audio" in disposition, do: [:text, :audio], else: [:text]
+    Cranium.Event.broadcast({:segment_ready, stream_id, index, renditions})
+
     Logger.debug("Segment emitted",
-      stage: :egress,
+      stage: :output_segmenter,
       stream_id: stream_id,
       segment: index,
       length: String.length(text)

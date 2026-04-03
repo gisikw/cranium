@@ -7,13 +7,26 @@ defmodule Cranium.Application do
       Cranium.Supervisor
       ├── Cranium.Store.Repo          # Ecto connection pool
       ├── Cranium.Store               # Storage service with soft locking
-      ├── Cranium.TTS.Cache            # Ephemeral TTS audio buffer
+      ├── Cranium.TTS.Cache           # Ephemeral TTS audio buffer
       ├── Cranium.Context.Landscape   # Cross-conversation summary cache
-      ├── Cranium.Ingress             # Input processing stage
-      ├── Cranium.Egress              # Output processing stage
+      ├── Cranium.Ingress             # Input processing stage (legacy)
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
       ├── Cranium.Epoch.Registry      # One-epoch-per-conversation enforcement
-      └── Cranium.Epoch.Supervisor    # Per-conversation epoch processes
+      ├── Cranium.Epoch.Supervisor    # Per-conversation epoch processes
+      ├── Cranium.Events              # Registry-based pub/sub
+      ├── Cranium.Transport           # Wire protocol actors
+      ├── Cranium.Media               # Media processing actors
+      │   ├── Storage
+      │   ├── Transcoder
+      │   ├── TakeCollector
+      │   └── OutputSegmenter
+      ├── Cranium.Persistence         # Temporal state actors
+      └── Cranium.Inference           # Inference actors
+          ├── TurnAssembly
+          │   ├── SystemPrompt
+          │   ├── History
+          │   └── TurnAssembler
+          └── Harness
 
   Agent processes are started per-epoch (inside Epoch), not as top-level
   children. Transports (Matrix, Hearth) will be added as children once
@@ -53,9 +66,8 @@ defmodule Cranium.Application do
       # Stream event registry (duplicate-key Registry for pub/sub fanout)
       {Registry, keys: :duplicate, name: Cranium.StreamRegistry},
 
-      # Pipeline stages (legacy — Ingress and Egress to be dissolved into actors)
+      # Pipeline stages (legacy — Ingress to be dissolved into actors)
       Cranium.Ingress,
-      Cranium.Egress,
 
       # Async effects (handoffs, summaries)
       {Task.Supervisor, name: Cranium.Effects.Supervisor},

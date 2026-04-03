@@ -12,7 +12,7 @@ end
 Cranium.Manifest.start_link(name: Cranium.Manifest)
 Cranium.TTS.Cache.start_link(name: Cranium.TTS.Cache)
 Cranium.Input.TakeRegistry.start_link(name: Cranium.Input.TakeRegistry)
-Cranium.Egress.start_link([])
+Cranium.Media.OutputSegmenter.start_link([])
 
 ExUnit.start()
 

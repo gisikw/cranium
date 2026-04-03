@@ -315,8 +315,8 @@ defmodule Cranium.Epoch do
     # this blocked handle_call
     Registry.register(Cranium.Epoch.Registry, {state.conversation_id, :agent}, agent_pid)
 
-    # Subscribe Egress to the raw stream before inference starts
-    :ok = GenServer.call(Cranium.Egress, {:subscribe_stream, stream_id})
+    # Subscribe OutputSegmenter to the raw stream before inference starts
+    :ok = GenServer.call(Cranium.Media.OutputSegmenter, {:subscribe_stream, stream_id})
 
     state = %{state | status: :inferring, agent_pid: agent_pid}
 

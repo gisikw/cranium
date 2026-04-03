@@ -1,4 +1,4 @@
-defmodule Cranium.Egress.IncrementalTest do
+defmodule Cranium.Media.OutputSegmenterTest do
   use ExUnit.Case, async: false
 
   import Mox
@@ -9,8 +9,8 @@ defmodule Cranium.Egress.IncrementalTest do
   setup :set_mox_global
 
   setup do
-    unless Process.whereis(Cranium.Egress) do
-      Cranium.Egress.start_link([])
+    unless Process.whereis(Cranium.Media.OutputSegmenter) do
+      Cranium.Media.OutputSegmenter.start_link([])
     end
 
     :ok
@@ -20,12 +20,12 @@ defmodule Cranium.Egress.IncrementalTest do
   defp words(n), do: Enum.map_join(1..n, " ", fn i -> "word#{i}" end)
 
   defp simulate_stream(stream_id, chunks, disposition \\ ["text"]) do
-    egress = Process.whereis(Cranium.Egress)
+    segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
 
     :ok = Manifest.init_stream(stream_id, "conv1", disposition: disposition)
 
     send(
-      egress,
+      segmenter,
       {:stream_start, stream_id,
        %{
          disposition: disposition,
@@ -34,10 +34,10 @@ defmodule Cranium.Egress.IncrementalTest do
     )
 
     for chunk <- chunks do
-      send(egress, {:chunk, stream_id, chunk})
+      send(segmenter, {:chunk, stream_id, chunk})
     end
 
-    send(egress, {:stream_end, stream_id})
+    send(segmenter, {:stream_end, stream_id})
 
     Process.sleep(50)
   end
@@ -105,11 +105,11 @@ defmodule Cranium.Egress.IncrementalTest do
 
     test "segments appear incrementally before stream_end" do
       sid = "incr-live-#{System.unique_integer([:positive])}"
-      egress = Process.whereis(Cranium.Egress)
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
 
       :ok = Manifest.init_stream(sid, "conv1", disposition: ["text"])
-      send(egress, {:stream_start, sid, %{disposition: ["text"], mode: :text}})
-      send(egress, {:chunk, sid, words(35) <> "\n\n"})
+      send(segmenter, {:stream_start, sid, %{disposition: ["text"], mode: :text}})
+      send(segmenter, {:chunk, sid, words(35) <> "\n\n"})
       Process.sleep(20)
 
       # First segment should appear while stream is still open
@@ -117,8 +117,8 @@ defmodule Cranium.Egress.IncrementalTest do
       assert manifest["status"] == "streaming"
       assert length(manifest["segments"]) == 1
 
-      send(egress, {:chunk, sid, "More text."})
-      send(egress, {:stream_end, sid})
+      send(segmenter, {:chunk, sid, "More text."})
+      send(segmenter, {:stream_end, sid})
       Process.sleep(20)
 
       {:ok, manifest} = Manifest.get(sid)
