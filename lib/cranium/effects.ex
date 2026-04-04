@@ -1,41 +1,45 @@
 defmodule Cranium.Effects do
   @moduledoc """
-  Async side-effects stage.
+  Post-inference effects domain.
 
-  Handles work triggered by pipeline events that is not on the critical
-  path. Effects run as supervised Tasks under `Cranium.Effects.Supervisor`
-  — if a handoff generation fails, it doesn't affect the active epoch.
+  Supervises two children:
+  - `PassReactor` — GenServer subscribing to pass_complete events,
+    handling synchronous Store mutations and backpressure signaling.
+  - `TaskSupervisor` — Task.Supervisor for fire-and-forget async work
+    (handoff generation, summary generation).
 
-  Decomposes into two steps:
-
-  - `HandoffWriter` — on `!clear`, generates a handoff document via a
-    separate LLM call that summarizes the epoch. The handoff is stored
-    and injected into the next epoch's system prompt.
-  - `ConversationSummarizer` — every N turns, generates a cross-conversation
-    summary via a separate LLM call. Summaries are stored and used for
-    cross-conversation awareness (the "landscape").
-
-  ## Timing
-
-  Effects are fire-and-forget from the Epoch's perspective. The Epoch
-  doesn't wait for handoff generation to complete before clearing. Summary
-  generation happens in the background after the Nth turn completes.
-
-  Both effects use the LLM backend but with separate, minimal prompts —
-  they don't inherit the full epoch context.
+  Convenience functions for spawning async tasks live here.
   """
 
+  use Supervisor
+
   require Logger
+
+  def start_link(opts) do
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {Task.Supervisor, name: Cranium.Effects.TaskSupervisor},
+      Cranium.Effects.PassReactor
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  # --- Async task convenience functions ---
 
   @doc """
   Generate a handoff document for a conversation.
 
-  Spawns a Task under the Effects supervisor. Returns immediately.
+  Spawns a Task under the Effects TaskSupervisor. Returns immediately.
   """
   @spec generate_handoff(String.t(), String.t(), String.t() | nil) :: :ok
   def generate_handoff(conversation_id, epoch_id, cc_session_id) do
     Task.Supervisor.start_child(
-      Cranium.Effects.Supervisor,
+      Cranium.Effects.TaskSupervisor,
       fn -> Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id, cc_session_id) end,
       restart: :temporary
     )
@@ -46,14 +50,14 @@ defmodule Cranium.Effects do
   @doc """
   Generate a cross-conversation summary.
 
-  Spawns a Task under the Effects supervisor. Returns immediately.
+  Spawns a Task under the Effects TaskSupervisor. Returns immediately.
   """
   @spec generate_summary(String.t(), String.t() | nil) :: :ok
   def generate_summary(conversation_id, cc_session_id) do
     Logger.info("Generating summary", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
-      Cranium.Effects.Supervisor,
+      Cranium.Effects.TaskSupervisor,
       fn -> Cranium.Effects.ConversationSummarizer.generate(conversation_id, cc_session_id) end,
       restart: :temporary
     )

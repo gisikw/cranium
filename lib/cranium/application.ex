@@ -9,7 +9,9 @@ defmodule Cranium.Application do
       ├── Cranium.Store.Repo          # Ecto connection pool
       ├── Cranium.Store               # Storage service with soft locking
       ├── Cranium.Events              # Unified event pub/sub
-      ├── Cranium.Effects.Supervisor  # Async side-effect tasks
+      ├── Cranium.Effects              # Post-inference effects
+      │   ├── TaskSupervisor          #   async (handoffs, summaries)
+      │   └── PassReactor             #   sync (Store mutations, backpressure)
       ├── Cranium.Transport           # Wire protocol actors
       │   ├── SegmentRegistry
       │   ├── Manifest
@@ -21,7 +23,6 @@ defmodule Cranium.Application do
       │   ├── OutputSegmenter
       │   ├── TTS.Cache
       │   └── TTS.Warmer
-      ├── Cranium.Persistence         # Temporal state actors
       └── Cranium.Inference           # Inference actors
           ├── NixEnv                  # Nix devShell PATH cache (for ClaudeCode backend)
           ├── TurnAssembly            # Singleton providers
@@ -55,12 +56,9 @@ defmodule Cranium.Application do
       # Must start before any actor that subscribes
       Cranium.Events,
 
-      # Async effects (handoffs, summaries)
-      {Task.Supervisor, name: Cranium.Effects.Supervisor},
-
+      Cranium.Effects,
       Cranium.Transport,
       Cranium.Media,
-      Cranium.Persistence,
       Cranium.Inference
     ]
 

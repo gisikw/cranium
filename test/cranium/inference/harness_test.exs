@@ -23,7 +23,7 @@ defmodule Cranium.Inference.HarnessTest do
   # GenServer messages are ordered: if pass_complete is in the mailbox before
   # :flush, the flush response guarantees mutations are done.
   defp flush_effects do
-    GenServer.call(Cranium.Persistence.Effects, :flush)
+    GenServer.call(Cranium.Effects.PassReactor, :flush)
   end
 
   describe "compute_saturation/1" do

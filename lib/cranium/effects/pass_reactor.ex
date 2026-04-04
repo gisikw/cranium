@@ -1,4 +1,4 @@
-defmodule Cranium.Persistence.Effects do
+defmodule Cranium.Effects.PassReactor do
   @moduledoc """
   Post-inference state mutations subscriber.
 
@@ -10,9 +10,6 @@ defmodule Cranium.Persistence.Effects do
   Owns the pass_done backpressure signal to TurnAssembler — the pass
   isn't truly done until state is persisted (next turn needs the
   assistant message in history).
-
-  Separate from Cranium.Effects, which coordinates fire-and-forget
-  async tasks (handoff generation, summary generation).
   """
 
   use GenServer

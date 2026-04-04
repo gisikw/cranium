@@ -1,11 +1,11 @@
-defmodule Cranium.Persistence.EffectsTest do
+defmodule Cranium.Effects.PassReactorTest do
   use CraniumTest.DataCase, async: false
 
   @moduletag :capture_log
 
-  alias Cranium.Persistence.Effects
+  alias Cranium.Effects.PassReactor
 
-  defp flush_effects, do: GenServer.call(Effects, :flush)
+  defp flush_effects, do: GenServer.call(PassReactor, :flush)
 
   describe "pass_complete (success)" do
     test "persists assistant message and updates epoch state" do
@@ -15,7 +15,7 @@ defmodule Cranium.Persistence.EffectsTest do
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
 
       # Simulate pass_complete from Harness
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :complete,
         epoch_id: ctx.epoch_id,
         output: "hello world",
@@ -45,7 +45,7 @@ defmodule Cranium.Persistence.EffectsTest do
 
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :complete,
         epoch_id: ctx.epoch_id,
         output: "ephemeral output",
@@ -71,7 +71,7 @@ defmodule Cranium.Persistence.EffectsTest do
 
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :complete,
         epoch_id: ctx.epoch_id,
         output: "",
@@ -99,7 +99,7 @@ defmodule Cranium.Persistence.EffectsTest do
 
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :cancelled,
         epoch_id: ctx.epoch_id,
         output: "partial output here",
@@ -125,7 +125,7 @@ defmodule Cranium.Persistence.EffectsTest do
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
       long_output = String.duplicate("x", 3000)
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :cancelled,
         epoch_id: ctx.epoch_id,
         output: long_output,
@@ -145,7 +145,7 @@ defmodule Cranium.Persistence.EffectsTest do
 
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :cancelled,
         epoch_id: ctx.epoch_id,
         output: "",
@@ -172,7 +172,7 @@ defmodule Cranium.Persistence.EffectsTest do
       # Set status to inferring first
       Cranium.Store.update_epoch(ctx.epoch_id, %{status: "inferring"})
 
-      send(Effects, {:pass_complete, conversation_id, "stream-1", %{
+      send(PassReactor, {:pass_complete, conversation_id, "stream-1", %{
         reason: :error,
         epoch_id: ctx.epoch_id,
         ephemeral: false
@@ -199,7 +199,7 @@ defmodule Cranium.Persistence.EffectsTest do
         []
       )
 
-      send(Effects, {:pass_complete, conversation_id, stream_id, %{
+      send(PassReactor, {:pass_complete, conversation_id, stream_id, %{
         reason: :complete,
         epoch_id: ctx.epoch_id,
         output: "done",
@@ -224,7 +224,7 @@ defmodule Cranium.Persistence.EffectsTest do
         []
       )
 
-      send(Effects, {:pass_complete, conversation_id, stream_id, %{
+      send(PassReactor, {:pass_complete, conversation_id, stream_id, %{
         reason: :complete,
         epoch_id: ctx.epoch_id,
         output: "",
