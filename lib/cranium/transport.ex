@@ -8,6 +8,7 @@ defmodule Cranium.Transport do
   @impl true
   def init(_opts) do
     children = [
+      Cranium.Transport.SegmentRegistry,
       Cranium.Transport.Manifest
     ]
 

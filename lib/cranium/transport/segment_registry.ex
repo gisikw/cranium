@@ -1,9 +1,12 @@
-defmodule Cranium.Input.TakeRegistry do
+defmodule Cranium.Transport.SegmentRegistry do
   @moduledoc """
-  Registry for chunked audio input takes.
+  Registry for chunked audio input segments.
 
   Tracks open takes, buffers numbered chunks, computes missing sequences
   on seal, and assembles the final audio binary when complete.
+
+  Segment arrival tracking is a Transport concern — the "missing chunks"
+  HTTP response is protocol-level bookkeeping.
   """
 
   use GenServer
@@ -63,7 +66,7 @@ defmodule Cranium.Input.TakeRegistry do
   def init(_opts) do
     ttl_ms = Application.get_env(:cranium, :take_ttl_ms, 86_400_000)
     Process.send_after(self(), :cleanup, ttl_ms)
-    Logger.info("TakeRegistry started (ttl=#{ttl_ms}ms)")
+    Logger.info("SegmentRegistry started (ttl=#{ttl_ms}ms)")
     {:ok, %{takes: %{}, ttl_ms: ttl_ms}}
   end
 

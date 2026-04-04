@@ -1,12 +1,11 @@
 defmodule Cranium.LegacyTransport.TranscriptionListener do
   @moduledoc """
-  Legacy bridge: feeds transcription results into TakeRegistry for the
+  Legacy bridge: feeds transcription results into SegmentRegistry for the
   HTTP done endpoint's missing-chunk response.
 
   Completion dispatch is now handled by TakeCollector → TurnAssembler.
-  This module only exists to keep TakeRegistry's chunk tracking in sync
-  for the `/v1/input/:id/done` HTTP response. Will be removed when
-  TakeRegistry is ported to the new actor system.
+  This module only exists to keep SegmentRegistry's chunk tracking in sync
+  for the `/v1/input/:id/done` HTTP response.
   """
 
   use GenServer
@@ -24,7 +23,7 @@ defmodule Cranium.LegacyTransport.TranscriptionListener do
     {:ok, %{}}
   end
 
-  # Chunked path: feed transcribed text into TakeRegistry for tracking.
+  # Chunked path: feed transcribed text into SegmentRegistry for tracking.
   # Completion dispatch is handled by TakeCollector, not here.
   @impl true
   def handle_info(
@@ -33,7 +32,7 @@ defmodule Cranium.LegacyTransport.TranscriptionListener do
         state
       )
       when not is_nil(seq) do
-    case Cranium.Input.TakeRegistry.put_chunk(take_id, seq, text) do
+    case Cranium.Transport.SegmentRegistry.put_chunk(take_id, seq, text) do
       {:ok, :buffered} ->
         :ok
 

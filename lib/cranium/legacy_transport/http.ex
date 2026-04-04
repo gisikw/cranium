@@ -274,7 +274,7 @@ defmodule Cranium.LegacyTransport.HTTP do
     stream_id = Cranium.Stage.new_stream_id()
 
     :ok =
-      Cranium.Input.TakeRegistry.open(take_id, stream_id, conversation_id, disposition,
+      Cranium.Transport.SegmentRegistry.open(take_id, stream_id, conversation_id, disposition,
         origin: origin
       )
 
@@ -343,7 +343,7 @@ defmodule Cranium.LegacyTransport.HTTP do
         # Broadcast seal for TakeCollector (completion dispatch now via actors)
         Cranium.Events.broadcast({:take_sealed, id, last_seq})
 
-        case Cranium.Input.TakeRegistry.seal(id, last_seq) do
+        case Cranium.Transport.SegmentRegistry.seal(id, last_seq) do
           {:ok, :complete, _result} ->
             conn
             |> put_resp_content_type("application/json")

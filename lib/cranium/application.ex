@@ -12,6 +12,8 @@ defmodule Cranium.Application do
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
       ├── Cranium.Events              # Unified event pub/sub
       ├── Cranium.Transport           # Wire protocol actors
+      │   ├── SegmentRegistry
+      │   └── Manifest
       ├── Cranium.Media               # Media processing actors
       │   ├── Storage
       │   ├── Transcoder
@@ -45,9 +47,6 @@ defmodule Cranium.Application do
       # Storage — must start first (downstream stages depend on it)
       Cranium.Store.Repo,
       Cranium.Store,
-
-      # Input protocol (chunked audio take registry)
-      Cranium.Input.TakeRegistry,
 
       # Nix devShell env cache (ETS table for PATH injection)
       Cranium.NixEnv,
