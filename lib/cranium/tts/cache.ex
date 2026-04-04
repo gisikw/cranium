@@ -91,7 +91,7 @@ defmodule Cranium.TTS.Cache do
   @impl true
   def init(opts) do
     delay = Keyword.get(opts, :cleanup_delay, @cleanup_delay)
-    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Cranium.Events.subscribe()
     Logger.info("TTS cache started")
     {:ok, %__MODULE__{} |> Map.put(:cleanup_delay, delay)}
   end

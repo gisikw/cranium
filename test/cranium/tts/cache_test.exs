@@ -53,7 +53,7 @@ defmodule Cranium.TTS.CacheTest do
       audio = <<0xFF, 0xFB>>
 
       # Broadcast segment_ready so Cache's text_cache gets populated
-      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
+      Cranium.Events.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
       Process.sleep(10)
 
       Cranium.Backend.TTS.Mock
@@ -69,7 +69,7 @@ defmodule Cranium.TTS.CacheTest do
     test "returns error when TTS backend fails", %{cache: cache} do
       sid = "lazy-fail-#{System.unique_integer([:positive])}"
 
-      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
+      Cranium.Events.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
       Process.sleep(10)
 
       Cranium.Backend.TTS.Mock

@@ -161,7 +161,7 @@ defmodule Cranium.LegacyTransport.HTTP do
       |> send_chunked(200)
 
     # Subscribe before checking state to avoid missing events in the gap
-    Registry.register(Cranium.StreamRegistry, {:stream_raw, id}, [])
+    Cranium.Events.subscribe({:stream_raw, id})
 
     # Check if stream already completed (late connect)
     case Cranium.Transport.Manifest.get(id) do
@@ -186,7 +186,7 @@ defmodule Cranium.LegacyTransport.HTTP do
       |> put_resp_header("x-accel-buffering", "no")
       |> send_chunked(200)
 
-    Registry.register(Cranium.StreamRegistry, {:conversation, id}, [])
+    Cranium.Events.subscribe({:conversation, id})
     multi_stream_sse_loop(conn)
   end
 
@@ -198,7 +198,7 @@ defmodule Cranium.LegacyTransport.HTTP do
       |> put_resp_header("x-accel-buffering", "no")
       |> send_chunked(200)
 
-    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Cranium.Events.subscribe()
     multi_stream_sse_loop(conn)
   end
 

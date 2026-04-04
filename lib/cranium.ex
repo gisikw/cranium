@@ -22,7 +22,7 @@ defmodule Cranium do
         cancel(conversation_id)
         Cranium.Store.clear_epoch(conversation_id)
 
-        Cranium.Event.broadcast(
+        Cranium.Events.broadcast(
           conversation_id,
           {:epoch_cleared, conversation_id, %{epoch_id: epoch.id, source: source}}
         )

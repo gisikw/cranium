@@ -231,7 +231,7 @@ defmodule Cranium.Inference.TurnAssembler do
 
     # 2. Broadcast message_received so firehose clients see inbound messages
     unless ephemeral do
-      Cranium.Event.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
+      Cranium.Events.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
         text: text,
         origin: header.origin,
         stream_id: stream_id

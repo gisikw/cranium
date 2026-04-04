@@ -79,10 +79,10 @@ defmodule Cranium.Agent do
   @doc """
   Begin inference with the assembled context.
 
-  Streams output via `Cranium.StreamRegistry` on three topics:
+  Streams output via `Cranium.Events` on three topics:
   - `{:stream_raw, stream_id}` — per-stream subscribers
   - `{:conversation, conversation_id}` — conversation-level firehose
-  - `{:global}` — global firehose (all conversations)
+  - `:global` — global firehose (all conversations)
 
   Returns when inference is complete (including any tool call loops).
   """
@@ -414,7 +414,7 @@ defmodule Cranium.Agent do
   # --- Private ---
 
   defp emit(stream_id, conversation_id, event) do
-    Cranium.Event.broadcast(stream_id, conversation_id, event)
+    Cranium.Events.broadcast(stream_id, conversation_id, event)
   end
 
   defp backend_module do

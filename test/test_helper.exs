@@ -9,9 +9,9 @@ unless Process.whereis(Cranium.Store.Repo) do
   Cranium.Store.Repo.start_link([])
 end
 
-# Ensure services are running (no-op if already started by application supervisor)
-unless Process.whereis(Cranium.StreamRegistry) do
-  Registry.start_link(keys: :duplicate, name: Cranium.StreamRegistry)
+# Ensure event registry is running (no-op if already started by application supervisor)
+unless Process.whereis(Cranium.Events.Registry) do
+  Registry.start_link(keys: :duplicate, name: Cranium.Events.Registry)
 end
 
 Cranium.Transport.Manifest.start_link(name: Cranium.Transport.Manifest)

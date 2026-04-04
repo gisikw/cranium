@@ -136,7 +136,7 @@ defmodule Cranium.Inference.Harness do
     cc_session_id = agent_result[:cc_session_id] || turn[:cc_session_id]
 
     # Emit pass_complete — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Event.broadcast(stream_id, cid,
+    Cranium.Events.broadcast(stream_id, cid,
       {:pass_complete, cid, stream_id, %{
         reason: :complete,
         epoch_id: turn.epoch_id,
@@ -159,7 +159,7 @@ defmodule Cranium.Inference.Harness do
     cc_session_id = partial[:cc_session_id] || turn[:cc_session_id]
 
     # Emit pass_complete (cancelled) — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Event.broadcast(stream_id, cid,
+    Cranium.Events.broadcast(stream_id, cid,
       {:pass_complete, cid, stream_id, %{
         reason: :cancelled,
         epoch_id: turn.epoch_id,
@@ -176,7 +176,7 @@ defmodule Cranium.Inference.Harness do
     ephemeral = turn[:ephemeral] == true
 
     # Emit pass_complete (error) — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Event.broadcast(stream_id, cid,
+    Cranium.Events.broadcast(stream_id, cid,
       {:pass_complete, cid, stream_id, %{
         reason: :error,
         epoch_id: turn.epoch_id,

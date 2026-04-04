@@ -11,18 +11,18 @@ defmodule Cranium.AgentTest do
     :ok
   end
 
-  # Subscribe the test process to a stream's raw events via the StreamRegistry.
+  # Subscribe the test process to events via Cranium.Events.
   # Must be called before Agent.infer so the test process receives broadcasts.
   defp subscribe_stream(stream_id) do
-    Registry.register(Cranium.StreamRegistry, {:stream_raw, stream_id}, [])
+    Cranium.Events.subscribe({:stream_raw, stream_id})
   end
 
   defp subscribe_conversation(conversation_id) do
-    Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+    Cranium.Events.subscribe({:conversation, conversation_id})
   end
 
   defp subscribe_global do
-    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Cranium.Events.subscribe()
   end
 
   defp start_agent do

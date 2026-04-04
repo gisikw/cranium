@@ -92,7 +92,7 @@ defmodule Cranium.Transport.Manifest do
 
   @impl true
   def init(_opts) do
-    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Cranium.Events.subscribe()
     Logger.info("Manifest started")
     {:ok, %__MODULE__{}}
   end

@@ -61,7 +61,7 @@ defmodule Cranium.Inference.HarnessTest do
       end)
 
       # Subscribe to pass_complete events
-      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+      Cranium.Events.subscribe({:conversation, conversation_id})
 
       # Start per-conversation infrastructure
       {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
@@ -124,7 +124,7 @@ defmodule Cranium.Inference.HarnessTest do
       end)
 
       # Subscribe to pass_complete events
-      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+      Cranium.Events.subscribe({:conversation, conversation_id})
 
       {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
 
@@ -176,7 +176,7 @@ defmodule Cranium.Inference.HarnessTest do
         {:ok, pid}
       end)
 
-      Registry.register(Cranium.StreamRegistry, {:conversation, conversation_id}, [])
+      Cranium.Events.subscribe({:conversation, conversation_id})
 
       {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
 

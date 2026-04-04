@@ -11,7 +11,7 @@ defmodule Cranium.Application do
       ├── Cranium.Context.Landscape   # Cross-conversation summary cache
       ├── Cranium.Ingress             # Input processing stage (legacy)
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
-      ├── Cranium.Events              # Registry-based pub/sub
+      ├── Cranium.Events              # Unified event pub/sub
       ├── Cranium.Transport           # Wire protocol actors
       ├── Cranium.Media               # Media processing actors
       │   ├── Storage
@@ -56,11 +56,11 @@ defmodule Cranium.Application do
       # Context providers (GenServer processes, started before Context stage)
       Cranium.Context.Landscape,
 
-      # Stream event registry (duplicate-key Registry for pub/sub fanout)
-      # Must start before any actor that subscribes via Registry.register
-      {Registry, keys: :duplicate, name: Cranium.StreamRegistry},
+      # Event registry (duplicate-key Registry for pub/sub fanout)
+      # Must start before any actor that subscribes
+      Cranium.Events,
 
-      # TTS audio cache (subscribes to segment_ready via StreamRegistry)
+      # TTS audio cache (subscribes to segment_ready via Events)
       Cranium.TTS.Cache,
 
       # TTS warm queue (serializes synthesis to avoid GPU contention)
@@ -72,13 +72,10 @@ defmodule Cranium.Application do
       # Async effects (handoffs, summaries)
       {Task.Supervisor, name: Cranium.Effects.Supervisor},
 
-      # HTTP transport (Bandit doesn't depend on Events, so it can start early)
+      # HTTP transport
       {Bandit, plug: Cranium.LegacyTransport.HTTP, port: http_port()},
 
-      # Revised Hierarchy
-      Cranium.Events,
-
-      # Legacy transport bridge (must start after Events)
+      # Legacy transport bridge
       Cranium.LegacyTransport,
       Cranium.Transport,
       Cranium.Media,

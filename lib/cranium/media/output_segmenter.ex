@@ -3,7 +3,7 @@ defmodule Cranium.Media.OutputSegmenter do
   Segments streaming agent output into deliverable units.
 
   Receives raw stream events (stream_start, chunk, stream_end) from the Agent
-  via StreamRegistry and produces segments for downstream consumers. Each
+  via Cranium.Events and produces segments for downstream consumers. Each
   segment is pushed to the Manifest (for pull-based clients) and broadcast as
   a `{:segment_ready, ...}` event (for future Transport actors).
 
@@ -56,7 +56,7 @@ defmodule Cranium.Media.OutputSegmenter do
 
   @impl GenServer
   def handle_call({:subscribe_stream, stream_id}, _from, state) do
-    {:ok, _} = Registry.register(Cranium.StreamRegistry, {:stream_raw, stream_id}, [])
+    {:ok, _} = Cranium.Events.subscribe({:stream_raw, stream_id})
     {:reply, :ok, state}
   end
 
@@ -110,7 +110,7 @@ defmodule Cranium.Media.OutputSegmenter do
         # Flush any buffered text before the cue so segment ordering matches stream order
         stream = flush_text_buffer(stream, stream_id)
 
-        Cranium.Event.broadcast(
+        Cranium.Events.broadcast(
           {:segment_ready, stream_id, stream.segment_index,
            %{type: :cue, cue_type: cue_type, data: data}}
         )
@@ -451,7 +451,7 @@ defmodule Cranium.Media.OutputSegmenter do
 
     renditions = if "audio" in disposition, do: [:text, :audio], else: [:text]
 
-    Cranium.Event.broadcast(
+    Cranium.Events.broadcast(
       {:segment_ready, stream_id, index, %{type: :utterance, text: text, renditions: renditions}}
     )
 

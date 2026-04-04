@@ -40,7 +40,7 @@ defmodule Cranium.Media.OutputSegmenterTest do
     send(segmenter, {:stream_end, stream_id})
 
     # Simulate pass_complete (normally from Harness) — drives manifest status
-    Cranium.Event.broadcast(stream_id, "conv1",
+    Cranium.Events.broadcast(stream_id, "conv1",
       {:pass_complete, "conv1", stream_id, %{reason: :complete, output: "", ephemeral: true}})
 
     Process.sleep(50)
@@ -125,7 +125,7 @@ defmodule Cranium.Media.OutputSegmenterTest do
       send(segmenter, {:stream_end, sid})
 
       # Simulate pass_complete (normally from Harness)
-      Cranium.Event.broadcast(sid, "conv1",
+      Cranium.Events.broadcast(sid, "conv1",
         {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}})
 
       Process.sleep(20)

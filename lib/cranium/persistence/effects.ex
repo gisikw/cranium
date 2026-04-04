@@ -2,7 +2,7 @@ defmodule Cranium.Persistence.Effects do
   @moduledoc """
   Post-inference state mutations subscriber.
 
-  Subscribes to pass_complete events via StreamRegistry and handles
+  Subscribes to pass_complete events via Cranium.Events and handles
   all Store mutations after inference: persist assistant messages,
   update epoch state (saturation, turn_count, cc_session_id,
   interrupted_context), and trigger periodic summary generation.
@@ -26,7 +26,7 @@ defmodule Cranium.Persistence.Effects do
 
   @impl true
   def init(_opts) do
-    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Cranium.Events.subscribe()
     {:ok, %{}}
   end
 
