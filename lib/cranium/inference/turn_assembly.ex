@@ -19,7 +19,8 @@ defmodule Cranium.Inference.TurnAssembly do
   def init(_opts) do
     children = [
       Cranium.Inference.SystemPrompt,
-      Cranium.Inference.History
+      Cranium.Inference.History,
+      Cranium.Context.Landscape
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

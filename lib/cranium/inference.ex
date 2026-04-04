@@ -8,7 +8,10 @@ defmodule Cranium.Inference do
   @impl true
   def init(_opts) do
     children = [
-      # Singleton providers (SystemPrompt, History)
+      # Nix devShell env cache (ETS table for PATH injection into ClaudeCode backend)
+      Cranium.NixEnv,
+
+      # Singleton providers (SystemPrompt, History, Landscape)
       Cranium.Inference.TurnAssembly,
 
       # Per-conversation process lookup

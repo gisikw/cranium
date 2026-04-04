@@ -66,7 +66,7 @@ defmodule Cranium.Inference.HarnessTest do
       # Start per-conversation infrastructure
       {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
 
-      # Broadcast PassHeader + TextInput (mimics what LegacyTransport does)
+      # Broadcast PassHeader + TextInput (mimics what Transport.HTTP does)
       header = %Cranium.Messages.PassHeader{
         pass_id: pass_id,
         conversation_id: conversation_id,

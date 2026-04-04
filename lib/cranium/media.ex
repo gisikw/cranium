@@ -11,7 +11,9 @@ defmodule Cranium.Media do
       Cranium.Media.Storage,
       Cranium.Media.Transcoder,
       Cranium.Media.TakeCollector,
-      Cranium.Media.OutputSegmenter
+      Cranium.Media.OutputSegmenter,
+      Cranium.TTS.Cache,
+      Cranium.TTS.Warmer
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

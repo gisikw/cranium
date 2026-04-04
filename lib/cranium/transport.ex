@@ -9,9 +9,14 @@ defmodule Cranium.Transport do
   def init(_opts) do
     children = [
       Cranium.Transport.SegmentRegistry,
-      Cranium.Transport.Manifest
+      Cranium.Transport.Manifest,
+      {Bandit, plug: Cranium.Transport.HTTP, port: http_port()}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp http_port do
+    Application.get_env(:cranium, :http_port, 4000)
   end
 end

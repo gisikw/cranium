@@ -12,6 +12,8 @@ defmodule Cranium.Transport.SegmentRegistry do
   use GenServer
   require Logger
 
+  alias Cranium.Messages.Transcription
+
   defmodule Take do
     @moduledoc false
     use TypedStruct
@@ -64,6 +66,7 @@ defmodule Cranium.Transport.SegmentRegistry do
 
   @impl true
   def init(_opts) do
+    Cranium.Events.subscribe()
     ttl_ms = Application.get_env(:cranium, :take_ttl_ms, 86_400_000)
     Process.send_after(self(), :cleanup, ttl_ms)
     Logger.info("SegmentRegistry started (ttl=#{ttl_ms}ms)")
@@ -94,26 +97,15 @@ defmodule Cranium.Transport.SegmentRegistry do
 
   @impl true
   def handle_call({:put_chunk, take_id, seq, data}, _from, state) do
-    case Map.get(state.takes, take_id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+    case do_put_chunk(state, take_id, seq, data) do
+      {:ok, state, {:complete, result}} ->
+        {:reply, {:ok, :complete, result}, state}
 
-      %Take{status: :complete} ->
-        {:reply, {:error, :already_complete}, state}
+      {:ok, state} ->
+        {:reply, {:ok, :buffered}, state}
 
-      take ->
-        take = %{take | chunks: Map.put(take.chunks, seq, data)}
-
-        case check_completeness(take) do
-          {:complete, result} ->
-            take = %{take | status: :complete, completed_at: System.monotonic_time(:millisecond)}
-
-            {:reply, {:ok, :complete, result},
-             %{state | takes: Map.put(state.takes, take_id, take)}}
-
-          :incomplete ->
-            {:reply, {:ok, :buffered}, %{state | takes: Map.put(state.takes, take_id, take)}}
-        end
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -144,6 +136,23 @@ defmodule Cranium.Transport.SegmentRegistry do
     end
   end
 
+  # Chunked transcription results: keep chunk tracking in sync for the
+  # /v1/input/:id/done missing-chunk response.
+  @impl true
+  def handle_info(
+        {:transcription_complete, %Transcription{take_id: take_id, seq: seq, text: text}},
+        state
+      )
+      when not is_nil(seq) do
+    state =
+      case do_put_chunk(state, take_id, seq, text) do
+        {:ok, new_state} -> new_state
+        {:error, _reason} -> state
+      end
+
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(:cleanup, state) do
     now = System.monotonic_time(:millisecond)
@@ -163,7 +172,32 @@ defmodule Cranium.Transport.SegmentRegistry do
     {:noreply, %{state | takes: takes}}
   end
 
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
   # --- Private ---
+
+  defp do_put_chunk(state, take_id, seq, data) do
+    case Map.get(state.takes, take_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Take{status: :complete} ->
+        {:error, :already_complete}
+
+      take ->
+        take = %{take | chunks: Map.put(take.chunks, seq, data)}
+
+        case check_completeness(take) do
+          {:complete, result} ->
+            take = %{take | status: :complete, completed_at: System.monotonic_time(:millisecond)}
+            {:ok, %{state | takes: Map.put(state.takes, take_id, take)}, {:complete, result}}
+
+          :incomplete ->
+            {:ok, %{state | takes: Map.put(state.takes, take_id, take)}}
+        end
+    end
+  end
 
   defp check_completeness(%Take{status: status, last_seq: last_seq, chunks: chunks} = take)
        when status == :sealed and not is_nil(last_seq) do
