@@ -59,7 +59,7 @@ level. That drift is a bug in cranium, not a style preference.
 ## Naming
 
 - Timestamps: `2006-01-02_15-04-05` (lexicographic, filesystem-safe)
-- Module names match file paths (`Cranium.Ingress.Transcriber` → `lib/cranium/ingress/transcriber.ex`)
+- Module names match file paths (`Cranium.Media.Transcoder` → `lib/cranium/media/transcoder.ex`)
 
 ## Secrets
 
@@ -171,5 +171,5 @@ level. That drift is a bug in cranium, not a style preference.
 - Tests run with `async: true` unless they share mutable state (Ecto sandbox
   in shared mode)
 - No `Process.sleep` in tests — use `assert_receive` with timeouts
-- Test modules mirror source modules: `Cranium.Ingress` →
-  `CraniumTest.IngressTest`
+- Test modules mirror source modules: `Cranium.Media.Transcoder` →
+  `CraniumTest.Media.TranscoderTest`

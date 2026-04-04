@@ -9,7 +9,6 @@ defmodule Cranium.Application do
       ├── Cranium.Store               # Storage service with soft locking
       ├── Cranium.TTS.Cache           # Ephemeral TTS audio buffer
       ├── Cranium.Context.Landscape   # Cross-conversation summary cache
-      ├── Cranium.Ingress             # Input processing stage (legacy)
       ├── Cranium.Effects.Supervisor  # Async side-effect tasks
       ├── Cranium.Events              # Unified event pub/sub
       ├── Cranium.Transport           # Wire protocol actors
@@ -65,9 +64,6 @@ defmodule Cranium.Application do
 
       # TTS warm queue (serializes synthesis to avoid GPU contention)
       Cranium.TTS.Warmer,
-
-      # Pipeline stages (legacy — Ingress to be dissolved into actors)
-      Cranium.Ingress,
 
       # Async effects (handoffs, summaries)
       {Task.Supervisor, name: Cranium.Effects.Supervisor},
