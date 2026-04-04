@@ -44,13 +44,41 @@ defmodule Cranium.LegacyTransport.HTTP do
 
   defp do_submit(conn) do
     conversation_id = conn.body_params["conversation_id"] || "default"
+    text = conn.body_params["text"]
+    origin = conn.body_params["origin"]
+
+    # Commands are synchronous — no stream, no manifest, no inference pass
+    case text do
+      "!clear" ->
+        Cranium.clear_epoch(conversation_id, source: origin || "submit")
+        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"command" => "clear"}))
+
+      "!cancel" ->
+        result = Cranium.cancel(conversation_id)
+        Logger.info("Cancel result: #{inspect(result)}",
+          conversation_id: conversation_id, transport: :http)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{"command" => "cancel"}))
+
+      _ ->
+        do_submit_pass(conn)
+    end
+  end
+
+  defp do_submit_pass(conn) do
+    conversation_id = conn.body_params["conversation_id"] || "default"
     system = conn.body_params["system"]
     origin = conn.body_params["origin"]
     disposition = parse_disposition(conn.body_params["disposition"])
     model = conn.body_params["model"]
     ephemeral = conn.body_params["ephemeral"] == true
 
-    # Generate a stream_id for manifest tracking
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
@@ -72,7 +100,20 @@ defmodule Cranium.LegacyTransport.HTTP do
 
     cond do
       is_binary(text) and text != "" ->
-        do_submit_text(conn, text, header)
+        Logger.info(
+          "Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text, 0..80))}",
+          transport: :http
+        )
+
+        # Ensure per-conversation TurnAssembler exists before broadcasting
+        Cranium.Inference.Conversation.start_or_get(conversation_id)
+
+        Cranium.Events.broadcast({:pass_header, header})
+        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}})
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
 
       match?(%Plug.Upload{}, audio) ->
         audio_bytes = File.read!(audio.path)
@@ -105,50 +146,6 @@ defmodule Cranium.LegacyTransport.HTTP do
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(400, Jason.encode!(%{"error" => "missing text or audio"}))
-    end
-  end
-
-  defp do_submit_text(conn, text, %Cranium.Messages.PassHeader{} = header) do
-    Logger.info(
-      "Submit: stream=#{header.stream_id} conversation=#{header.conversation_id} disposition=#{inspect(header.disposition)} text=#{inspect(String.slice(text, 0..80))}",
-      transport: :http
-    )
-
-    case text do
-      "!clear" ->
-        Cranium.clear_epoch(header.conversation_id, source: header.origin || "submit")
-
-        Logger.info("Cleared epoch", conversation_id: header.conversation_id, transport: :http)
-        Cranium.Transport.Manifest.complete(header.stream_id)
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "clear"}))
-
-      "!cancel" ->
-        result = Cranium.cancel(header.conversation_id)
-
-        Logger.info("Cancel result: #{inspect(result)}",
-          conversation_id: header.conversation_id,
-          transport: :http
-        )
-
-        Cranium.Transport.Manifest.complete(header.stream_id)
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{"stream_id" => header.stream_id, "command" => "cancel"}))
-
-      _ ->
-        # Ensure per-conversation TurnAssembler exists before broadcasting
-        Cranium.Inference.Conversation.start_or_get(header.conversation_id)
-
-        Cranium.Events.broadcast({:pass_header, header})
-        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}})
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(202, Jason.encode!(%{"stream_id" => header.stream_id}))
     end
   end
 
