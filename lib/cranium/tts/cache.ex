@@ -9,8 +9,8 @@ defmodule Cranium.TTS.Cache do
     then a Task synthesizes and calls `put/4`. The cache entry transitions from
     `:warming` → audio binary.
   - **Lazy synthesis**: `get/3` finds no cached entry and no warming marker,
-    pulls text from the Manifest, synthesizes on the caller's process, and
-    returns the audio.
+    pulls text from the local text cache (populated via segment_ready events),
+    synthesizes on the caller's process, and returns the audio.
 
   When `get/3` finds a `:warming` marker, it polls until audio arrives or a
   timeout expires, avoiding duplicate TTS requests.
@@ -33,6 +33,7 @@ defmodule Cranium.TTS.Cache do
 
   typedstruct do
     field :entries, map(), default: %{}
+    field :text_cache, map(), default: %{}
     field :cleanup_timers, map(), default: %{}
   end
 
@@ -55,7 +56,7 @@ defmodule Cranium.TTS.Cache do
     case GenServer.call(name, {:get, stream_id, index}) do
       {:ok, audio} -> {:ok, audio}
       :warming -> await_warm(stream_id, index, name)
-      :not_found -> synthesize_lazy(stream_id, index)
+      :not_found -> synthesize_lazy(stream_id, index, name)
     end
   end
 
@@ -90,6 +91,7 @@ defmodule Cranium.TTS.Cache do
   @impl true
   def init(opts) do
     delay = Keyword.get(opts, :cleanup_delay, @cleanup_delay)
+    Registry.register(Cranium.StreamRegistry, {:global}, [])
     Logger.info("TTS cache started")
     {:ok, %__MODULE__{} |> Map.put(:cleanup_delay, delay)}
   end
@@ -115,6 +117,17 @@ defmodule Cranium.TTS.Cache do
   end
 
   @impl true
+  def handle_call({:get_text, stream_id, index}, _from, state) do
+    reply =
+      case Map.fetch(state.text_cache, {stream_id, index}) do
+        {:ok, text} -> {:ok, text}
+        :error -> :not_found
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_call({:put, stream_id, index, audio}, _from, state) do
     key = {stream_id, index}
     entries = Map.put(state.entries, key, audio)
@@ -131,9 +144,20 @@ defmodule Cranium.TTS.Cache do
   end
 
   @impl true
+  def handle_info({:segment_ready, stream_id, index, %{type: :utterance, text: text}}, state) do
+    text_cache = Map.put(state.text_cache, {stream_id, index}, text)
+    {:noreply, %{state | text_cache: text_cache}}
+  end
+
+  @impl true
   def handle_info({:cleanup, stream_id}, state) do
     {evicted, remaining} =
       Enum.split_with(state.entries, fn {{sid, _}, _} -> sid == stream_id end)
+
+    text_remaining =
+      state.text_cache
+      |> Enum.reject(fn {{sid, _}, _} -> sid == stream_id end)
+      |> Map.new()
 
     timers = Map.delete(state.cleanup_timers, stream_id)
 
@@ -143,8 +167,11 @@ defmodule Cranium.TTS.Cache do
       )
     end
 
-    {:noreply, %{state | entries: Map.new(remaining), cleanup_timers: timers}}
+    {:noreply, %{state | entries: Map.new(remaining), text_cache: text_remaining, cleanup_timers: timers}}
   end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Private ---
 
@@ -178,8 +205,8 @@ defmodule Cranium.TTS.Cache do
     end
   end
 
-  defp synthesize_lazy(stream_id, index) do
-    case Cranium.Manifest.get_segment_text(stream_id, index) do
+  defp synthesize_lazy(stream_id, index, name) do
+    case GenServer.call(name, {:get_text, stream_id, index}) do
       {:ok, text} ->
         backend = Application.get_env(:cranium, :backends)[:tts] || Cranium.Backend.TTS.ExoVoice
         backend.synthesize(text, [])

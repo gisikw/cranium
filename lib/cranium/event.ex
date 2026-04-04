@@ -61,8 +61,7 @@ defmodule Cranium.Event do
   # -- Rendition events (Egress/TTS) --
 
   @type rendition_event ::
-          {:segment_ready, stream_id :: String.t(), index :: non_neg_integer(),
-           renditions :: [atom()]}
+          {:segment_ready, stream_id :: String.t(), index :: non_neg_integer(), payload :: map()}
           | {:tts_complete, stream_id :: String.t(), index :: non_neg_integer()}
 
   @type t :: stream_event() | lifecycle_event() | rendition_event()

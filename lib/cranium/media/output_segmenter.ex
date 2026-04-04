@@ -109,7 +109,12 @@ defmodule Cranium.Media.OutputSegmenter do
       {:ok, stream} ->
         # Flush any buffered text before the cue so segment ordering matches stream order
         stream = flush_text_buffer(stream, stream_id)
-        Cranium.Manifest.add_cue(stream_id, stream.segment_index, cue_type, data)
+
+        Cranium.Event.broadcast(
+          {:segment_ready, stream_id, stream.segment_index,
+           %{type: :cue, cue_type: cue_type, data: data}}
+        )
+
         stream = %{stream | segment_index: stream.segment_index + 1}
         {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
 
@@ -122,15 +127,11 @@ defmodule Cranium.Media.OutputSegmenter do
   def handle_info({:stream_end, stream_id}, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
-        Cranium.Manifest.stamp(stream_id, :stream_end)
-
         remaining = String.trim(stream.text)
 
         if remaining != "" do
           emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
         end
-
-        Cranium.Manifest.complete(stream_id)
 
         {:noreply, %{state | streams: Map.delete(state.streams, stream_id)}}
 
@@ -444,16 +445,15 @@ defmodule Cranium.Media.OutputSegmenter do
   end
 
   defp emit_segment(stream_id, index, text, disposition) do
-    # Populate manifest (bridge — moves to Transport when Transport is built)
-    Cranium.Manifest.add_utterance(stream_id, index, text)
-
     if "audio" in disposition do
       warm_tts(stream_id, index, text)
     end
 
-    # Broadcast segment_ready for future Transport consumption
     renditions = if "audio" in disposition, do: [:text, :audio], else: [:text]
-    Cranium.Event.broadcast({:segment_ready, stream_id, index, renditions})
+
+    Cranium.Event.broadcast(
+      {:segment_ready, stream_id, index, %{type: :utterance, text: text, renditions: renditions}}
+    )
 
     Logger.debug("Segment emitted",
       stage: :output_segmenter,

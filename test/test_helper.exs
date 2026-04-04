@@ -9,7 +9,12 @@ unless Process.whereis(Cranium.Store.Repo) do
   Cranium.Store.Repo.start_link([])
 end
 
-Cranium.Manifest.start_link(name: Cranium.Manifest)
+# Ensure services are running (no-op if already started by application supervisor)
+unless Process.whereis(Cranium.StreamRegistry) do
+  Registry.start_link(keys: :duplicate, name: Cranium.StreamRegistry)
+end
+
+Cranium.Transport.Manifest.start_link(name: Cranium.Transport.Manifest)
 Cranium.TTS.Cache.start_link(name: Cranium.TTS.Cache)
 Cranium.Input.TakeRegistry.start_link(name: Cranium.Input.TakeRegistry)
 Cranium.Media.OutputSegmenter.start_link([])

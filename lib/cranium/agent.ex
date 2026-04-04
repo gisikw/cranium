@@ -263,10 +263,6 @@ defmodule Cranium.Agent do
   defp receive_loop(state, stream_id, llm_pid, ref, opts) do
     receive do
       {:llm_text, text} ->
-        if state.partial_output == [] do
-          Cranium.Manifest.stamp(stream_id, :first_token)
-        end
-
         emit(stream_id, state.conversation_id, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
         receive_loop(state, stream_id, llm_pid, ref, opts)

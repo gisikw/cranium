@@ -270,8 +270,6 @@ defmodule Cranium.Inference.TurnAssembler do
 
     {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
 
-    Cranium.Manifest.stamp(stream_id, :context_assembled)
-
     # 6. Write injection flags to Store immediately
     injection_flags = %{
       landscape_injected: injected[:landscape_injected] || false,

@@ -19,7 +19,6 @@ defmodule Cranium.TTS.Warmer do
 
   @spec enqueue(String.t(), non_neg_integer(), String.t(), atom()) :: :ok
   def enqueue(stream_id, index, text, name \\ __MODULE__) do
-    Cranium.Manifest.stamp_segment(stream_id, index, :warm_enqueued)
     GenServer.cast(name, {:enqueue, stream_id, index, text})
   end
 
@@ -42,7 +41,6 @@ defmodule Cranium.TTS.Warmer do
 
   @impl true
   def handle_info({:warm_done, stream_id, index, result, started_at}, state) do
-    Cranium.Manifest.stamp_segment(stream_id, index, :warm_complete)
     synthesis_ms = System.monotonic_time(:millisecond) - started_at
 
     case result do
@@ -70,7 +68,6 @@ defmodule Cranium.TTS.Warmer do
     case :queue.out(state.queue) do
       {{:value, {stream_id, index, text}}, queue} ->
         warmer = self()
-        Cranium.Manifest.stamp_segment(stream_id, index, :warm_started)
         started_at = System.monotonic_time(:millisecond)
 
         Task.start(fn ->

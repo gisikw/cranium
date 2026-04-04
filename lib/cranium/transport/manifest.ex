@@ -1,21 +1,14 @@
-defmodule Cranium.Manifest do
+defmodule Cranium.Transport.Manifest do
   @moduledoc """
   Tracks segment manifests for active streams.
 
   A manifest is a growing playlist of heterogeneous content blocks (utterances
   and cues) that clients poll and consume. Each stream gets its own manifest
-  initialized by Egress on stream start, populated as chunks arrive, and
-  completed when the Agent finishes.
+  initialized on stream start, populated as chunks arrive, and completed when
+  the Agent finishes.
 
   Manifests are ephemeral — they live only while a stream is active plus a
   short TTL after completion.
-
-  ## Pipeline Timing
-
-  Each manifest carries a `timing` map of monotonic timestamps appended by
-  pipeline stages via `stamp/3`. Segment-level timing is stored per-segment
-  via `stamp_segment/4`. Wall-clock ISO8601 strings are derived at
-  serialization time.
   """
 
   use GenServer
@@ -83,23 +76,6 @@ defmodule Cranium.Manifest do
     GenServer.call(name, {:set_metadata, stream_id, metadata})
   end
 
-  @doc """
-  Record a pipeline timing milestone. Stores monotonic time internally;
-  wall-clock ISO8601 is derived at serialization.
-  """
-  @spec stamp(String.t(), atom(), atom()) :: :ok
-  def stamp(stream_id, milestone, name \\ __MODULE__) when is_atom(milestone) do
-    GenServer.cast(name, {:stamp, stream_id, milestone, mono_now()})
-  end
-
-  @doc """
-  Record a per-segment timing milestone.
-  """
-  @spec stamp_segment(String.t(), non_neg_integer(), atom(), atom()) :: :ok
-  def stamp_segment(stream_id, index, milestone, name \\ __MODULE__) when is_atom(milestone) do
-    GenServer.cast(name, {:stamp_segment, stream_id, index, milestone, mono_now()})
-  end
-
   @doc "Get the manifest for a stream. Returns {:ok, manifest} or :not_found."
   @spec get(String.t(), atom()) :: {:ok, map()} | :not_found
   def get(stream_id, name \\ __MODULE__) do
@@ -116,7 +92,8 @@ defmodule Cranium.Manifest do
 
   @impl true
   def init(_opts) do
-    Logger.info("Manifest registry started")
+    Registry.register(Cranium.StreamRegistry, {:global}, [])
+    Logger.info("Manifest started")
     {:ok, %__MODULE__{}}
   end
 
@@ -127,10 +104,7 @@ defmodule Cranium.Manifest do
       conversation_id: conversation_id,
       disposition: disposition,
       status: :streaming,
-      segments: [],
-      timing: %{},
-      wall_origin: DateTime.utc_now(),
-      mono_origin: mono_now()
+      segments: []
     }
 
     streams = Map.put(state.streams, stream_id, manifest)
@@ -144,7 +118,6 @@ defmodule Cranium.Manifest do
         segment = %{
           index: index,
           type: :utterance,
-          timing: %{emitted: mono_now()},
           renditions: %{
             text: %{mime: "text/plain", content: text},
             audio: %{mime: "audio/mp3"}
@@ -198,8 +171,6 @@ defmodule Cranium.Manifest do
     case Map.fetch(state.streams, stream_id) do
       {:ok, manifest} ->
         manifest = %{manifest | status: :complete}
-        manifest = put_timing(manifest, :manifest_complete, mono_now())
-        log_pipeline_timing(manifest)
         streams = Map.put(state.streams, stream_id, manifest)
         {:reply, :ok, %{state | streams: streams}}
 
@@ -213,8 +184,6 @@ defmodule Cranium.Manifest do
     case Map.fetch(state.streams, stream_id) do
       {:ok, manifest} ->
         manifest = %{manifest | status: :cancelled}
-        manifest = put_timing(manifest, :manifest_complete, mono_now())
-        log_pipeline_timing(manifest)
         streams = Map.put(state.streams, stream_id, manifest)
         {:reply, :ok, %{state | streams: streams}}
 
@@ -248,104 +217,104 @@ defmodule Cranium.Manifest do
     {:reply, reply, state}
   end
 
-  # --- Cast handlers for timing (fire-and-forget from callers) ---
+  # --- Event Handlers ---
 
   @impl true
-  def handle_cast({:stamp, stream_id, milestone, mono}, state) do
-    state = update_stream(state, stream_id, &put_timing(&1, milestone, mono))
+  def handle_info({:segment_ready, stream_id, index, %{type: :utterance, text: text}}, state) do
+    state = append_segment(state, stream_id, %{
+      index: index,
+      type: :utterance,
+      renditions: %{
+        text: %{mime: "text/plain", content: text},
+        audio: %{mime: "audio/mp3"}
+      }
+    })
+
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:stamp_segment, stream_id, index, milestone, mono}, state) do
+  def handle_info({:segment_ready, stream_id, index, %{type: :cue, cue_type: cue_type, data: data}}, state) do
+    state = append_segment(state, stream_id, %{
+      index: index,
+      type: :cue,
+      cue_type: cue_type,
+      data: data
+    })
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pass_complete, _cid, stream_id, %{reason: :complete} = meta}, state) do
+    metadata =
+      %{}
+      |> maybe_put("saturation", meta[:saturation] && Float.round(meta.saturation, 3))
+      |> maybe_put("turn_count", meta[:turn_count])
+
     state =
       update_stream(state, stream_id, fn manifest ->
-        segments =
-          Enum.map(manifest.segments, fn
-            %{index: ^index} = seg ->
-              timing = Map.get(seg, :timing, %{})
-              %{seg | timing: Map.put(timing, milestone, mono)}
+        manifest = %{manifest | status: :complete}
 
-            seg ->
-              seg
-          end)
-
-        %{manifest | segments: segments}
+        if map_size(metadata) > 0 do
+          Map.update(manifest, :metadata, metadata, &Map.merge(&1, metadata))
+        else
+          manifest
+        end
       end)
 
     {:noreply, state}
   end
+
+  @impl true
+  def handle_info({:pass_complete, _cid, stream_id, %{reason: :cancelled}}, state) do
+    state = update_stream(state, stream_id, &%{&1 | status: :cancelled})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pass_complete, _cid, stream_id, %{reason: :error}}, state) do
+    state = update_stream(state, stream_id, &%{&1 | status: :complete})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Private ---
 
   defp update_stream(state, stream_id, fun) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, manifest} ->
-        streams = Map.put(state.streams, stream_id, fun.(manifest))
-        %{state | streams: streams}
+        %{state | streams: Map.put(state.streams, stream_id, fun.(manifest))}
 
       :error ->
         state
     end
   end
 
-  defp put_timing(manifest, milestone, mono) do
-    %{manifest | timing: Map.put(manifest.timing, milestone, mono)}
-  end
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp mono_now, do: System.monotonic_time(:millisecond)
+  defp append_segment(state, stream_id, segment) do
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, manifest} ->
+        manifest = %{manifest | segments: manifest.segments ++ [segment]}
+        %{state | streams: Map.put(state.streams, stream_id, manifest)}
 
-  defp log_pipeline_timing(manifest) do
-    t = manifest.timing
-    origin = manifest.mono_origin
-
-    # Compute deltas between consecutive milestones
-    deltas =
-      [
-        :submitted,
-        :context_assembled,
-        :inference_start,
-        :first_token,
-        :stream_end,
-        :manifest_complete
-      ]
-      |> Enum.map(fn m -> {m, Map.get(t, m)} end)
-      |> Enum.reject(fn {_, v} -> is_nil(v) end)
-
-    total = offset(t, :manifest_complete, origin)
-
-    fields =
-      deltas
-      |> Enum.map(fn {m, mono} -> "#{m}=#{mono - origin}ms" end)
-      |> Enum.join(" ")
-
-    Logger.info(
-      "Pipeline timing: stream=#{manifest.stream_id} conversation=#{manifest.conversation_id} status=#{manifest.status} #{fields} total=#{total}ms",
-      stage: :manifest
-    )
-  end
-
-  defp offset(timing, milestone, origin) do
-    case Map.get(timing, milestone) do
-      nil -> 0
-      mono -> mono - origin
+      :error ->
+        state
     end
   end
 
   defp to_json_manifest(manifest) do
     disposition = Map.get(manifest, :disposition, ["text"])
-    origin_wall = manifest.wall_origin
-    origin_mono = manifest.mono_origin
 
     base = %{
       "stream_id" => manifest.stream_id,
       "status" => to_string(manifest.status),
       "segments" =>
-        Enum.map(
-          manifest.segments,
-          &to_json_segment(&1, manifest.stream_id, disposition, origin_wall, origin_mono)
-        ),
-      "timing" => timing_to_json(manifest.timing, origin_wall, origin_mono)
+        Enum.map(manifest.segments, &to_json_segment(&1, manifest.stream_id, disposition))
     }
 
     case Map.get(manifest, :metadata) do
@@ -354,13 +323,7 @@ defmodule Cranium.Manifest do
     end
   end
 
-  defp to_json_segment(
-         %{type: :utterance} = seg,
-         stream_id,
-         disposition,
-         origin_wall,
-         origin_mono
-       ) do
+  defp to_json_segment(%{type: :utterance} = seg, stream_id, disposition) do
     renditions =
       %{}
       |> maybe_put_rendition("text", disposition, %{
@@ -372,39 +335,20 @@ defmodule Cranium.Manifest do
         "mime" => seg.renditions.audio.mime
       })
 
-    base = %{
+    %{
       "index" => seg.index,
       "type" => "utterance",
       "renditions" => renditions
     }
-
-    case Map.get(seg, :timing) do
-      nil -> base
-      timing when map_size(timing) == 0 -> base
-      timing -> Map.put(base, "timing", timing_to_json(timing, origin_wall, origin_mono))
-    end
   end
 
-  defp to_json_segment(%{type: :cue} = seg, _stream_id, _disposition, _origin_wall, _origin_mono) do
+  defp to_json_segment(%{type: :cue} = seg, _stream_id, _disposition) do
     %{
       "index" => seg.index,
       "type" => "cue",
       "cue_type" => to_string(seg.cue_type),
       "data" => seg.data
     }
-  end
-
-  defp timing_to_json(timing, origin_wall, origin_mono) do
-    Map.new(timing, fn {milestone, mono} ->
-      offset_ms = mono - origin_mono
-      wall = DateTime.add(origin_wall, offset_ms, :millisecond)
-
-      {to_string(milestone),
-       %{
-         "wall" => DateTime.to_iso8601(wall),
-         "offset_ms" => offset_ms
-       }}
-    end)
   end
 
   defp maybe_put_rendition(renditions, type, disposition, value) do

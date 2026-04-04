@@ -15,9 +15,7 @@ defmodule Cranium.Inference.Harness do
 
   ## Bridge Calls
 
-  Manifest and TTS.Cache calls remain here as bridges until Transport
-  and Media actors are built (Phase 5+). These are notification calls,
-  not state mutations.
+  TTS.Cache cleanup remains here as a bridge until Media owns TTS lifecycle.
   """
 
   use GenServer
@@ -93,8 +91,6 @@ defmodule Cranium.Inference.Harness do
       Cranium.Store.update_epoch(turn.epoch_id, %{status: "inferring"})
     end
 
-    Cranium.Manifest.stamp(stream_id, :inference_start)
-
     # Build Agent context
     context = %{
       system: turn.system,
@@ -151,14 +147,6 @@ defmodule Cranium.Inference.Harness do
         ephemeral: ephemeral
       }})
 
-    # Bridge: push saturation to manifest
-    if agent_stream_id = agent_result[:stream_id] do
-      Cranium.Manifest.set_metadata(agent_stream_id, %{
-        "saturation" => Float.round(saturation, 3),
-        "turn_count" => new_count
-      })
-    end
-
     # Bridge: TTS cache cleanup
     Cranium.TTS.Cache.schedule_cleanup(stream_id)
   end
@@ -180,8 +168,6 @@ defmodule Cranium.Inference.Harness do
         ephemeral: ephemeral
       }})
 
-    # Bridge: manifest cancel
-    Cranium.Manifest.cancel(stream_id)
   end
 
   defp handle_inference_result({:error, _reason}, turn, _state) do
@@ -196,9 +182,6 @@ defmodule Cranium.Inference.Harness do
         epoch_id: turn.epoch_id,
         ephemeral: ephemeral
       }})
-
-    # Bridge: manifest complete
-    Cranium.Manifest.complete(stream_id)
   end
 
   # --- Helpers ---

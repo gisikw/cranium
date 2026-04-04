@@ -1,7 +1,7 @@
-defmodule Cranium.ManifestTest do
+defmodule Cranium.Transport.ManifestTest do
   use ExUnit.Case, async: true
 
-  alias Cranium.Manifest
+  alias Cranium.Transport.Manifest
 
   setup do
     name = :"manifest_#{System.unique_integer([:positive])}"

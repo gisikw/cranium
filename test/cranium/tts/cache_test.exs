@@ -7,7 +7,6 @@ defmodule Cranium.TTS.CacheTest do
   import Mox
 
   alias Cranium.TTS.Cache
-  alias Cranium.Manifest
 
   setup :verify_on_exit!
 
@@ -53,8 +52,9 @@ defmodule Cranium.TTS.CacheTest do
       sid = "lazy-#{System.unique_integer([:positive])}"
       audio = <<0xFF, 0xFB>>
 
-      :ok = Manifest.init_stream(sid, "conv1")
-      :ok = Manifest.add_utterance(sid, 0, "Hello world")
+      # Broadcast segment_ready so Cache's text_cache gets populated
+      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
+      Process.sleep(10)
 
       Cranium.Backend.TTS.Mock
       |> expect(:synthesize, fn "Hello world", [] -> {:ok, audio} end)
@@ -69,8 +69,8 @@ defmodule Cranium.TTS.CacheTest do
     test "returns error when TTS backend fails", %{cache: cache} do
       sid = "lazy-fail-#{System.unique_integer([:positive])}"
 
-      :ok = Manifest.init_stream(sid, "conv1")
-      :ok = Manifest.add_utterance(sid, 0, "Hello world")
+      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world", renditions: [:text]}})
+      Process.sleep(10)
 
       Cranium.Backend.TTS.Mock
       |> expect(:synthesize, fn "Hello world", [] -> {:error, :timeout} end)

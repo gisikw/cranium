@@ -52,8 +52,7 @@ defmodule Cranium.LegacyTransport.HTTP do
 
     # Generate a stream_id for manifest tracking
     stream_id = Cranium.Stage.new_stream_id()
-    Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
-    Cranium.Manifest.stamp(stream_id, :submitted)
+    Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
     text = conn.body_params["text"]
     audio = conn.body_params["audio"]
@@ -120,7 +119,7 @@ defmodule Cranium.LegacyTransport.HTTP do
         Cranium.clear_epoch(header.conversation_id, source: header.origin || "submit")
 
         Logger.info("Cleared epoch", conversation_id: header.conversation_id, transport: :http)
-        Cranium.Manifest.complete(header.stream_id)
+        Cranium.Transport.Manifest.complete(header.stream_id)
 
         conn
         |> put_resp_content_type("application/json")
@@ -134,7 +133,7 @@ defmodule Cranium.LegacyTransport.HTTP do
           transport: :http
         )
 
-        Cranium.Manifest.complete(header.stream_id)
+        Cranium.Transport.Manifest.complete(header.stream_id)
 
         conn
         |> put_resp_content_type("application/json")
@@ -165,7 +164,7 @@ defmodule Cranium.LegacyTransport.HTTP do
     Registry.register(Cranium.StreamRegistry, {:stream_raw, id}, [])
 
     # Check if stream already completed (late connect)
-    case Cranium.Manifest.get(id) do
+    case Cranium.Transport.Manifest.get(id) do
       {:ok, %{"status" => "complete"}} ->
         send_manifest_as_events(conn, id)
 
@@ -204,7 +203,7 @@ defmodule Cranium.LegacyTransport.HTTP do
   end
 
   get "/v1/streams/:id/manifest" do
-    case Cranium.Manifest.get(id) do
+    case Cranium.Transport.Manifest.get(id) do
       {:ok, manifest} ->
         Logger.debug(
           "Manifest poll: stream=#{id} status=#{manifest["status"]} segments=#{length(manifest["segments"])}",
@@ -227,7 +226,7 @@ defmodule Cranium.LegacyTransport.HTTP do
   get "/v1/streams/:id/segments/:n/text" do
     index = String.to_integer(n)
 
-    case Cranium.Manifest.get_segment_text(id, index) do
+    case Cranium.Transport.Manifest.get_segment_text(id, index) do
       {:ok, text} ->
         conn
         |> put_resp_content_type("text/plain")
@@ -245,8 +244,6 @@ defmodule Cranium.LegacyTransport.HTTP do
 
     case Cranium.TTS.Cache.get(id, index) do
       {:ok, audio} ->
-        Cranium.Manifest.stamp_segment(id, index, :first_retrieved)
-
         conn
         |> put_resp_content_type("audio/mpeg")
         |> send_resp(200, audio)
@@ -281,8 +278,7 @@ defmodule Cranium.LegacyTransport.HTTP do
         origin: origin
       )
 
-    :ok = Cranium.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
-    Cranium.Manifest.stamp(stream_id, :submitted)
+    :ok = Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
     # Bridge: emit PassHeader so TurnAssembler can correlate chunked takes
     header = %Cranium.Messages.PassHeader{
@@ -594,7 +590,7 @@ defmodule Cranium.LegacyTransport.HTTP do
   end
 
   defp send_manifest_as_events(conn, stream_id) do
-    {:ok, manifest} = Cranium.Manifest.get(stream_id)
+    {:ok, manifest} = Cranium.Transport.Manifest.get(stream_id)
 
     conn =
       Enum.reduce(manifest["segments"], conn, fn seg, conn ->

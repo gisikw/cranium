@@ -7,7 +7,9 @@ defmodule Cranium.Transport do
 
   @impl true
   def init(_opts) do
-    children = [ ]
+    children = [
+      Cranium.Transport.Manifest
+    ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end

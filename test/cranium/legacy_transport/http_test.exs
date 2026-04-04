@@ -6,7 +6,7 @@ defmodule Cranium.LegacyTransport.HTTPTest do
   import Mox
 
   alias Cranium.LegacyTransport.HTTP
-  alias Cranium.Manifest
+  alias Cranium.Transport.Manifest
   alias Cranium.TTS.Cache
 
   setup :verify_on_exit!
@@ -92,6 +92,9 @@ defmodule Cranium.LegacyTransport.HTTPTest do
 
       :ok = Manifest.init_stream(sid, "conv1")
       :ok = Manifest.add_utterance(sid, 0, "Hello world")
+      # Cache gets text from segment_ready events, not Manifest
+      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world"}})
+      :sys.get_state(Cache)
 
       Cranium.Backend.TTS.Mock
       |> expect(:synthesize, fn "Hello world", [] -> {:ok, audio} end)
@@ -117,6 +120,8 @@ defmodule Cranium.LegacyTransport.HTTPTest do
 
       :ok = Manifest.init_stream(sid, "conv1")
       :ok = Manifest.add_utterance(sid, 0, "Hello world")
+      Cranium.Event.broadcast({:segment_ready, sid, 0, %{type: :utterance, text: "Hello world"}})
+      :sys.get_state(Cache)
 
       Cranium.Backend.TTS.Mock
       |> expect(:synthesize, fn "Hello world", [] -> {:error, :connection_refused} end)

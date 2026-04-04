@@ -47,15 +47,6 @@ defmodule Cranium.Application do
       Cranium.Store.Repo,
       Cranium.Store,
 
-      # Manifest registry (segment playlist for active streams)
-      Cranium.Manifest,
-
-      # TTS audio cache (ephemeral buffer between Synthesizer and HTTP transport)
-      Cranium.TTS.Cache,
-
-      # TTS warm queue (serializes synthesis to avoid GPU contention)
-      Cranium.TTS.Warmer,
-
       # Input protocol (chunked audio take registry)
       Cranium.Input.TakeRegistry,
 
@@ -66,7 +57,14 @@ defmodule Cranium.Application do
       Cranium.Context.Landscape,
 
       # Stream event registry (duplicate-key Registry for pub/sub fanout)
+      # Must start before any actor that subscribes via Registry.register
       {Registry, keys: :duplicate, name: Cranium.StreamRegistry},
+
+      # TTS audio cache (subscribes to segment_ready via StreamRegistry)
+      Cranium.TTS.Cache,
+
+      # TTS warm queue (serializes synthesis to avoid GPU contention)
+      Cranium.TTS.Warmer,
 
       # Pipeline stages (legacy — Ingress to be dissolved into actors)
       Cranium.Ingress,
