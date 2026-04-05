@@ -1,0 +1,29 @@
+# Cranium profile configuration
+# Copy to ~/.config/cranium/profiles.yaml (or $XDG_CONFIG_HOME/cranium/profiles.yaml)
+#
+# Each profile bundles: backend (which adapter), model (which model on that backend),
+# and identity (system prompt file path — optional).
+#
+# The model string is backend-specific. For Ollama, this is the Ollama model name
+# (including custom Modelfiles). Model-specific params (temperature, context window,
+# sampling) live in Ollama Modelfiles, not here.
+
+default: exo
+
+ollama_url: http://localhost:11434
+
+profiles:
+  exo:
+    backend: claudecode
+    model: claude-opus-4-6
+    identity: /path/to/identity.md
+
+  exo-local:
+    backend: ollama
+    model: gemma4-cranium
+    identity: /path/to/identity.md
+
+  code:
+    backend: ollama
+    model: gemma4-cranium
+    # no identity — bare coding assistant

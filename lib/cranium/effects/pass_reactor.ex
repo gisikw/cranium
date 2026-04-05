@@ -45,7 +45,7 @@ defmodule Cranium.Effects.PassReactor do
       summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
 
       if summary_interval > 0 and rem(payload.turn_count, summary_interval) == 0 do
-        Cranium.Effects.generate_summary(cid, payload.cc_session_id)
+        Cranium.Effects.generate_summary(cid, payload.cc_session_id, payload[:profile])
       end
 
       Cranium.Store.update_epoch(payload.epoch_id, %{
@@ -53,6 +53,7 @@ defmodule Cranium.Effects.PassReactor do
         saturation: payload.saturation,
         turn_count: payload.turn_count,
         cc_session_id: payload.cc_session_id,
+        profile: payload[:profile],
         interrupted_context: nil
       })
     end

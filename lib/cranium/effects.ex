@@ -35,12 +35,16 @@ defmodule Cranium.Effects do
   Generate a handoff document for a conversation.
 
   Spawns a Task under the Effects TaskSupervisor. Returns immediately.
+  For CC-backed conversations, uses session resume. For other backends,
+  assembles context from Store and calls the backend directly.
   """
-  @spec generate_handoff(String.t(), String.t(), String.t() | nil) :: :ok
-  def generate_handoff(conversation_id, epoch_id, cc_session_id) do
+  @spec generate_handoff(String.t(), String.t(), String.t() | nil, String.t() | nil) :: :ok
+  def generate_handoff(conversation_id, epoch_id, cc_session_id, profile \\ nil) do
     Task.Supervisor.start_child(
       Cranium.Effects.TaskSupervisor,
-      fn -> Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id, cc_session_id) end,
+      fn ->
+        Cranium.Effects.HandoffWriter.generate(conversation_id, epoch_id, cc_session_id, profile)
+      end,
       restart: :temporary
     )
 
@@ -51,14 +55,18 @@ defmodule Cranium.Effects do
   Generate a cross-conversation summary.
 
   Spawns a Task under the Effects TaskSupervisor. Returns immediately.
+  For CC-backed conversations, uses session fork. For other backends,
+  assembles context from Store and calls the backend directly.
   """
-  @spec generate_summary(String.t(), String.t() | nil) :: :ok
-  def generate_summary(conversation_id, cc_session_id) do
+  @spec generate_summary(String.t(), String.t() | nil, String.t() | nil) :: :ok
+  def generate_summary(conversation_id, cc_session_id, profile \\ nil) do
     Logger.info("Generating summary", conversation_id: conversation_id, stage: :effects)
 
     Task.Supervisor.start_child(
       Cranium.Effects.TaskSupervisor,
-      fn -> Cranium.Effects.ConversationSummarizer.generate(conversation_id, cc_session_id) end,
+      fn ->
+        Cranium.Effects.ConversationSummarizer.generate(conversation_id, cc_session_id, profile)
+      end,
       restart: :temporary
     )
 

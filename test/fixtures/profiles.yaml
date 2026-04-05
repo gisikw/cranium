@@ -1,0 +1,21 @@
+default: test
+
+profiles:
+  test:
+    backend: mock
+    model: test-model
+
+  test-ollama:
+    backend: ollama
+    model: test-ollama-model
+
+  test-cc:
+    backend: claudecode
+    model: claude-opus-4-6
+
+  test-with-identity:
+    backend: anthropic
+    model: test-model
+    identity: test/fixtures/test-identity.txt
+
+ollama_url: http://localhost:11434

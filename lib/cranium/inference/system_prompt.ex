@@ -2,9 +2,11 @@ defmodule Cranium.Inference.SystemPrompt do
   @moduledoc """
   System prompt provider.
 
-  Assembles the system prompt from an identity document and the handoff from
-  the previous epoch. Caches identity on init (read from disk once) and
-  caches the resolved handoff per-conversation so the system prompt is
+  Assembles the system prompt from an identity string and the handoff from
+  the previous epoch. Identity is provided per-call by TurnAssembler
+  (resolved from the active profile via `Cranium.Config`).
+
+  Caches the resolved handoff per-conversation so the system prompt is
   **stable across all turns** in an epoch.
 
   Cache lifecycle: on `is_fresh`, any existing cache for that conversation is
@@ -37,25 +39,13 @@ defmodule Cranium.Inference.SystemPrompt do
 
   @impl true
   def init(_opts) do
-    {:ok, %{identity: "", handoffs: %{}}, {:continue, :load_identity}}
-  end
-
-  @impl true
-  def handle_continue(:load_identity, state) do
-    identity = load_identity_from_disk()
-    Logger.info("SystemPrompt: identity loaded (#{byte_size(identity)} bytes)")
-    {:noreply, %{state | identity: identity}}
+    {:ok, %{handoffs: %{}}}
   end
 
   @impl true
   def handle_call({:contribute, conversation_id, opts}, _from, state) do
     is_fresh = Keyword.get(opts, :is_fresh, false)
-
-    identity =
-      case Keyword.get(opts, :identity) do
-        override when is_binary(override) and override != "" -> override
-        _ -> state.identity
-      end
+    identity = Keyword.get(opts, :identity) || ""
 
     # is_fresh means new epoch — invalidate any stale cache before lookup
     handoffs =
@@ -89,28 +79,6 @@ defmodule Cranium.Inference.SystemPrompt do
   end
 
   # --- Private ---
-
-  defp load_identity_from_disk do
-    path = Application.get_env(:cranium, :paths)[:identity]
-
-    if path do
-      case File.read(path) do
-        {:ok, content} ->
-          content
-
-        {:error, reason} ->
-          Logger.warning("SystemPrompt: failed to load identity",
-            path: path,
-            reason: reason
-          )
-
-          ""
-      end
-    else
-      Logger.warning("SystemPrompt: no identity path configured")
-      ""
-    end
-  end
 
   defp resolve_handoff(conversation_id) do
     case Cranium.Store.get_latest_handoff(conversation_id) do

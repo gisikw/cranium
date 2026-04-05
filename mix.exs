@@ -37,8 +37,9 @@ defmodule Cranium.MixProject do
       {:bandit, "~> 1.6"},
       {:plug, "~> 1.16"},
 
-      # JSON
+      # JSON / YAML
       {:jason, "~> 1.4"},
+      {:yaml_elixir, "~> 2.11"},
 
       # Telemetry
       {:telemetry, "~> 1.3"},

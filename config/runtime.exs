@@ -9,7 +9,6 @@ unless config_env() == :test do
       handoffs: System.get_env("HANDOFFS_PATH"),
       summaries: System.get_env("SUMMARIES_PATH"),
       skills: System.get_env("SKILLS_PATH"),
-      identity: System.get_env("IDENTITY_PATH"),
       subagent_prompt: System.get_env("SUBAGENT_PROMPT_PATH")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)

@@ -23,7 +23,9 @@ config :cranium, :paths,
   handoffs: System.tmp_dir!(),
   summaries: System.tmp_dir!(),
   skills: Path.join(File.cwd!(), "skills"),
-  identity: nil,
   subagent_prompt: nil
+
+# Profile config — test fixture
+config :cranium, :profiles_path, Path.join(File.cwd!(), "test/fixtures/profiles.yaml")
 
 config :logger, level: :warning

@@ -13,6 +13,7 @@ defmodule Cranium.Store.Epoch do
     field :handoff, :string
     field :last_reminder_bucket, :integer, default: 0
     field :cc_session_id, :string
+    field :profile, :string
     field :last_landscape_at, :utc_datetime
     field :interrupted_context, :string
 
@@ -31,6 +32,7 @@ defmodule Cranium.Store.Epoch do
       :handoff,
       :last_reminder_bucket,
       :cc_session_id,
+      :profile,
       :last_landscape_at,
       :interrupted_context
     ])

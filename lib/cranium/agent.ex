@@ -96,10 +96,10 @@ defmodule Cranium.Agent do
   @impl true
   def init(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
-    llm_backend = backend_module()
+    llm_backend = Keyword.get(opts, :llm_backend) || backend_module()
 
     Logger.metadata(conversation_id: conversation_id, stage: :agent)
-    Logger.info("Agent started")
+    Logger.info("Agent started", backend: inspect(llm_backend))
 
     state = %__MODULE__{
       conversation_id: conversation_id,

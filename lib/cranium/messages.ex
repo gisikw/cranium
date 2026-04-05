@@ -18,6 +18,7 @@ defmodule Cranium.Messages do
       :system,
       :origin,
       :model,
+      :profile,
       :ephemeral,
       :disposition
     ]

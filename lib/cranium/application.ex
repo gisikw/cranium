@@ -9,6 +9,7 @@ defmodule Cranium.Application do
       ├── Cranium.Store.Repo          # Ecto connection pool
       ├── Cranium.Store               # Storage service with soft locking
       ├── Cranium.Events              # Unified event pub/sub
+      ├── Cranium.Config              # Profile configuration (profiles.yaml)
       ├── Cranium.Effects              # Post-inference effects
       │   ├── TaskSupervisor          #   async (handoffs, summaries)
       │   └── PassReactor             #   sync (Store mutations, backpressure)
@@ -55,6 +56,9 @@ defmodule Cranium.Application do
       # Event registry (duplicate-key Registry for pub/sub fanout)
       # Must start before any actor that subscribes
       Cranium.Events,
+
+      # Profile configuration — must start before Inference (TurnAssembler depends on it)
+      Cranium.Config,
 
       Cranium.Effects,
       Cranium.Transport,

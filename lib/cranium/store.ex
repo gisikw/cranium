@@ -327,6 +327,7 @@ defmodule Cranium.Store do
              last_landscape_at: epoch.last_landscape_at,
              interrupted_context: epoch.interrupted_context,
              cc_session_id: epoch.cc_session_id,
+             profile: epoch.profile,
              last_invoked_at: last_invoked_at
            }}
       end
@@ -371,6 +372,7 @@ defmodule Cranium.Store do
          last_landscape_at: epoch.last_landscape_at,
          interrupted_context: epoch.interrupted_context,
          cc_session_id: epoch.cc_session_id,
+         profile: epoch.profile,
          last_invoked_at: last_invoked_at
        }}
 
@@ -460,6 +462,7 @@ defmodule Cranium.Store do
       handoff: e.handoff,
       last_reminder_bucket: e.last_reminder_bucket,
       cc_session_id: e.cc_session_id,
+      profile: e.profile,
       last_landscape_at: e.last_landscape_at,
       interrupted_context: e.interrupted_context,
       inserted_at: e.inserted_at,

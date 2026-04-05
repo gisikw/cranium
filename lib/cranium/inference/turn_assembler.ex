@@ -238,19 +238,22 @@ defmodule Cranium.Inference.TurnAssembler do
       }})
     end
 
-    # 3. Resolve routing context
+    # 3. Resolve profile → backend, model, identity
+    {backend_module, resolved_model, identity, profile_name} = resolve_profile(header)
+
+    # 4. Resolve routing context
     projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
     working_dir = Cranium.Context.Router.resolve_project_dir(header.conversation_id, projects_dir)
 
-    # 4. System prompt
+    # 5. System prompt — profile identity, with header.system as direct override
     system_prompt =
       Cranium.Inference.SystemPrompt.contribute(
         header.conversation_id,
         is_fresh: is_fresh,
-        identity: header.system
+        identity: identity
       )
 
-    # 5. Turn injections
+    # 6. Turn injections
     injection_message = %{
       text: text,
       conversation_id: header.conversation_id,
@@ -270,7 +273,7 @@ defmodule Cranium.Inference.TurnAssembler do
 
     {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
 
-    # 6. Write injection flags to Store immediately
+    # 7. Write injection flags to Store immediately
     injection_flags = %{
       landscape_injected: injected[:landscape_injected] || false,
       saturation_warned_bucket: injected[:saturation_warned_bucket]
@@ -287,7 +290,7 @@ defmodule Cranium.Inference.TurnAssembler do
       })
     end
 
-    # 7. Persist enriched user message
+    # 8. Persist enriched user message
     enriched_text = injected[:text] || text
 
     unless ephemeral do
@@ -298,7 +301,7 @@ defmodule Cranium.Inference.TurnAssembler do
       })
     end
 
-    # 8. History
+    # 9. History
     messages =
       Cranium.Inference.History.contribute(
         header.conversation_id,
@@ -308,16 +311,25 @@ defmodule Cranium.Inference.TurnAssembler do
         attachments: Map.get(header, :attachments, [])
       )
 
-    # 9. Build Dispatch for OutputSegmenter metadata
+    # 10. Build Dispatch for OutputSegmenter metadata
+    harness_type =
+      case backend_module do
+        Cranium.Backend.LLM.ClaudeCode -> :claude_code
+        Cranium.Backend.LLM.Anthropic -> :api
+        Cranium.Backend.LLM.Ollama -> :ollama
+        _ -> nil
+      end
+
     dispatch =
       Cranium.Dispatch.from_submit(%{
         conversation_id: header.conversation_id,
-        model: header.model,
+        harness: harness_type,
+        model: resolved_model,
         disposition: header.disposition,
         ephemeral: header.ephemeral
       })
 
-    # 10. Emit turn_ready to Harness
+    # 11. Emit turn_ready to Harness
     turn = %{
       system: system_prompt,
       messages: messages,
@@ -327,7 +339,9 @@ defmodule Cranium.Inference.TurnAssembler do
       disposition: header.disposition || ["text"],
       cc_session_id: unless(ephemeral, do: epoch_ctx.cc_session_id),
       working_dir: working_dir,
-      model: header.model,
+      backend: backend_module,
+      model: resolved_model,
+      profile: profile_name,
       ephemeral: ephemeral,
       dispatch: dispatch,
       epoch_id: epoch_id,
@@ -346,6 +360,33 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     %{state | active_pass: stream_id}
+  end
+
+  defp resolve_profile(%PassHeader{profile: profile_name, model: model_override, system: system_override}) do
+    profile_name = profile_name || Cranium.Config.default_profile_name()
+
+    resolved =
+      case Cranium.Config.resolve_profile(profile_name) do
+        {:ok, r} ->
+          r
+
+        {:error, :not_found} ->
+          Logger.warning("TurnAssembler: profile '#{profile_name}' not found, using default")
+          {:ok, r} = Cranium.Config.resolve_profile(Cranium.Config.default_profile_name())
+          r
+      end
+
+    model = model_override || resolved.model
+
+    # header.system (direct string override) wins over profile identity
+    identity =
+      cond do
+        is_binary(system_override) and system_override != "" -> system_override
+        is_binary(resolved.identity) -> resolved.identity
+        true -> ""
+      end
+
+    {resolved.backend_module, model, identity, profile_name}
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)

@@ -77,11 +77,12 @@ defmodule Cranium.Inference.Harness do
     # Subscribe OutputSegmenter to the raw stream before inference starts
     :ok = GenServer.call(Cranium.Media.OutputSegmenter, {:subscribe_stream, stream_id})
 
-    # Start Agent
+    # Start Agent with profile-resolved backend
     {:ok, agent_pid} =
       Cranium.Agent.start_link(
         conversation_id: cid,
-        epoch_pid: self()
+        epoch_pid: self(),
+        llm_backend: turn[:backend]
       )
 
     # Register agent PID so cancel/1 can reach it while we're blocked
@@ -144,6 +145,7 @@ defmodule Cranium.Inference.Harness do
         saturation: saturation,
         turn_count: new_count,
         cc_session_id: cc_session_id,
+        profile: turn[:profile],
         ephemeral: ephemeral
       }})
 
@@ -165,6 +167,7 @@ defmodule Cranium.Inference.Harness do
         epoch_id: turn.epoch_id,
         output: output,
         cc_session_id: cc_session_id,
+        profile: turn[:profile],
         ephemeral: ephemeral
       }})
 

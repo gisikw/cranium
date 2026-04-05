@@ -77,6 +77,7 @@ defmodule Cranium.Transport.HTTP do
     origin = conn.body_params["origin"]
     disposition = parse_disposition(conn.body_params["disposition"])
     model = conn.body_params["model"]
+    profile = conn.body_params["profile"]
     ephemeral = conn.body_params["ephemeral"] == true
 
     stream_id = Cranium.Stage.new_stream_id()
@@ -94,6 +95,7 @@ defmodule Cranium.Transport.HTTP do
       system: system,
       origin: origin,
       model: model,
+      profile: profile,
       ephemeral: ephemeral,
       disposition: disposition
     }
