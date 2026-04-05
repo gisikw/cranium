@@ -320,6 +320,32 @@ let
       beamDeps = [];
     };
 
+    yamerl = buildRebar3 rec {
+      name = "yamerl";
+      version = "0.10.0";
+
+      src = fetchHex {
+        pkg = "yamerl";
+        version = "${version}";
+        sha256 = "346adb2963f1051dc837a2364e4acf6eb7d80097c0f53cbdc3046ec8ec4b4e6e";
+      };
+
+      beamDeps = [];
+    };
+
+    yaml_elixir = buildMix rec {
+      name = "yaml_elixir";
+      version = "2.12.1";
+
+      src = fetchHex {
+        pkg = "yaml_elixir";
+        version = "${version}";
+        sha256 = "d9ac16563c737d55f9bfeed7627489156b91268a3a21cd55c54eb2e335207fed";
+      };
+
+      beamDeps = [ yamerl ];
+    };
+
     websock = buildMix rec {
       name = "websock";
       version = "0.5.3";
