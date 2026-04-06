@@ -19,6 +19,28 @@ defmodule Cranium.Context.Router do
   end
 
   @doc """
+  Resolve a working directory for a conversation.
+
+  If the conversation matches a project under `projects_dir`, returns that
+  project path. Otherwise, returns a temp directory at `/tmp/cranium/<slug>`
+  (created if it doesn't exist) so non-project conversations don't inherit
+  cranium's own workdir.
+  """
+  @spec resolve_working_dir(String.t(), String.t()) :: String.t()
+  def resolve_working_dir(conversation_id, projects_dir) do
+    case resolve_project_dir(conversation_id, projects_dir) do
+      nil ->
+        slug = slugify(conversation_id)
+        tmp = Path.join("/tmp/cranium", slug)
+        File.mkdir_p!(tmp)
+        tmp
+
+      dir ->
+        dir
+    end
+  end
+
+  @doc """
   Convert a conversation ID or name to a filesystem-safe slug.
   """
   @spec slugify(String.t()) :: String.t()

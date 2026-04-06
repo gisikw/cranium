@@ -243,7 +243,7 @@ defmodule Cranium.Inference.TurnAssembler do
 
     # 4. Resolve routing context
     projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
-    working_dir = Cranium.Context.Router.resolve_project_dir(header.conversation_id, projects_dir)
+    working_dir = Cranium.Context.Router.resolve_working_dir(header.conversation_id, projects_dir)
 
     # 5. System prompt — profile identity, with header.system as direct override
     system_prompt =
