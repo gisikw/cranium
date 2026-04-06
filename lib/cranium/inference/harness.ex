@@ -23,6 +23,7 @@ defmodule Cranium.Inference.Harness do
 
   @registry Cranium.Inference.ConversationRegistry
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     GenServer.start_link(__MODULE__, opts, name: via(conversation_id))
@@ -191,6 +192,7 @@ defmodule Cranium.Inference.Harness do
   # --- Helpers ---
 
   @doc false
+  @spec compute_saturation(map()) :: float()
   def compute_saturation(usage) do
     max_context_tokens =
       Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000

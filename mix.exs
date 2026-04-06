@@ -41,9 +41,6 @@ defmodule Cranium.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.11"},
 
-      # Telemetry
-      {:telemetry, "~> 1.3"},
-
       # Static analysis
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:typed_struct, "~> 0.3"},

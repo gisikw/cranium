@@ -27,7 +27,6 @@ defmodule Cranium.Application do
           ├── NixEnv                  # Nix devShell PATH cache (for ClaudeCode backend)
           ├── TurnAssembly            # Singleton providers
           │   ├── SystemPrompt
-          │   ├── History
           │   └── Landscape
           ├── ConversationRegistry    # Per-conversation process lookup
           └── ConversationDynamicSupervisor

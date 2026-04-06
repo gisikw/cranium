@@ -15,14 +15,9 @@ defmodule Cranium.Inference.History do
   - `:attachments` — image attachments for current message
   """
 
-  use GenServer
   require Logger
 
   @default_window 50
-
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
 
   @doc """
   Return formatted conversation history with the current message appended.
@@ -36,18 +31,6 @@ defmodule Cranium.Inference.History do
   """
   @spec contribute(String.t(), keyword()) :: [map()]
   def contribute(conversation_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:contribute, conversation_id, opts})
-  end
-
-  # --- GenServer ---
-
-  @impl true
-  def init(_opts) do
-    {:ok, %{}}
-  end
-
-  @impl true
-  def handle_call({:contribute, conversation_id, opts}, _from, state) do
     epoch_id = Keyword.get(opts, :epoch_id)
     window = Keyword.get(opts, :window, @default_window)
     text = Keyword.get(opts, :text, "")
@@ -56,12 +39,9 @@ defmodule Cranium.Inference.History do
     {:ok, history} =
       Cranium.Store.get_messages(conversation_id, limit: window, epoch_id: epoch_id)
 
-    messages =
-      history
-      |> Enum.map(&format_message/1)
-      |> Enum.concat([format_current(text, attachments)])
-
-    {:reply, messages, state}
+    history
+    |> Enum.map(&format_message/1)
+    |> Enum.concat([format_current(text, attachments)])
   end
 
   # --- Formatting ---

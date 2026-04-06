@@ -2,8 +2,9 @@ defmodule Cranium.Inference.TurnAssembly do
   @moduledoc """
   Supervisor for singleton context providers.
 
-  SystemPrompt and History are shared across all conversations — they're
-  stateless (or cache globally) and serve any TurnAssembler that calls them.
+  SystemPrompt and Landscape are shared across all conversations — they
+  cache globally and serve any TurnAssembler that calls them. History is
+  a pure function module (no process).
 
   TurnAssembler itself is per-conversation, started by Conversation
   supervisors under ConversationDynamicSupervisor.
@@ -19,7 +20,6 @@ defmodule Cranium.Inference.TurnAssembly do
   def init(_opts) do
     children = [
       Cranium.Inference.SystemPrompt,
-      Cranium.Inference.History,
       Cranium.Inference.Landscape
     ]
 

@@ -41,6 +41,7 @@ defmodule Cranium.Inference.TurnAssembler do
   @sweep_interval_ms :timer.minutes(1)
   @registry Cranium.Inference.ConversationRegistry
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     GenServer.start_link(__MODULE__, opts, name: via(conversation_id))
