@@ -26,7 +26,8 @@ defmodule Cranium.Context.TurnInjector do
   """
 
   @time_gap_threshold_seconds 1800
-  @saturation_warn_threshold 50
+  @default_saturation_warn 50
+  @default_saturation_critical 80
   @saturation_bucket_size 5
 
   @spec process(map(), map()) :: {:ok, map()}
@@ -103,10 +104,12 @@ defmodule Cranium.Context.TurnInjector do
   defp maybe_add_saturation(injections, _message, context) do
     current = get_in(context, [:epoch, :saturation]) || 0
     last_bucket = get_in(context, [:epoch, :last_reminder_bucket]) || 0
+    warn = context[:saturation_warn] || @default_saturation_warn
+    critical = context[:saturation_critical] || @default_saturation_critical
     current_bucket = div(trunc(current), @saturation_bucket_size) * @saturation_bucket_size
 
-    if current >= @saturation_warn_threshold and current_bucket > last_bucket do
-      advice = saturation_advice(current)
+    if current >= warn and current_bucket > last_bucket do
+      advice = saturation_advice(current, critical)
 
       reminder =
         "<system-reminder>Context window saturation: #{trunc(current)}%. #{advice}</system-reminder>"
@@ -122,9 +125,10 @@ defmodule Cranium.Context.TurnInjector do
   defp saturation_fired_bucket(context) do
     current = get_in(context, [:epoch, :saturation]) || 0
     last_bucket = get_in(context, [:epoch, :last_reminder_bucket]) || 0
+    warn = context[:saturation_warn] || @default_saturation_warn
     current_bucket = div(trunc(current), @saturation_bucket_size) * @saturation_bucket_size
 
-    if current >= @saturation_warn_threshold and current_bucket > last_bucket do
+    if current >= warn and current_bucket > last_bucket do
       current_bucket
     end
   end
@@ -194,15 +198,15 @@ defmodule Cranium.Context.TurnInjector do
     "about #{days} #{if days == 1, do: "day", else: "days"}"
   end
 
-  defp saturation_advice(pct) when pct >= 80 do
+  defp saturation_advice(pct, critical) when pct >= critical do
     "Context is getting full. Wrap up current work, capture any loose threads as tickets, and suggest a !clear."
   end
 
-  defp saturation_advice(pct) when pct >= 70 do
+  defp saturation_advice(pct, critical) when pct >= critical - 10 do
     "Context is filling up. Start wrapping up — finish current task, note open threads."
   end
 
-  defp saturation_advice(_pct) do
+  defp saturation_advice(_pct, _critical) do
     "Context is past halfway. Be mindful of scope — avoid starting large new tasks."
   end
 

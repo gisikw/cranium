@@ -134,7 +134,7 @@ defmodule Cranium.Inference.Harness do
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
 
-    saturation = compute_saturation(usage)
+    saturation = compute_saturation(usage, turn[:context_window])
     new_count = (turn[:turn_count] || 0) + 1
     cc_session_id = agent_result[:cc_session_id] || turn[:cc_session_id]
 
@@ -192,10 +192,10 @@ defmodule Cranium.Inference.Harness do
   # --- Helpers ---
 
   @doc false
-  @spec compute_saturation(map()) :: float()
-  def compute_saturation(usage) do
+  @spec compute_saturation(map(), pos_integer() | nil) :: float()
+  def compute_saturation(usage, context_window \\ nil) do
     max_context_tokens =
-      Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000
+      context_window || Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000
 
     total =
       (usage[:input_tokens] || 0) +

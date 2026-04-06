@@ -240,7 +240,8 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name, thinking} = resolve_profile(header)
+    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config} =
+      resolve_profile(header)
 
     # 4. Resolve routing context
     projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
@@ -269,7 +270,9 @@ defmodule Cranium.Inference.TurnAssembler do
         last_reminder_bucket: epoch_ctx.last_reminder_bucket,
         last_landscape_at: epoch_ctx.last_landscape_at,
         interrupted_context: epoch_ctx.interrupted_context
-      }
+      },
+      saturation_warn: saturation_config[:saturation_warn],
+      saturation_critical: saturation_config[:saturation_critical]
     }
 
     {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
@@ -345,6 +348,7 @@ defmodule Cranium.Inference.TurnAssembler do
       model: resolved_model,
       profile: profile_name,
       thinking: thinking,
+      context_window: saturation_config[:context_window],
       ephemeral: ephemeral,
       dispatch: dispatch,
       epoch_id: epoch_id,
@@ -389,7 +393,13 @@ defmodule Cranium.Inference.TurnAssembler do
         true -> ""
       end
 
-    {resolved.backend_module, model, identity, profile_name, resolved.thinking}
+    saturation_config = %{
+      context_window: resolved[:context_window],
+      saturation_warn: resolved[:saturation_warn],
+      saturation_critical: resolved[:saturation_critical]
+    }
+
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config}
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)

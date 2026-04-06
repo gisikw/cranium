@@ -92,6 +92,36 @@ defmodule Cranium.Context.TurnInjectorTest do
       assert Enum.any?(injections, &(&1 =~ "deploying the new service"))
     end
 
+    test "respects custom saturation_warn threshold from context" do
+      message = %{text: "hello"}
+
+      # With default warn=50, a saturation of 45% wouldn't fire.
+      # With custom warn=40, it should fire.
+      context = %{
+        epoch: %{saturation: 45.0, last_reminder_bucket: 0},
+        saturation_warn: 40,
+        saturation_critical: 70
+      }
+
+      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "45%"))
+      assert bucket == 45
+    end
+
+    test "respects custom saturation_critical for advice text" do
+      message = %{text: "hello"}
+
+      # With critical=65, saturation at 66% should trigger "wrap up" advice
+      context = %{
+        epoch: %{saturation: 66.0, last_reminder_bucket: 60},
+        saturation_warn: 40,
+        saturation_critical: 65
+      }
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "getting full"))
+    end
+
     test "multiple injections can fire simultaneously" do
       now = ~U[2026-03-05 11:00:00Z]
       last = ~U[2026-03-05 10:00:00Z]

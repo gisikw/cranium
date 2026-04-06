@@ -31,14 +31,26 @@ defmodule Cranium.Config do
 
   defmodule Profile do
     @moduledoc false
-    defstruct [:name, :backend, :model, :identity_path, thinking: nil]
+    defstruct [
+      :name,
+      :backend,
+      :model,
+      :identity_path,
+      thinking: nil,
+      context_window: nil,
+      saturation_warn: nil,
+      saturation_critical: nil
+    ]
 
     @type t :: %__MODULE__{
             name: String.t(),
             backend: :claudecode | :anthropic | :ollama,
             model: String.t() | nil,
             identity_path: String.t() | nil,
-            thinking: boolean() | nil
+            thinking: boolean() | nil,
+            context_window: pos_integer() | nil,
+            saturation_warn: number() | nil,
+            saturation_critical: number() | nil
           }
   end
 
@@ -58,7 +70,10 @@ defmodule Cranium.Config do
            backend: profile.backend,
            model: profile.model,
            identity: identity,
-           thinking: profile.thinking
+           thinking: profile.thinking,
+           context_window: profile.context_window,
+           saturation_warn: profile.saturation_warn,
+           saturation_critical: profile.saturation_critical
          }}
 
       [] ->
@@ -191,7 +206,10 @@ defmodule Cranium.Config do
           backend: backend,
           model: config["model"],
           identity_path: config["identity"],
-          thinking: thinking
+          thinking: thinking,
+          context_window: config["context_window"],
+          saturation_warn: config["saturation_warn"],
+          saturation_critical: config["saturation_critical"]
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

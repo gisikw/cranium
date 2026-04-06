@@ -38,6 +38,17 @@ defmodule Cranium.Inference.HarnessTest do
     test "clamps to 1.0 over limit" do
       assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 300_000}) == 1.0
     end
+
+    test "uses explicit context_window when provided" do
+      # 100k of 200k = 0.5 with default, but 100k of 262144 = ~0.38
+      usage = %{input_tokens: 100_000}
+      assert Cranium.Inference.Harness.compute_saturation(usage, 262_144) == 100_000 / 262_144
+    end
+
+    test "falls back to global config when context_window is nil" do
+      # nil context_window should use Application config (200_000)
+      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 100_000}, nil) == 0.5
+    end
   end
 
   describe "TurnAssembler → Harness integration" do
