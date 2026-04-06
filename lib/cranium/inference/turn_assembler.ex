@@ -290,18 +290,10 @@ defmodule Cranium.Inference.TurnAssembler do
       })
     end
 
-    # 8. Persist enriched user message
+    # 8. Build history BEFORE persisting current message, so it doesn't
+    #    appear twice (once from DB, once from the explicit append).
     enriched_text = injected[:text] || text
 
-    unless ephemeral do
-      Cranium.Store.append_message(header.conversation_id, epoch_id, %{
-        role: :user,
-        content: enriched_text,
-        origin: header.origin
-      })
-    end
-
-    # 9. History
     messages =
       Cranium.Inference.History.contribute(
         header.conversation_id,
@@ -310,6 +302,15 @@ defmodule Cranium.Inference.TurnAssembler do
         text: enriched_text,
         attachments: Map.get(header, :attachments, [])
       )
+
+    # 9. Persist enriched user message (after history fetch)
+    unless ephemeral do
+      Cranium.Store.append_message(header.conversation_id, epoch_id, %{
+        role: :user,
+        content: enriched_text,
+        origin: header.origin
+      })
+    end
 
     # 10. Build Dispatch for OutputSegmenter metadata
     harness_type =
