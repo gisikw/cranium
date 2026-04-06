@@ -224,8 +224,8 @@ defmodule Cranium.Media.OutputSegmenterTest do
 
       simulate_stream(sid, [first_text, "\n\n", second_text], ["audio", "text"])
 
-      assert {:ok, <<1, 2, 3>>} = Cranium.TTS.Cache.get(sid, 0)
-      assert {:ok, <<4, 5, 6>>} = Cranium.TTS.Cache.get(sid, 1)
+      assert {:ok, <<1, 2, 3>>} = Cranium.Media.TTS.Cache.get(sid, 0)
+      assert {:ok, <<4, 5, 6>>} = Cranium.Media.TTS.Cache.get(sid, 1)
     end
 
     test "text-only disposition does not call TTS" do

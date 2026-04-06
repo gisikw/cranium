@@ -18,7 +18,6 @@ defmodule Cranium.Application do
       │   ├── Manifest
       │   └── Bandit (Transport.HTTP)
       ├── Cranium.Media               # Media processing actors
-      │   ├── Storage
       │   ├── Transcoder
       │   ├── TakeCollector
       │   ├── OutputSegmenter
@@ -29,7 +28,7 @@ defmodule Cranium.Application do
           ├── TurnAssembly            # Singleton providers
           │   ├── SystemPrompt
           │   ├── History
-          │   └── Context.Landscape
+          │   └── Landscape
           ├── ConversationRegistry    # Per-conversation process lookup
           └── ConversationDynamicSupervisor
               └── per conversation:
@@ -69,7 +68,7 @@ defmodule Cranium.Application do
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
 
     # Register built-in tools
-    Cranium.Agent.ToolRouter.register("subagent", Cranium.Agent.Tools.Subagent)
+    Cranium.Inference.Agent.ToolRouter.register("subagent", Cranium.Inference.Agent.Tools.Subagent)
 
     Supervisor.start_link(children, opts)
   end

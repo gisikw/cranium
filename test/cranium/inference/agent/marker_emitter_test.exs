@@ -1,7 +1,7 @@
-defmodule Cranium.Agent.MarkerEmitterTest do
+defmodule Cranium.Inference.Agent.MarkerEmitterTest do
   use ExUnit.Case, async: true
 
-  alias Cranium.Agent.MarkerEmitter
+  alias Cranium.Inference.Agent.MarkerEmitter
 
   describe "handle/2" do
     test "returns fake success and marker for :show" do

@@ -1,4 +1,4 @@
-defmodule Cranium.TTS.Warmer do
+defmodule Cranium.Media.TTS.Warmer do
   @moduledoc """
   Sequential TTS warm queue.
 
@@ -45,7 +45,7 @@ defmodule Cranium.TTS.Warmer do
 
     case result do
       {:ok, audio} ->
-        Cranium.TTS.Cache.put(stream_id, index, audio)
+        Cranium.Media.TTS.Cache.put(stream_id, index, audio)
 
         Logger.info(
           "Segment warm complete: stream=#{stream_id} segment=#{index} synthesis=#{synthesis_ms}ms bytes=#{byte_size(audio)}",
@@ -53,7 +53,7 @@ defmodule Cranium.TTS.Warmer do
         )
 
       {:error, reason} ->
-        Cranium.TTS.Cache.put(stream_id, index, :error)
+        Cranium.Media.TTS.Cache.put(stream_id, index, :error)
 
         Logger.error(
           "TTS warm failed: stream=#{stream_id} segment=#{index} synthesis=#{synthesis_ms}ms reason=#{inspect(reason)}",

@@ -1,5 +1,5 @@
-defmodule Cranium.Agent.ToolRouterTest.TestTool do
-  @behaviour Cranium.Agent.Tool
+defmodule Cranium.Inference.Agent.ToolRouterTest.TestTool do
+  @behaviour Cranium.Inference.Agent.Tool
 
   @impl true
   def execute(_input, _opts), do: {:ok, "test"}
@@ -17,10 +17,10 @@ defmodule Cranium.Agent.ToolRouterTest.TestTool do
   end
 end
 
-defmodule Cranium.Agent.ToolRouterTest do
+defmodule Cranium.Inference.Agent.ToolRouterTest do
   use ExUnit.Case, async: true
 
-  alias Cranium.Agent.ToolRouter
+  alias Cranium.Inference.Agent.ToolRouter
 
   describe "route/1" do
     test "routes marker tools to {:marker, atom, input}" do
@@ -56,7 +56,7 @@ defmodule Cranium.Agent.ToolRouterTest do
       original = Application.get_env(:cranium, :tools, [])
       on_exit(fn -> Application.put_env(:cranium, :tools, original) end)
 
-      ToolRouter.register("test_tool", Cranium.Agent.ToolRouterTest.TestTool)
+      ToolRouter.register("test_tool", Cranium.Inference.Agent.ToolRouterTest.TestTool)
       defs = ToolRouter.tool_definitions()
       names = Enum.map(defs, & &1.name)
       assert "test_tool" in names

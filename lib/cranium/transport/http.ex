@@ -241,7 +241,7 @@ defmodule Cranium.Transport.HTTP do
   get "/v1/streams/:id/segments/:n/audio" do
     index = String.to_integer(n)
 
-    case Cranium.TTS.Cache.get(id, index) do
+    case Cranium.Media.TTS.Cache.get(id, index) do
       {:ok, audio} ->
         conn
         |> put_resp_content_type("audio/mpeg")

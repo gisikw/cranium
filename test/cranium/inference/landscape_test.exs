@@ -1,7 +1,7 @@
-defmodule Cranium.Context.LandscapeTest do
+defmodule Cranium.Inference.LandscapeTest do
   use ExUnit.Case, async: false
 
-  alias Cranium.Context.Landscape
+  alias Cranium.Inference.Landscape
 
   @now ~U[2026-03-18 12:00:00Z]
 

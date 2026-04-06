@@ -1,4 +1,4 @@
-defmodule Cranium.TTS.Cache do
+defmodule Cranium.Media.TTS.Cache do
   @moduledoc """
   In-memory TTS audio cache keyed by `{stream_id, segment_index}`.
 

@@ -1,4 +1,4 @@
-defmodule Cranium.Context.Landscape do
+defmodule Cranium.Inference.Landscape do
   @moduledoc """
   Cross-conversation landscape provider.
 

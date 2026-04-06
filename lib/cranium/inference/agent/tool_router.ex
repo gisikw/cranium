@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.ToolRouter do
+defmodule Cranium.Inference.Agent.ToolRouter do
   @moduledoc """
   Routes tool calls to the appropriate handler.
 

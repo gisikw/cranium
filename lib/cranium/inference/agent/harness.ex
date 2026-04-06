@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.Harness do
+defmodule Cranium.Inference.Agent.Harness do
   @moduledoc """
   Core agent inference loop.
 

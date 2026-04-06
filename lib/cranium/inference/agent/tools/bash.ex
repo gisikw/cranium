@@ -1,9 +1,9 @@
-defmodule Cranium.Agent.Tools.Bash do
+defmodule Cranium.Inference.Agent.Tools.Bash do
   @moduledoc """
   Execute shell commands and return output.
   """
 
-  @behaviour Cranium.Agent.Tool
+  @behaviour Cranium.Inference.Agent.Tool
 
   require Logger
 

@@ -7,7 +7,7 @@ defmodule Cranium.Transport.HTTPTest do
 
   alias Cranium.Transport.HTTP
   alias Cranium.Transport.Manifest
-  alias Cranium.TTS.Cache
+  alias Cranium.Media.TTS.Cache
 
   setup :verify_on_exit!
 

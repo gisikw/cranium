@@ -79,7 +79,7 @@ defmodule Cranium.Inference.Harness do
 
     # Start Agent with profile-resolved backend
     {:ok, agent_pid} =
-      Cranium.Agent.start_link(
+      Cranium.Inference.Agent.start_link(
         conversation_id: cid,
         epoch_pid: self(),
         llm_backend: turn[:backend]
@@ -108,7 +108,7 @@ defmodule Cranium.Inference.Harness do
       dispatch: turn[:dispatch]
     }
 
-    result = Cranium.Agent.infer(agent_pid, context)
+    result = Cranium.Inference.Agent.infer(agent_pid, context)
 
     # Unregister agent — inference is done
     Registry.unregister(@registry, {cid, :agent})
@@ -151,7 +151,7 @@ defmodule Cranium.Inference.Harness do
       }})
 
     # Bridge: TTS cache cleanup
-    Cranium.TTS.Cache.schedule_cleanup(stream_id)
+    Cranium.Media.TTS.Cache.schedule_cleanup(stream_id)
   end
 
   defp handle_inference_result({:error, :cancelled, partial}, turn, _state) do

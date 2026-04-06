@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.Tool do
+defmodule Cranium.Inference.Agent.Tool do
   @moduledoc """
   Behaviour for tool modules.
 

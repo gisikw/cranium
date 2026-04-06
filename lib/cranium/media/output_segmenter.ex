@@ -464,7 +464,7 @@ defmodule Cranium.Media.OutputSegmenter do
   end
 
   defp warm_tts(stream_id, index, text) do
-    Cranium.TTS.Cache.mark_warming(stream_id, index)
-    Cranium.TTS.Warmer.enqueue(stream_id, index, text)
+    Cranium.Media.TTS.Cache.mark_warming(stream_id, index)
+    Cranium.Media.TTS.Warmer.enqueue(stream_id, index, text)
   end
 end

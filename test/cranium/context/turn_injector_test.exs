@@ -147,15 +147,15 @@ defmodule Cranium.Context.TurnInjectorTest do
     test "sets landscape_injected flag on fresh epoch with landscape data" do
       # Push a summary into the Landscape GenServer cache
       now = DateTime.utc_now()
-      Cranium.Context.Landscape.summary_updated("other-room", "They were discussing tests.", now)
+      Cranium.Inference.Landscape.summary_updated("other-room", "They were discussing tests.", now)
       # Ensure the cast is processed before we read
-      :sys.get_state(Cranium.Context.Landscape)
+      :sys.get_state(Cranium.Inference.Landscape)
 
       on_exit(fn ->
         # Clean up: remove the test entry so it doesn't leak to other tests.
         # Push an empty entry then let it be excluded by the empty-summary guard.
         # Simplest: just restart the Landscape to clear its cache.
-        if pid = Process.whereis(Cranium.Context.Landscape) do
+        if pid = Process.whereis(Cranium.Inference.Landscape) do
           :sys.replace_state(pid, fn state ->
             entries = Map.delete(state.entries, "other-room")
             %{state | entries: entries}

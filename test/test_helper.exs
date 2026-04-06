@@ -15,7 +15,7 @@ unless Process.whereis(Cranium.Events.Registry) do
 end
 
 Cranium.Transport.Manifest.start_link(name: Cranium.Transport.Manifest)
-Cranium.TTS.Cache.start_link(name: Cranium.TTS.Cache)
+Cranium.Media.TTS.Cache.start_link(name: Cranium.Media.TTS.Cache)
 Cranium.Transport.SegmentRegistry.start_link(name: Cranium.Transport.SegmentRegistry)
 Cranium.Media.OutputSegmenter.start_link([])
 

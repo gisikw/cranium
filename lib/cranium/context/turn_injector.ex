@@ -213,7 +213,7 @@ defmodule Cranium.Context.TurnInjector do
 
     cond do
       message[:is_fresh] ->
-        case Cranium.Context.Landscape.build(message[:conversation_id], now: now) do
+        case Cranium.Inference.Landscape.build(message[:conversation_id], now: now) do
           nil -> {nil, false}
           block -> {block, true}
         end
@@ -221,7 +221,7 @@ defmodule Cranium.Context.TurnInjector do
       time_gap_elapsed?(context) ->
         last_landscape = get_in(context, [:epoch, :last_landscape_at])
 
-        case Cranium.Context.Landscape.build(message[:conversation_id],
+        case Cranium.Inference.Landscape.build(message[:conversation_id],
                since: last_landscape,
                now: now
              ) do

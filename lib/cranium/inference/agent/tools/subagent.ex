@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.Tools.Subagent do
+defmodule Cranium.Inference.Agent.Tools.Subagent do
   @moduledoc """
   Delegate tasks to a Claude Code subagent.
 
@@ -7,7 +7,7 @@ defmodule Cranium.Agent.Tools.Subagent do
   exploration — anything that benefits from autonomous tool use.
   """
 
-  @behaviour Cranium.Agent.Tool
+  @behaviour Cranium.Inference.Agent.Tool
 
   require Logger
 

@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.MarkerEmitter do
+defmodule Cranium.Inference.Agent.MarkerEmitter do
   @moduledoc """
   Handles SCTE-style marker tool calls.
 

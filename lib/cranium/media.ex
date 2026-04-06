@@ -8,12 +8,11 @@ defmodule Cranium.Media do
   @impl true
   def init(_opts) do
     children = [
-      Cranium.Media.Storage,
       Cranium.Media.Transcoder,
       Cranium.Media.TakeCollector,
       Cranium.Media.OutputSegmenter,
-      Cranium.TTS.Cache,
-      Cranium.TTS.Warmer
+      Cranium.Media.TTS.Cache,
+      Cranium.Media.TTS.Warmer
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

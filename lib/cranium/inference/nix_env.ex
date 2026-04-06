@@ -1,4 +1,4 @@
-defmodule Cranium.NixEnv do
+defmodule Cranium.Inference.NixEnv do
   @moduledoc """
   Caches nix devShell environments for project directories.
 

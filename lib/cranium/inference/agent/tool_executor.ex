@@ -1,4 +1,4 @@
-defmodule Cranium.Agent.ToolExecutor do
+defmodule Cranium.Inference.Agent.ToolExecutor do
   @moduledoc """
   Executes real tool calls and returns results.
 

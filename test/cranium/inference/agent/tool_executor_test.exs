@@ -1,10 +1,10 @@
-defmodule Cranium.Agent.ToolExecutorTest do
+defmodule Cranium.Inference.Agent.ToolExecutorTest do
   use ExUnit.Case, async: true
 
-  alias Cranium.Agent.ToolExecutor
+  alias Cranium.Inference.Agent.ToolExecutor
 
   defmodule OkTool do
-    @behaviour Cranium.Agent.Tool
+    @behaviour Cranium.Inference.Agent.Tool
 
     @impl true
     def execute(_input, _opts), do: {:ok, "result"}
@@ -14,14 +14,14 @@ defmodule Cranium.Agent.ToolExecutorTest do
   end
 
   defmodule ErrorTool do
-    @behaviour Cranium.Agent.Tool
+    @behaviour Cranium.Inference.Agent.Tool
 
     @impl true
     def execute(_input, _opts), do: {:error, :oops}
   end
 
   defmodule SlowTool do
-    @behaviour Cranium.Agent.Tool
+    @behaviour Cranium.Inference.Agent.Tool
 
     @impl true
     def execute(_input, _opts) do

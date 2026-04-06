@@ -1,4 +1,4 @@
-defmodule Cranium.AgentTest do
+defmodule Cranium.Inference.AgentTest do
   use ExUnit.Case, async: false
 
   import Mox
@@ -26,7 +26,7 @@ defmodule Cranium.AgentTest do
   end
 
   defp start_agent do
-    {:ok, pid} = Cranium.Agent.start_link(conversation_id: "test-agent")
+    {:ok, pid} = Cranium.Inference.Agent.start_link(conversation_id: "test-agent")
     pid
   end
 
@@ -37,7 +37,7 @@ defmodule Cranium.AgentTest do
       # Register a test tool
       tools_before = Application.get_env(:cranium, :tools, [])
       on_exit(fn -> Application.put_env(:cranium, :tools, tools_before) end)
-      Cranium.Agent.ToolRouter.register("echo", Cranium.AgentTest.EchoTool)
+      Cranium.Inference.Agent.ToolRouter.register("echo", Cranium.Inference.AgentTest.EchoTool)
 
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
@@ -70,7 +70,7 @@ defmodule Cranium.AgentTest do
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s1"}
       subscribe_stream("s1")
-      {:ok, result} = Cranium.Agent.infer(agent, context)
+      {:ok, result} = Cranium.Inference.Agent.infer(agent, context)
 
       # Final output is from the second inference call
       assert result.output == "Done!"
@@ -126,7 +126,7 @@ defmodule Cranium.AgentTest do
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "show me"}], stream_id: "s2"}
       subscribe_stream("s2")
-      {:ok, result} = Cranium.Agent.infer(agent, context)
+      {:ok, result} = Cranium.Inference.Agent.infer(agent, context)
       assert result.output == "There you go"
 
       # Should have received the marker on the egress channel
@@ -166,7 +166,7 @@ defmodule Cranium.AgentTest do
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "use magic"}], stream_id: "s3"}
       subscribe_stream("s3")
-      {:ok, result} = Cranium.Agent.infer(agent, context)
+      {:ok, result} = Cranium.Inference.Agent.infer(agent, context)
       assert result.output == "Sorry, I cannot do that"
     end
 
@@ -190,7 +190,7 @@ defmodule Cranium.AgentTest do
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s5"}
       subscribe_stream("s5")
-      {:ok, _result} = Cranium.Agent.infer(agent, context)
+      {:ok, _result} = Cranium.Inference.Agent.infer(agent, context)
 
       assert_receive {:opts_received, opts}
       tools = Keyword.get(opts, :tools)
@@ -226,7 +226,7 @@ defmodule Cranium.AgentTest do
       # Run infer in a separate process so we can send cancel
       task =
         Task.async(fn ->
-          Cranium.Agent.infer(agent, context)
+          Cranium.Inference.Agent.infer(agent, context)
         end)
 
       # Wait for LLM to start streaming, then cancel
@@ -269,7 +269,7 @@ defmodule Cranium.AgentTest do
       agent = start_agent()
       context = %{messages: [%{role: "user", content: "test"}], stream_id: "s4"}
       subscribe_stream("s4")
-      {:ok, result} = Cranium.Agent.infer(agent, context)
+      {:ok, result} = Cranium.Inference.Agent.infer(agent, context)
 
       # Last snapshot wins — reflects actual context window state
       assert result.usage.input_tokens == 150
@@ -300,7 +300,7 @@ defmodule Cranium.AgentTest do
       subscribe_conversation("test-agent")
       subscribe_global()
 
-      {:ok, _result} = Cranium.Agent.infer(agent, context)
+      {:ok, _result} = Cranium.Inference.Agent.infer(agent, context)
 
       # Per-stream topic (existing behavior)
       assert_received {:stream_start, "s-conv", _}
@@ -320,8 +320,8 @@ defmodule Cranium.AgentTest do
   end
 end
 
-defmodule Cranium.AgentTest.EchoTool do
-  @behaviour Cranium.Agent.Tool
+defmodule Cranium.Inference.AgentTest.EchoTool do
+  @behaviour Cranium.Inference.Agent.Tool
 
   @impl true
   def execute(input, _opts), do: {:ok, Jason.encode!(input)}

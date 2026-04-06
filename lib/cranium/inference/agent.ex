@@ -1,4 +1,4 @@
-defmodule Cranium.Agent do
+defmodule Cranium.Inference.Agent do
   @moduledoc """
   Inference and tool management stage.
 
@@ -142,7 +142,7 @@ defmodule Cranium.Agent do
     tools =
       if state.llm_backend.manages_tool_loop?(),
         do: [],
-        else: Cranium.Agent.ToolRouter.tool_definitions()
+        else: Cranium.Inference.Agent.ToolRouter.tool_definitions()
 
     disposition = Map.get(context, :disposition, ["text"])
 
@@ -271,9 +271,9 @@ defmodule Cranium.Agent do
       {:llm_tool_use, tool_call} ->
         if state.llm_backend.manages_tool_loop?() do
           # CC path: only marker tool calls come through, handle inline
-          case Cranium.Agent.ToolRouter.route(tool_call) do
+          case Cranium.Inference.Agent.ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
-              {_result, marker} = Cranium.Agent.MarkerEmitter.handle(marker_type, input)
+              {_result, marker} = Cranium.Inference.Agent.MarkerEmitter.handle(marker_type, input)
               emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
 
             _ ->
@@ -349,7 +349,7 @@ defmodule Cranium.Agent do
   end
 
   defp execute_tools_and_continue(state, stream_id, opts) do
-    alias Cranium.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
+    alias Cranium.Inference.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
 
     tool_calls = Enum.reverse(state.tool_calls_pending)
 

@@ -104,7 +104,7 @@ defmodule Cranium.Backend.LLM.ClaudeCode do
     # Skip nix env for ephemeral oneshot (tmpdir has no flake).
     # Ephemeral + session resumes use the real working dir, so nix env applies.
     skip_nix = ephemeral && !cc_session_id
-    nix_env = if skip_nix, do: [], else: Cranium.NixEnv.env_for(working_dir)
+    nix_env = if skip_nix, do: [], else: Cranium.Inference.NixEnv.env_for(working_dir)
 
     env = [{~c"ANTHROPIC_API_KEY", false} | nix_env]
 

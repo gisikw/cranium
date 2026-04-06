@@ -152,7 +152,7 @@ defmodule Cranium.Effects.ConversationSummarizer do
     case collect_text(stream_pid) do
       {:ok, text} ->
         Cranium.Store.save_summary(conversation_id, text)
-        Cranium.Context.Landscape.summary_updated(conversation_id, text)
+        Cranium.Inference.Landscape.summary_updated(conversation_id, text)
         write_to_hoard(conversation_id, text)
 
       {:error, reason} ->
