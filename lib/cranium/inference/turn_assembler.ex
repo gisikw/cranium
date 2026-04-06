@@ -302,7 +302,6 @@ defmodule Cranium.Inference.TurnAssembler do
       Cranium.Inference.History.contribute(
         header.conversation_id,
         epoch_id: epoch_id,
-        window: 50,
         text: enriched_text,
         attachments: Map.get(header, :attachments, [])
       )
