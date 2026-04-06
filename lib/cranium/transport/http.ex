@@ -267,6 +267,7 @@ defmodule Cranium.Transport.HTTP do
   post "/v1/input/start" do
     conversation_id = conn.body_params["conversation_id"] || "default"
     origin = conn.body_params["origin"]
+    profile = conn.body_params["profile"]
     disposition = parse_disposition(conn.body_params["disposition"])
 
     take_id = Cranium.Stage.new_stream_id()
@@ -286,7 +287,8 @@ defmodule Cranium.Transport.HTTP do
       stream_id: stream_id,
       take_id: take_id,
       disposition: disposition,
-      origin: origin
+      origin: origin,
+      profile: profile
     }
 
     # Ensure per-conversation TurnAssembler exists before broadcasting

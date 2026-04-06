@@ -146,6 +146,7 @@ defmodule Cranium.Transport.SegmentRegistry do
       when not is_nil(seq) do
     state =
       case do_put_chunk(state, take_id, seq, text) do
+        {:ok, new_state, {:complete, _result}} -> new_state
         {:ok, new_state} -> new_state
         {:error, _reason} -> state
       end
