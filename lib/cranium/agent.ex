@@ -153,6 +153,7 @@ defmodule Cranium.Agent do
       cc_session_id: context[:cc_session_id],
       working_dir: context[:working_dir],
       model: context[:model],
+      thinking: context[:thinking],
       ephemeral: context[:ephemeral],
       effort_level: if("audio" in disposition, do: "low")
     ]

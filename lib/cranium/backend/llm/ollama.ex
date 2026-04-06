@@ -13,7 +13,7 @@ defmodule Cranium.Backend.LLM.Ollama do
 
   require Logger
 
-  @default_model "gemma4-cranium"
+  @default_model "gemma4"
 
   @impl true
   def manages_tool_loop?, do: false
@@ -30,14 +30,16 @@ defmodule Cranium.Backend.LLM.Ollama do
     model = Keyword.get(opts, :model) || @default_model
     system = Keyword.get(opts, :system)
     max_tokens = Keyword.get(opts, :max_tokens)
+    thinking = Keyword.get(opts, :thinking)
 
     ollama_messages = build_messages(system, messages)
 
     body =
       %{model: model, messages: ollama_messages, stream: true}
       |> maybe_add_options(max_tokens)
+      |> maybe_add_thinking(thinking)
 
-    Logger.info("Ollama request: model=#{model} messages=#{length(ollama_messages)}")
+    Logger.info("Ollama request: model=#{model} messages=#{length(ollama_messages)} think=#{thinking}")
 
     stream_fn = fn {:data, data}, {req, resp} ->
       if resp.status == 200 do
@@ -158,6 +160,10 @@ defmodule Cranium.Backend.LLM.Ollama do
   defp maybe_add_options(body, max_tokens) do
     Map.put(body, :options, %{num_predict: max_tokens})
   end
+
+  defp maybe_add_thinking(body, true), do: Map.put(body, :think, true)
+  defp maybe_add_thinking(body, false), do: Map.put(body, :think, false)
+  defp maybe_add_thinking(body, _nil), do: body
 
   defp split_lines(buffer) do
     case String.split(buffer, "\n") do

@@ -31,13 +31,14 @@ defmodule Cranium.Config do
 
   defmodule Profile do
     @moduledoc false
-    defstruct [:name, :backend, :model, :identity_path]
+    defstruct [:name, :backend, :model, :identity_path, thinking: nil]
 
     @type t :: %__MODULE__{
             name: String.t(),
             backend: :claudecode | :anthropic | :ollama,
             model: String.t() | nil,
-            identity_path: String.t() | nil
+            identity_path: String.t() | nil,
+            thinking: boolean() | nil
           }
   end
 
@@ -56,7 +57,8 @@ defmodule Cranium.Config do
            backend_module: backend_module(profile.backend),
            backend: profile.backend,
            model: profile.model,
-           identity: identity
+           identity: identity,
+           thinking: profile.thinking
          }}
 
       [] ->
@@ -178,11 +180,18 @@ defmodule Cranium.Config do
             other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'"
           end
 
+        thinking =
+          case config["thinking"] do
+            v when is_boolean(v) -> v
+            _ -> nil
+          end
+
         profile = %Profile{
           name: name,
           backend: backend,
           model: config["model"],
-          identity_path: config["identity"]
+          identity_path: config["identity"],
+          thinking: thinking
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

@@ -103,6 +103,7 @@ defmodule Cranium.Inference.Harness do
       cc_session_id: turn[:cc_session_id],
       working_dir: turn[:working_dir],
       model: turn[:model],
+      thinking: turn[:thinking],
       ephemeral: ephemeral,
       dispatch: turn[:dispatch]
     }

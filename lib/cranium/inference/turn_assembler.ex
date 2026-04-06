@@ -239,7 +239,7 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name} = resolve_profile(header)
+    {backend_module, resolved_model, identity, profile_name, thinking} = resolve_profile(header)
 
     # 4. Resolve routing context
     projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
@@ -342,6 +342,7 @@ defmodule Cranium.Inference.TurnAssembler do
       backend: backend_module,
       model: resolved_model,
       profile: profile_name,
+      thinking: thinking,
       ephemeral: ephemeral,
       dispatch: dispatch,
       epoch_id: epoch_id,
@@ -386,7 +387,7 @@ defmodule Cranium.Inference.TurnAssembler do
         true -> ""
       end
 
-    {resolved.backend_module, model, identity, profile_name}
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking}
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)
