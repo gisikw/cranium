@@ -80,8 +80,8 @@ level. That drift is a bug in cranium, not a style preference.
 
 - The application supervisor uses `strategy: :rest_for_one` — if Store crashes,
   everything downstream restarts. If a transport crashes, epochs remain.
-- Per-conversation epochs are supervised by a `DynamicSupervisor` — one epoch
-  crash does not affect other conversations.
+- Per-conversation infrastructure is supervised by `ConversationDynamicSupervisor` —
+  one conversation's crash does not affect others.
 - Effects (handoffs, summaries) run as supervised `Task`s — crash isolation from
   the main pipeline.
 
@@ -104,11 +104,11 @@ level. That drift is a bug in cranium, not a style preference.
 
 ### Registry Subscribers
 
-- Any GenServer that subscribes to a `StreamRegistry` topic **must** have a
+- Any GenServer that subscribes to a `Cranium.Events` topic **must** have a
   catch-all `handle_info(_msg, state)` clause. Registry topics are shared buses —
   the event vocabulary will grow, and a missing clause is a `FunctionClauseError`
   crash on the next vocabulary expansion.
-- When adding a new event to the `Cranium.Event` vocabulary, audit all subscribers
+- When adding a new event to the `Cranium.Events` vocabulary, audit all subscribers
   for each broadcast scope used (`stream_raw`, `conversation`, `global`). Verify
   every subscriber either handles or ignores the new shape. This is a required
   step, not a nice-to-have.
@@ -172,4 +172,4 @@ level. That drift is a bug in cranium, not a style preference.
   in shared mode)
 - No `Process.sleep` in tests — use `assert_receive` with timeouts
 - Test modules mirror source modules: `Cranium.Media.Transcoder` →
-  `CraniumTest.Media.TranscoderTest`
+  `Cranium.Media.TranscoderTest`

@@ -1,13 +1,13 @@
 # Cranium v2
 
-A streaming message pipeline that bridges conversational interfaces (Matrix, voice
-clients) to LLM inference with full context management, tool use, and extensible
-backends. Built as an Elixir OTP application for fault tolerance and runtime
+An OTP application that bridges conversational interfaces (Hearth voice client,
+Matrix via Go bridge) to LLM inference with context management, profile-based
+backend routing, and streaming output. Built for fault tolerance and runtime
 introspection.
 
-Cranium v2 replaces [cranium](../cranium/) — a Go bridge that delegates to Claude
-Code subprocesses. v2 manages the LLM conversation directly via the Anthropic API,
-gaining control over context assembly, streaming, tool execution, and epoch state.
+Cranium v2 is the inference and context layer. The Go bridge
+([cranium](../cranium/)) handles Matrix protocol integration and forwards
+messages to v2's HTTP API. Hearth (iOS) connects directly.
 
 ## Glossary
 
@@ -15,19 +15,17 @@ These terms are settled and used consistently throughout the codebase.
 
 | Term | Definition | Elixir module | Identifier |
 |------|-----------|---------------|------------|
-| **Conversation** | Persistent, named, indefinite interaction context. "nerve", "hearth", "personal-chat". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
+| **Conversation** | Persistent, named, indefinite interaction context. "roost", "cranium-v2", "exo-local". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
 | **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. Persisted in Store, no dedicated GenServer. | `Cranium.Store.Epoch` (schema) | `epoch_id` |
-| **Pass** | A single trip through the pipeline. One user message in, one assistant response out (may include multiple turns internally, but from the pipeline's perspective it's one pass). | — (pipeline traversal) | `stream_id` |
-| **Dispatch** | Per-pass routing annotation stamped at ingest. Carries harness, model, renditions, and ephemeral flag. Providers receive the dispatch and key their caches on it. | `Cranium.Dispatch` | — |
+| **Pass** | A single trip through the system. One user message in, one assistant response out (may include multiple turns internally). | — (pipeline traversal) | `stream_id` |
+| **Profile** | Named configuration binding a backend, model, identity document, and saturation thresholds. Resolved per-pass from the request's `profile` field, falling back to the default. | `Cranium.Config.Profile` | profile name |
 | **Turn** | A single dispatch to the model within a pass. A pass with tool calls contains multiple turns (send context → get response → execute tool → re-send). | — (within Agent loop) | — |
-| **Link** | A live connection between a client and a conversation. Receives output chunks, sends cancels, handles mode switching. When a client disconnects, the link drops but the conversation persists. | — (future) | — |
-| **Stage** | A pipeline processing unit. GenServer implementing `Cranium.Stage` behaviour. Six top-level stages: Ingress, Context, Agent, Egress, Effects, Store. | `Cranium.Stage` | — |
-| **Step** | A pure-function module within a stage. E.g., `CommandDetector` is a step within Ingress. | Step modules | — |
-| **Transport** | Protocol adapter that lives outside the pipeline. Converts protocol-specific events to normalized messages (Matrix, Hearth). | `Cranium.Transport.*` | — |
-| **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (Kokoro), LLM (Anthropic). | `Cranium.Backend.*` | — |
+| **Transport** | Protocol adapter that accepts input and delivers output. HTTP is the sole transport; Matrix integration is handled externally by the Go bridge. | `Cranium.Transport.HTTP` | — |
+| **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (Kokoro), LLM (Claude Code, Anthropic, Ollama). | `Cranium.Backend.*` | — |
 | **Handoff** | Summary document generated on `!clear`, capturing epoch context for the next epoch. | — (stored entity) | — |
-| **Landscape** | Cross-conversation awareness — summaries from other active conversations injected into the system prompt. | — (assembled by PromptBuilder) | — |
+| **Landscape** | Cross-conversation awareness — summaries from other active conversations injected into the system prompt. | `Cranium.Inference.Landscape` | — |
 | **Marker** | SCTE-style positional cue in the output stream. The model calls tools like `show`, `show_code`, `play_audio` that are intercepted and emitted as markers at the model's intended position. | — (stream event) | — |
+| **Take** | A chunked audio input session. Opened, filled with numbered chunks, sealed, then assembled for transcription. | `Cranium.Transport.SegmentRegistry` | `take_id` |
 
 ### Deprecated Terms
 
@@ -38,128 +36,171 @@ in v2 code:
 |----------|-------------|
 | `room_id` | `conversation_id` |
 | `session` (as a domain concept) | `epoch` |
-| `Session` (module) | `Epoch` |
 | `room` (in cross-room context) | `conversation` |
-| `RoomSummarizer` | `ConversationSummarizer` |
 | `round` (as a domain concept) | `pass` |
+| `pipeline` / `stage` (as architectural terms) | actor / module |
 
 ## Architecture
 
-### Pipeline Overview
+### Actor Model
 
-The pipeline is **fractal**: six top-level stages, each implemented as a GenServer
-that decomposes into individual step modules. Messages flow left-to-right through
-the pipeline; storage and side-effects operate asynchronously.
+Cranium is an OTP actor system, not a pipeline. Independent GenServers
+communicate via PubSub (Registry-based) and direct calls. See INVARIANTS.md
+for the four rules that enforce this.
 
 ```
-                           ┌──────────────────────────────────────────────────────────┐
-                           │                      Pipeline                            │
-                           │                                                          │
-┌───────────┐    ┌─────────┴──┐    ┌──────────┐    ┌──────────┐    ┌──────────┐       │
-│ Transport │───▶│  Ingress   │───▶│ Context  │───▶│  Agent   │───▶│  Egress  │───┐   │
-└───────────┘    └────────────┘    └──────────┘    └──────────┘    └──────────┘   │   │
-                                        ▲               │                         │   │
-                                        │               ▼                         │   │
-                                   ┌──────────┐    ┌──────────┐                   │   │
-                                   │  Store   │◀───│ Effects  │◀──────────────────┘   │
-                                   └──────────┘    └──────────┘                       │
-                                        ▲                                             │
-                                        └─────────────────────────────────────────────┘
+┌─────────────────┐
+│  Transport.HTTP  │  Accepts input, serves manifests/segments/SSE
+└────────┬────────┘
+         │ {:pass_header, ...} + {:text_input, ...} via PubSub
+         ▼
+┌─────────────────┐     ┌──────────────┐
+│  TurnAssembler   │────▶│   Harness    │  Per-conversation, started on demand
+│  (context build) │     │  (inference) │  under ConversationDynamicSupervisor
+└─────────────────┘     └──────┬───────┘
+         ▲                      │
+         │                      ▼
+┌────────┴────────┐     ┌──────────────┐     ┌──────────────┐
+│     Store       │◀────│  PassReactor │     │   Egress     │
+│  (Ecto/Postgres)│     │  (effects)   │     │  (delivery)  │
+└─────────────────┘     └──────────────┘     └──────────────┘
+                                              ▲
+                                              │ segments, TTS
+                                        ┌─────┴──────┐
+                                        │   Media    │
+                                        │ (TTS, STT) │
+                                        └────────────┘
 ```
 
-Transports (Matrix, Hearth) live outside the pipeline. They convert protocol-specific
-events into normalized messages, feed them to Ingress, and receive deliverable output
-from Egress.
+### Request Flow
 
-### Stage Reference
+1. **Transport** (`Transport.HTTP`) receives input via `/v1/submit` (text) or
+   `/v1/input/*` (chunked audio). Broadcasts a `PassHeader` + content message.
+2. **TurnAssembler** (per-conversation GenServer) catches the broadcast.
+   Resolves the profile → backend/model/identity. Assembles system prompt,
+   conversation history, landscape, turn injections. Emits `{:turn_ready, turn}`.
+3. **Harness** (per-conversation GenServer) receives the turn. Dispatches to
+   the resolved LLM backend. Streams response chunks via PubSub. Handles
+   multi-turn tool use loops.
+4. **Egress** subscribes to stream events, segments output for TTS, writes to
+   the segment manifest.
+5. **PassReactor** (effects) updates epoch state (saturation, turn count,
+   session ID), triggers periodic summarization and handoff generation.
+6. **Store** persists epochs, messages, summaries, and handoffs in Postgres.
 
-#### Ingress — Input Processing
+### Profile System
 
-Receives raw input from transports, normalizes it for downstream consumption.
+Profiles are defined in `~/.config/cranium/profiles.yaml`:
 
-| Step | Responsibility |
-|------|---------------|
-| `Deduplicator` | Prevents duplicate message processing (Matrix delivers events multiple times) |
-| `Transcriber` | Routes audio to STT backend, produces text |
-| `ImageProcessor` | Downloads and stores image attachments, formats references |
-| `CommandDetector` | Recognizes control commands (`!clear`, `!cancel`) and emits pipeline signals rather than passing them as user messages |
+```yaml
+default: exo
 
-#### Context — Context Assembly
+profiles:
+  exo:
+    backend: claudecode
+    model: claude-opus-4-6
+    identity: /path/to/EXO.md
+    context_window: 200000
+    saturation_warn: 50
+    saturation_critical: 80
 
-Builds the full inference context from the normalized message and persisted state.
+  exo-local:
+    backend: ollama
+    model: gemma4-heretic
+    identity: /path/to/EXO.md
+    thinking: false
+    context_window: 262144
+```
 
-| Step | Responsibility |
-|------|---------------|
-| `Router` | Maps conversation to working directory, resolves project context |
-| `PromptBuilder` | Assembles system prompt: identity document, conversation handoff, cross-conversation landscape |
-| `TurnInjector` | Adds per-turn context injections — time-gap reminders, saturation warnings, interrupted context breadcrumbs, resume signals. Injections are conditional and position-sensitive. |
-| `HistoryManager` | Retrieves and formats conversation history from Store |
+The `profile` field in a request selects the profile. If absent, the default
+profile is used. Each profile controls:
 
-#### Agent — Inference & Tool Management
+- **backend** — which LLM backend module handles inference
+- **model** — model identifier passed to the backend
+- **identity** — system prompt / identity document path
+- **thinking** — whether to request extended thinking (Ollama)
+- **context_window** / **saturation_warn** / **saturation_critical** — per-profile
+  context management thresholds
 
-Manages the LLM inference loop. This is a lightweight agent harness, not just an
-API call — it handles multi-turn tool use within a single pass.
+### LLM Backends
 
-| Step | Responsibility |
-|------|---------------|
-| `Harness` | Core loop: send context → stream response → detect tool calls → execute → continue |
-| `ToolRouter` | Maps tool names to executors, distinguishes real tools from markers |
-| `ToolExecutor` | Runs real tool calls, returns results to the inference loop |
-| `MarkerEmitter` | Intercepts SCTE-style marker tools (`show`, `show_code`, `play_audio`), returns fake success to the model, emits positional markers into the output stream |
+Three backends implement the `Cranium.Backend.LLM` behaviour:
 
-#### Egress — Output Processing
+| Backend | Module | Mode |
+|---------|--------|------|
+| **Claude Code** | `Backend.LLM.ClaudeCode` | Spawns a Claude Code CLI subprocess. Supports session resume (stateful) and oneshot (ephemeral). Provides MCP tool server for markers. |
+| **Anthropic** | `Backend.LLM.Anthropic` | Direct Anthropic Messages API with SSE streaming. Stateless. |
+| **Ollama** | `Backend.LLM.Ollama` | Ollama HTTP API (`/api/chat`). Supports local and remote instances. Stateless. |
 
-Transforms agent output into deliverable formats for transports.
+Claude Code is the primary backend — it handles tool execution, file access,
+and session continuity natively. Anthropic and Ollama are stateless backends
+that receive the full assembled context each pass.
 
-| Step | Responsibility |
-|------|---------------|
-| `Chunker` | Segments streaming output into deliverable units (sentence boundaries for TTS, paragraph breaks for text) |
-| `Synthesizer` | Routes text chunks through TTS backend when in voice mode; pass-through in text mode |
+### Module Reference
 
-#### Effects — Async Side-Effects
+#### Inference
 
-Work triggered by pipeline events but not on the critical path.
+| Module | Responsibility |
+|--------|---------------|
+| `Inference.TurnAssembler` | Per-conversation GenServer. Correlates PassHeaders with content, resolves profiles, assembles full inference context (system prompt, history, landscape, injections). |
+| `Inference.Harness` | Per-conversation GenServer. Receives assembled turns, dispatches to LLM backend, manages streaming, computes saturation. |
+| `Inference.Agent` | Runs the inference loop for a single pass. Handles multi-turn tool use (tool call → execute → re-enter). |
+| `Inference.History` | Retrieves and formats conversation history from Store for context assembly. |
+| `Inference.Landscape` | Builds cross-conversation awareness from stored summaries. |
+| `Inference.SystemPrompt` | Assembles the system prompt from identity doc, handoff, and injections. |
+| `Inference.Conversation` | Starts and manages per-conversation supervisor (TurnAssembler + Harness). |
 
-| Step | Responsibility |
-|------|---------------|
-| `HandoffWriter` | On `!clear`, generates a handoff document via separate LLM call summarizing the epoch |
-| `ConversationSummarizer` | Every N turns, generates a cross-conversation summary via separate LLM call |
+#### Context
 
-#### Store — Persistence
+| Module | Responsibility |
+|--------|---------------|
+| `Context.Router` | Maps conversation_id to working directory (project dirs or `/tmp/cranium/<slug>`). |
+| `Context.TurnInjector` | Adds per-turn context injections — time-gap reminders, saturation warnings, interrupted context breadcrumbs, cross-room context. |
 
-Centralized storage with soft read/write locking during active inference.
+#### Agent Internals
+
+| Module | Responsibility |
+|--------|---------------|
+| `Inference.Agent.Harness` | Core agent loop within a pass: stream response → detect tool calls → execute → continue. |
+| `Inference.Agent.ToolRouter` | Maps tool names to executors, distinguishes real tools from markers. |
+| `Inference.Agent.ToolExecutor` | Runs tool calls, returns results to the agent loop. |
+| `Inference.Agent.MarkerEmitter` | Intercepts SCTE-style marker tools, returns fake success, emits positional markers into the output stream. |
+| `Inference.Agent.Tools.Bash` | Shell command execution tool. |
+| `Inference.Agent.Tools.Subagent` | Spawns sub-agent inference passes. |
+
+#### Effects
+
+| Module | Responsibility |
+|--------|---------------|
+| `Effects.PassReactor` | Reacts to pass completion: updates epoch state (saturation, turn count, cc_session_id), triggers summarization. |
+| `Effects.HandoffWriter` | On `!clear`, generates a handoff document via separate LLM call summarizing the epoch. |
+| `Effects.ConversationSummarizer` | Periodically generates cross-conversation summaries for the landscape. |
+
+#### Media
+
+| Module | Responsibility |
+|--------|---------------|
+| `Media.Transcoder.Transcriber` | Routes audio to STT backend (Whisper), produces text. |
+| `Media.TakeCollector` | Manages chunked audio assembly — correlates transcription results with takes. |
+| `Media.OutputSegmenter` | Segments streaming output into deliverable units (sentence boundaries for TTS, paragraphs for text). |
+| `Media.TTS.Cache` | In-memory cache for synthesized audio segments, keyed by `{stream_id, segment_index}`. |
+| `Media.TTS.Warmer` | Eagerly synthesizes TTS for audio-disposition streams as segments arrive. |
+
+#### Transport
+
+| Module | Responsibility |
+|--------|---------------|
+| `Transport.HTTP` | Plug router. Handles `/v1/submit`, `/v1/input/*`, `/v1/streams/*`, `/v1/conversations/*`, SSE endpoints. |
+| `Transport.Manifest` | Event-driven segment manifest — growing playlist of heterogeneous content blocks. |
+| `Transport.SegmentRegistry` | Tracks chunked audio input takes: open, buffer chunks, seal, detect completeness. |
+
+#### Store
 
 | Entity | Purpose |
 |--------|---------|
-| Epochs | Per-conversation state: status, saturation, turn count, system prompt snapshot |
+| Epochs | Per-conversation state: status, saturation, turn count, cc_session_id, profile |
 | Messages | Conversation history (role, content, token counts) |
-| Handoffs | Conversation handoff documents for epoch continuity |
 | Summaries | Cross-conversation awareness cache |
-
-### Streaming Model
-
-Every stage accepts streaming input through a uniform interface:
-
-```elixir
-# Push a chunk into a stage
-Cranium.Stage.push(stage, stream_id, chunk)
-
-# Signal that the stream is complete
-Cranium.Stage.complete(stage, stream_id)
-```
-
-**Incremental stages** (Chunker, MarkerEmitter) forward chunks downstream as they
-arrive. **Buffering stages** (PromptBuilder, HistoryManager) accumulate until
-`complete/2`, then process the full input.
-
-All stages cache streamed input until downstream delivery is confirmed. On streaming
-failure, cached data enables retry without re-requesting from upstream. Cache is
-cleared on successful delivery.
-
-This design anticipates:
-- STT backends that stream transcription while audio is still arriving (Voxtral Mini Realtime)
-- LLM backends that support streaming prefill (vLLM)
-- SSE from the Anthropic API, enabling output processing before inference completes
 
 ### Epoch Lifecycle
 
@@ -169,44 +210,18 @@ database — there is no dedicated Epoch GenServer.
 
 Per-conversation infrastructure (TurnAssembler + Harness) is started on
 demand under `ConversationDynamicSupervisor`. TurnAssembler assembles
-context, Harness runs inference, and `Persistence.Effects` handles
+context, Harness runs inference, and `PassReactor` handles
 post-inference state mutations.
 
 Epoch clearing (`!clear`) is handled directly by `Cranium.clear_epoch/1`:
 cancel active inference, mark the old epoch as cleared, generate a handoff
 document (async), and create a fresh epoch.
 
-### Backend Swappability
-
-STT, TTS, and LLM backends are defined as Elixir behaviours:
-
-```elixir
-# STT — Speech to Text
-@callback transcribe(audio :: binary(), opts :: keyword()) ::
-  {:ok, String.t()} | {:error, term()}
-
-# TTS — Text to Speech
-@callback synthesize(text :: String.t(), opts :: keyword()) ::
-  {:ok, binary()} | {:error, term()}
-
-# LLM — Language Model
-@callback stream_chat(messages :: list(), opts :: keyword()) ::
-  {:ok, stream_pid :: pid()} | {:error, term()}
-```
-
-Backends are configured at the application level and injected into stages. Swapping
-Whisper for Voxtral means changing one config value.
-
-Current backends:
-- **STT**: Whisper (HTTP POST to whisper service)
-- **TTS**: Kokoro (HTTP POST to kokoro service)
-- **LLM**: Anthropic Messages API (SSE streaming)
-
 ### Cancel Model
 
-Cancel signal from transport → Agent kills inference immediately → in-flight chunks
-in Egress drain naturally → Store records where inference stopped → no rewinding
-(tool side-effects are already committed).
+Cancel signal from transport → Harness kills the Agent immediately → in-flight
+output segments drain naturally → Store records where inference stopped → no
+rewinding (tool side-effects are already committed).
 
 Partial output is captured as an "interrupted context" breadcrumb, injected by
 TurnInjector on the next invocation so the model has continuity.
@@ -223,15 +238,12 @@ at the position the model intended, without post-hoc alignment.
 
 ### Segment Manifest
 
-Egress produces a **segment manifest** — a growing playlist of heterogeneous
-content blocks that clients poll and consume. This is the delivery contract
-between the pipeline and any client (Hearth, Matrix, CLI, future web UI).
+The output system produces a **segment manifest** — a growing playlist of
+heterogeneous content blocks that clients poll and consume. This is the delivery
+contract between the system and any client (Hearth, future web UI).
 
 The design borrows from HLS live playlists (sequence numbers, growing segment
-list, end-of-stream marker) but uses JSON and supports mixed media types. It is
-not an HLS/DASH/CMAF manifest — those formats assume homogeneous media segments
-of known duration in a continuous playout timeline, which doesn't fit
-heterogeneous LLM output.
+list, end-of-stream marker) but uses JSON and supports mixed media types.
 
 #### Manifest Shape
 
@@ -244,7 +256,7 @@ heterogeneous LLM output.
       "index": 0,
       "type": "utterance",
       "renditions": {
-        "audio": {"url": "/v1/streams/a1b2c3/segments/0/audio", "mime": "audio/mp3", "duration": 1.2},
+        "audio": {"url": "/v1/streams/a1b2c3/segments/0/audio", "mime": "audio/mp3"},
         "text": {"url": "/v1/streams/a1b2c3/segments/0/text", "mime": "text/plain"}
       }
     },
@@ -253,45 +265,23 @@ heterogeneous LLM output.
       "type": "cue",
       "cue_type": "image",
       "data": {"url": "...", "alt": "A comparison table"}
-    },
-    {
-      "index": 2,
-      "type": "utterance",
-      "renditions": {
-        "audio": {"url": "/v1/streams/a1b2c3/segments/2/audio", "mime": "audio/mp3", "duration": 2.1},
-        "text": {"url": "/v1/streams/a1b2c3/segments/2/text", "mime": "text/plain"}
-      }
     }
   ]
 }
 ```
 
-`status` is `"streaming"` while the Agent is generating, `"complete"` after
-`end_turn`. Clients poll the manifest and play/render new segments as they
-appear.
-
 #### Segment Types
 
 - **`utterance`** — spoken/written content. Has renditions (see below).
 - **`cue`** — SCTE-style marker from a tool call. Contains structured data
-  for the client to render (image, code block, table, etc.). Cues are
-  sequential segments, not sidecar annotations — LLM generation is
-  autoregressive, so the model cannot speak and emit a tool call
-  simultaneously. The natural ordering is always
-  `utterance → cue → utterance`.
+  for the client to render (image, code block, audio clip).
 
 #### Renditions
 
 Text and audio of the same utterance are **renditions**, not separate segments.
-The client picks which rendition to consume based on its capabilities and the
-user's preference.
+The client picks which to consume based on capabilities and user preference.
 
-- Matrix client: consumes `text` renditions, renders cues inline as markdown.
-- Hearth: consumes `audio` renditions, renders cues as visual overlays.
-- Airplane mode: text input, audio output — consumes `audio` renditions.
-
-Renditions are independent of input modality. A request carries a
-**disposition** — the set of output renditions the client wants:
+A request carries a **disposition** — the set of output renditions the client wants:
 
 ```json
 {"text": "...", "disposition": ["audio", "text"]}
@@ -300,184 +290,62 @@ Renditions are independent of input modality. A request carries a
 #### TTS Cache
 
 Audio renditions are served from a lazy in-memory cache (GenServer keyed by
-`{stream_id, segment_index}`). Default behavior is lazy: audio is synthesized
-on first GET for that segment. When the client's disposition includes `audio`,
-Egress eagerly warms the cache as chunks arrive, so audio is ready before the
-client polls.
+`{stream_id, segment_index}`). When the client's disposition includes `audio`,
+the TTS Warmer eagerly synthesizes as segments arrive. Segments are evicted
+on first retrieval.
 
-Segments are evicted on first retrieval — replay is unlikely, and Kokoro
-resynthesizes in ~350ms/sentence if needed. The cache is a buffer between
-production and consumption, not durable storage. Text renditions don't need
-caching; they're stored as conversation context, which we keep anyway.
+### HTTP API
 
-#### HTTP Transport
-
-##### Output (Manifest)
-
-Three endpoints serve the segment manifest:
+#### Input
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /v1/submit` | Accept input (text or audio), create epoch, return `stream_id` |
-| `GET /v1/streams/:id/manifest` | Segment manifest with current status |
-| `GET /v1/streams/:id/segments/:n/:rendition` | Individual segment content |
+| `POST /v1/submit` | Accept text or audio input. Params: `conversation_id`, `text`, `profile`, `disposition`, `origin`, `model`, `ephemeral`. Returns `stream_id`. |
+| `POST /v1/input/start` | Open a chunked audio take. Params: `conversation_id`, `profile`, `disposition`, `origin`. Returns `take_id` + `stream_id`. |
+| `PUT /v1/input/:id/:seq` | Append numbered audio chunk. |
+| `POST /v1/input/:id/done` | Seal a take. Returns `{missing: [...]}`. |
 
-Client loop: submit → poll manifest → consume new segments → repeat until
-`status: "complete"`.
+#### Output
 
-##### Input Protocol
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /v1/streams/:id/manifest` | Segment manifest with current status. |
+| `GET /v1/streams/:id/segments/:n/text` | Text rendition of segment N. |
+| `GET /v1/streams/:id/segments/:n/audio` | Audio rendition of segment N. |
+| `GET /v1/streams/:id/events` | Per-stream SSE (single pass). |
 
-Input and output are symmetric: both are append-only, numbered, eventually
-sealed. The output manifest is a journal of segments the server appends; the
-input protocol is a journal of chunks the client appends.
+#### Lifecycle
 
-The design borrows from broadcast remote-contribution models (Source-Connect,
-Comrex). The client always captures locally — the local recording is the
-source of truth. Streaming to the server is an optimization (enables early
-transcription), not the delivery mechanism. If the stream is clean, the seal
-triggers processing immediately. If chunks were lost, the client backfills
-from its local cache.
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /v1/conversations/:id` | Conversation metadata: epoch status, saturation, turn count, session ID. |
+| `GET /v1/conversations/:id/events` | Conversation-level SSE (all passes). |
+| `GET /v1/events` | Global SSE firehose (all conversations). |
+| `POST /v1/clear` | Clear the active epoch for a conversation. |
+
+### Input Protocol
+
+The chunked audio protocol borrows from broadcast remote-contribution models
+(Source-Connect, Comrex). The client captures locally — the local recording is
+the source of truth. Streaming to the server enables early transcription. If
+chunks are lost, the client backfills from its local cache after seal.
 
 ```
 Client                            Server
   |                                 |
-  |-- POST /v1/input/start -------->|  → {take_id, stream_id}
+  |-- POST /v1/input/start -------->|  -> {take_id, stream_id}
   |                                 |
   |-- PUT /v1/input/:id/0 --------->|  (audio chunk, best-effort)
   |-- PUT /v1/input/:id/1 --------->|
   |-- PUT /v1/input/:id/2 ---X      |  (lost)
   |-- PUT /v1/input/:id/3 --------->|
   |                                 |
-  |-- POST /v1/input/:id/done ----->|  → {missing: [2]}
+  |-- POST /v1/input/:id/done ----->|  -> {missing: [2]}
   |                                 |
-  |-- PUT /v1/input/:id/2 --------->|  → 2xx → server triggers inference
+  |-- PUT /v1/input/:id/2 --------->|  -> 2xx -> server triggers inference
   |                                 |
   |-- GET /v1/streams/:sid/manifest |  (polling, segments appearing)
 ```
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /v1/input/start` | Open a take. Returns `take_id` + `stream_id`. Params: `conversation_id`, `disposition`. |
-| `PUT /v1/input/:id/:seq` | Append a numbered audio chunk. Best-effort — server acks but missing chunks are recoverable. |
-| `POST /v1/input/:id/done` | Seal the take. Returns `{missing: [...]}` — empty list means all chunks received, inference starts. |
-
-The `stream_id` returned on `/start` is the same one used to poll the output
-manifest. The client doesn't need a second round-trip after backfilling — once
-it sees 2xx on the last missing chunk, it starts polling the manifest. The
-server detects completeness and triggers inference autonomously.
-
-**Happy path**: all chunks land during streaming → `/done` returns
-`{missing: []}` → inference already starting → poll manifest. Same effective
-latency as an atomic POST.
-
-**Degraded path**: some chunks lost → `/done` returns gap list → client
-re-sends from local cache → inference starts on final 2xx.
-
-**Text input**: continues to use `POST /v1/submit` directly — text is small,
-atomic, and cheap to retry. The chunked protocol is for audio where upload
-size and streaming STT make it worthwhile.
-
-**Future transport upgrade**: the chunk protocol is transport-agnostic. The
-initial implementation uses HTTP, but the semantics (numbered datagrams with
-backfill) map directly to QUIC unreliable datagrams if sub-100ms transport
-latency becomes necessary for real-time voice.
-
-## Design Decisions
-
-Captured from initial design review. These are directional, not final.
-
-### Transport Agnosticism
-
-Cranium v2 is **not** a Matrix bridge. Matrix may be one transport among several
-(Hearth, future clients), but the pipeline core must be transport-agnostic.
-
-### Inference Data Model
-
-The internal message format currently mirrors Anthropic's API shape (role/content
-pairs, multipart content blocks, tool_use/tool_result types). This is pragmatic
-since Anthropic is the first backend. Other LLM backends (vLLM, Ollama) would
-need a translation layer at the `Backend.LLM` boundary. This is future scope,
-not a design flaw — the behaviour abstraction is in the right place.
-
-### Stream Initialization
-
-Every stage that accepts streaming input receives a `{:stream_start, stream_id,
-metadata}` message before the first chunk arrives. This creates the buffer,
-establishes context (conversation, epoch, mode), and lets the stage know what
-it's receiving. The streaming protocol is: `stream_start → chunk* → stream_end`.
-
-The `handle_stream_start/3` callback and `init_stream/3` helper are defined in
-`Cranium.Stage`. All stages handle the full protocol. Structured buffers carry
-metadata alongside chunks, with backward compatibility for legacy chunk-list
-buffers.
-
-## Open Questions
-
-Areas requiring design work as the project matures.
-
-### Data Model
-
-The storage schema needs careful design. Key tensions:
-- Message history needs both full conversation replay and efficient windowed retrieval
-- Handoffs/summaries are write-heavy, read-infrequent, but reads are latency-sensitive
-  (they block epoch start)
-- Epoch state updates are frequent during streaming (saturation tracking)
-- Should we store raw tool call/result pairs, or summarized representations?
-- How much of the Anthropic API message format do we preserve vs normalize?
-
-**Current assumption**: Postgres with Ecto. Schema is minimal. Will need iteration.
-
-### Tool Architecture
-
-The Agent needs to support:
-- Real tool execution (file operations, web searches, code execution)
-- SCTE marker tools (intercepted, never executed)
-- Skill dispatch (registered skill invocation)
-- Tool approval routing (pause inference → ask user via link → resume)
-
-The approval flow is interesting in OTP terms. Options:
-- Agent process blocks on a `receive` waiting for approval
-- State machine with `:awaiting_approval` state
-- Separate approval process that the Agent monitors
-
-### Context Window Management
-
-When managing conversation history ourselves (not delegating to Claude Code):
-- The Anthropic API returns token counts per response — track cumulative usage
-- Implement our own summarization-based compaction? Or rely on the API's context
-  window limits and let it error, then compact?
-- Saturation tracking: computed from cumulative token counts vs model context limit
-
-### Transport Strategy
-
-Cranium v1 has a full Matrix client (mautrix-go). v2 needs to decide:
-- Build a minimal Matrix transport? (sync loop, room state, send/edit, reactions)
-- Hearth transport first, Matrix as optional add-on?
-- External Matrix integration (plugin/bridge that connects via Link) vs built-in?
-
-### Multi-Link Coordination
-
-When multiple links connect to the same conversation:
-- Shared epoch? Separate epochs?
-- Output to all links simultaneously?
-- Cancel from one link affects the others?
-
-**Current assumption**: Defer this. Single-link-per-conversation initially.
-
-### Next Steps
-
-1. ~~Stream initialization~~ — done.
-2. ~~Vertical slice~~ — done.
-3. ~~TTS integration~~ — done.
-4. ~~STT integration~~ — done.
-5. ~~Segment manifest + HTTP transport~~ — done.
-6. ~~Persistence~~ — done. Ecto schemas, multi-turn context, full pipeline wired.
-7. ~~Hearth integration~~ — done.
-8. **Epoch lifecycle** — wire `!clear` to handoff generation, saturation tracking
-9. **Agent tool execution** — handle tool_use stop reason, execute tools, re-enter
-   inference loop. Requires ToolRouter registration and ToolExecutor dispatch.
-10. **Input protocol** — chunked audio upload with take/seal/backfill semantics.
-    See Input Protocol section above.
 
 ## Development
 
@@ -509,52 +377,76 @@ iex -S mix
 
 ```
 lib/
-  cranium.ex                       # Public API
+  cranium.ex                            # Public API
   cranium/
-    application.ex                 # OTP supervision tree
-    stage.ex                       # Stage behaviour (shared streaming interface)
+    application.ex                      # OTP supervision tree
+    config.ex                           # Profile system (YAML → ETS)
+    events.ex                           # PubSub (Registry-based)
+    stage.ex                            # Stage behaviour
+    dispatch.ex                         # Per-pass routing annotations
+    drain.ex                            # Graceful shutdown coordination
+    messages.ex                         # Message vocabulary (PassHeader, TextInput, Segment, etc.)
 
-    ingress.ex                     # Input processing stage
-    ingress/
-      deduplicator.ex
-      transcriber.ex
-      image_processor.ex
-      command_detector.ex
+    inference/
+      turn_assembler.ex                 # Context assembly (per-conversation)
+      harness.ex                        # Inference dispatch (per-conversation)
+      agent.ex                          # Single-pass agent loop
+      agent/
+        harness.ex                      # Agent-internal inference loop
+        tool_router.ex                  # Tool name → executor mapping
+        tool_executor.ex                # Tool call execution
+        marker_emitter.ex               # SCTE marker interception
+        tools/
+          bash.ex                       # Shell execution tool
+          subagent.ex                   # Sub-agent tool
+      conversation.ex                   # Per-conversation supervisor lifecycle
+      history.ex                        # Conversation history retrieval
+      landscape.ex                      # Cross-conversation summaries
+      system_prompt.ex                  # System prompt assembly
+      turn_assembly.ex                  # Turn data structure
+      nix_env.ex                        # Nix devShell environment resolution
 
-    context.ex                     # Context assembly stage
     context/
-      router.ex
-      prompt_builder.ex
-      turn_injector.ex
-      history_manager.ex
+      router.ex                         # conversation_id → working directory
+      turn_injector.ex                  # Per-turn context injections
 
-    agent.ex                       # Inference & tool management stage
-    agent/
-      harness.ex
-      tool_router.ex
-      tool_executor.ex
-      marker_emitter.ex
-
-    egress.ex                      # Output processing stage
-    egress/
-      chunker.ex
-      synthesizer.ex
-
-    effects.ex                     # Async side-effects stage
+    effects.ex                          # Effect dispatch
     effects/
-      handoff_writer.ex
-      conversation_summarizer.ex
+      pass_reactor.ex                   # Post-inference state mutations
+      handoff_writer.ex                 # Handoff generation on !clear
+      conversation_summarizer.ex        # Periodic cross-conversation summaries
 
-    store.ex                       # Persistence stage
+    media.ex                            # Media dispatch
+    media/
+      transcoder.ex                     # Transcription dispatch
+      transcoder/
+        transcriber.ex                  # Whisper STT
+      take_collector.ex                 # Chunked audio assembly
+      output_segmenter.ex               # Output → segments (sentence/paragraph)
+      tts/
+        cache.ex                        # In-memory TTS segment cache
+        warmer.ex                       # Eager TTS synthesis
+
+    transport/
+      http.ex                           # Plug router (all HTTP endpoints)
+      manifest.ex                       # Segment manifest (event-driven)
+      segment_registry.ex               # Chunked audio take tracking
+
+    backend/
+      llm.ex                            # LLM behaviour
+      llm/
+        claude_code.ex                  # Claude Code CLI backend
+        cc_stream_parser.ex             # CC stdout → events parser
+        cc_mcp_server.ex                # MCP tool server for CC markers
+        anthropic.ex                    # Anthropic Messages API backend
+        ollama.ex                       # Ollama HTTP API backend
+      sse.ex                            # SSE stream parser (Anthropic)
+      tts.ex                            # TTS behaviour + Kokoro impl
+
+    store.ex                            # Persistence boundary (GenServer)
     store/
-      repo.ex                     # Ecto Repo
-      schemas/                    # Ecto schemas (epochs, messages, etc.)
-
-    backend/                       # Hot-swappable backends
-      stt.ex                      # Behaviour + Whisper impl
-      tts.ex                      # Behaviour + Kokoro impl
-      llm.ex                      # Behaviour + Anthropic impl
-
-    transport/                     # Protocol adapters
-      matrix.ex                   # Matrix sync + message handling
+      repo.ex                           # Ecto Repo
+      epoch.ex                          # Epoch schema
+      message.ex                        # Message schema
+      summary.ex                        # Summary schema
 ```
