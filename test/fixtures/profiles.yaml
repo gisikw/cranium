@@ -18,4 +18,16 @@ profiles:
     model: test-model
     identity: test/fixtures/test-identity.txt
 
+  test-prepend:
+    backend: mock
+    model: test-model
+    identity: test/fixtures/test-identity.txt
+    openai_system_mode: prepend
+
+  test-append:
+    backend: mock
+    model: test-model
+    identity: test/fixtures/test-identity.txt
+    openai_system_mode: append
+
 ollama_url: http://localhost:11434

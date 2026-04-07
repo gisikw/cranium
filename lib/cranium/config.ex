@@ -39,7 +39,8 @@ defmodule Cranium.Config do
       thinking: nil,
       context_window: nil,
       saturation_warn: nil,
-      saturation_critical: nil
+      saturation_critical: nil,
+      openai_system_mode: :replace
     ]
 
     @type t :: %__MODULE__{
@@ -50,7 +51,8 @@ defmodule Cranium.Config do
             thinking: boolean() | nil,
             context_window: pos_integer() | nil,
             saturation_warn: number() | nil,
-            saturation_critical: number() | nil
+            saturation_critical: number() | nil,
+            openai_system_mode: :replace | :prepend | :append
           }
   end
 
@@ -73,7 +75,8 @@ defmodule Cranium.Config do
            thinking: profile.thinking,
            context_window: profile.context_window,
            saturation_warn: profile.saturation_warn,
-           saturation_critical: profile.saturation_critical
+           saturation_critical: profile.saturation_critical,
+           openai_system_mode: profile.openai_system_mode
          }}
 
       [] ->
@@ -86,6 +89,14 @@ defmodule Cranium.Config do
   def default_profile_name do
     [{_, name}] = :ets.lookup(@table, :default)
     name
+  end
+
+  @doc "Return all profile names."
+  @spec list_profiles() :: [String.t()]
+  def list_profiles do
+    :ets.match(@table, {{:profile, :"$1"}, :_})
+    |> List.flatten()
+    |> Enum.sort()
   end
 
   @doc "Ollama API base URL from config."
@@ -201,6 +212,13 @@ defmodule Cranium.Config do
             _ -> nil
           end
 
+        openai_system_mode =
+          case config["openai_system_mode"] do
+            "prepend" -> :prepend
+            "append" -> :append
+            _ -> :replace
+          end
+
         profile = %Profile{
           name: name,
           backend: backend,
@@ -209,7 +227,8 @@ defmodule Cranium.Config do
           thinking: thinking,
           context_window: config["context_window"],
           saturation_warn: config["saturation_warn"],
-          saturation_critical: config["saturation_critical"]
+          saturation_critical: config["saturation_critical"],
+          openai_system_mode: openai_system_mode
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

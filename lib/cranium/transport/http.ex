@@ -423,6 +423,16 @@ defmodule Cranium.Transport.HTTP do
     |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
   end
 
+  # --- OpenAI-compatible endpoints ---
+
+  post "/v1/chat/completions" do
+    Cranium.Transport.OpenAI.chat_completions(conn)
+  end
+
+  get "/v1/models" do
+    Cranium.Transport.OpenAI.models(conn)
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")

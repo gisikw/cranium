@@ -48,6 +48,34 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "list_profiles/0" do
+    test "returns all profile names sorted" do
+      profiles = Config.list_profiles()
+      assert is_list(profiles)
+      assert "test" in profiles
+      assert "test-ollama" in profiles
+      assert "test-cc" in profiles
+      assert profiles == Enum.sort(profiles)
+    end
+  end
+
+  describe "openai_system_mode" do
+    test "defaults to :replace when not specified" do
+      {:ok, resolved} = Config.resolve_profile("test")
+      assert resolved.openai_system_mode == :replace
+    end
+
+    test "parses prepend mode" do
+      {:ok, resolved} = Config.resolve_profile("test-prepend")
+      assert resolved.openai_system_mode == :prepend
+    end
+
+    test "parses append mode" do
+      {:ok, resolved} = Config.resolve_profile("test-append")
+      assert resolved.openai_system_mode == :append
+    end
+  end
+
   describe "read_identity/1" do
     test "reads and caches identity file" do
       path = Path.join(File.cwd!(), "test/fixtures/test-identity.txt")
