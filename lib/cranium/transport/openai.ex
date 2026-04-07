@@ -58,9 +58,6 @@ defmodule Cranium.Transport.OpenAI do
 
       {:error, :profile_not_found} ->
         error_response(conn, 404, "model '#{model_name}' not found")
-
-      {:error, reason} ->
-        error_response(conn, 500, "internal error: #{inspect(reason)}")
     end
   end
 
@@ -123,8 +120,8 @@ defmodule Cranium.Transport.OpenAI do
     join_system(client, identity)
   end
 
-  defp join_system(nil, b), do: b || ""
-  defp join_system(a, nil), do: a || ""
+  defp join_system(nil, b), do: b
+  defp join_system(a, nil), do: a
   defp join_system("", b), do: b
   defp join_system(a, ""), do: a
   defp join_system(a, b), do: a <> "\n\n" <> b
