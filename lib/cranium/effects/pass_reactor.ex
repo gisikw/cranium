@@ -40,6 +40,9 @@ defmodule Cranium.Effects.PassReactor do
           role: :assistant,
           content: payload.output
         })
+      else
+        Logger.warning("Inference completed with empty output",
+          conversation_id: cid, stage: :effects)
       end
 
       summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10

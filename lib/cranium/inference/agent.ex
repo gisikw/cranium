@@ -160,6 +160,23 @@ defmodule Cranium.Inference.Agent do
 
     result = run_inference(state, stream_id, messages, opts)
 
+    # If inference succeeded but produced no output (e.g. model safety refusal
+    # returning empty string), emit a visible message so the client isn't left
+    # staring at nothing.
+    result =
+      case result do
+        {:ok, final_state} when final_state.partial_output == [] ->
+          Logger.warning("Model returned empty response, emitting placeholder",
+            conversation_id: state.conversation_id)
+
+          placeholder = "[Model returned empty response]"
+          emit(stream_id, state.conversation_id, {:chunk, stream_id, placeholder})
+          {:ok, %{final_state | partial_output: [placeholder]}}
+
+        other ->
+          other
+      end
+
     emit(stream_id, state.conversation_id, {:stream_end, stream_id})
 
     case result do
