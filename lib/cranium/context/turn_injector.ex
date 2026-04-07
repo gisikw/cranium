@@ -71,6 +71,7 @@ defmodule Cranium.Context.TurnInjector do
     injections =
       []
       |> maybe_add_time_gap(message, context)
+      |> maybe_add_fresh_time(message, context)
       |> maybe_prepend(landscape_block)
       |> maybe_add_saturation(message, context)
       |> maybe_add_interrupted(message, context)
@@ -98,6 +99,19 @@ defmodule Cranium.Context.TurnInjector do
         else
           injections
         end
+    end
+  end
+
+  # On fresh epochs (no prior messages), inject the current time so the session
+  # isn't flying blind until the first idle gap fires.
+  defp maybe_add_fresh_time(injections, message, context) do
+    last_invoked = get_in(context, [:epoch, :last_invoked_at])
+
+    if message[:is_fresh] == true and is_nil(last_invoked) do
+      now = Map.get(context, :now, DateTime.utc_now())
+      [format_current_time(now) | injections]
+    else
+      injections
     end
   end
 
@@ -150,11 +164,19 @@ defmodule Cranium.Context.TurnInjector do
   end
 
   defp format_time_gap(elapsed, now) do
-    local = DateTime.add(now, central_offset(now), :second)
-    formatted_time = Calendar.strftime(local, "%a %b %-d, %-I:%M %p")
     human_elapsed = humanize_duration(elapsed)
 
-    "<system-reminder>It's been #{human_elapsed} since the last message in this conversation. The current time is #{formatted_time} Central.</system-reminder>"
+    "<system-reminder>It's been #{human_elapsed} since the last message in this conversation. #{format_central_time(now)}</system-reminder>"
+  end
+
+  defp format_current_time(now) do
+    "<system-reminder>#{format_central_time(now)}</system-reminder>"
+  end
+
+  defp format_central_time(now) do
+    local = DateTime.add(now, central_offset(now), :second)
+    formatted_time = Calendar.strftime(local, "%a %b %-d, %-I:%M %p")
+    "The current time is #{formatted_time} Central."
   end
 
   # US Central: CDT (UTC-5) from 2nd Sunday in March to 1st Sunday in November,

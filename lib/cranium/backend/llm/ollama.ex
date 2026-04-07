@@ -68,7 +68,7 @@ defmodule Cranium.Backend.LLM.Ollama do
           |> Enum.reverse()
           |> IO.iodata_to_binary()
 
-        Logger.error("Ollama API error", status: status, body: error_body)
+        Logger.error("Ollama API error: status=#{status} body=#{String.slice(error_body, 0..500)}")
         send(caller, {:llm_stop, {:error, status, error_body}})
 
       {:error, reason} ->

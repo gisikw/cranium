@@ -122,6 +122,26 @@ defmodule Cranium.Context.TurnInjectorTest do
       assert Enum.any?(injections, &(&1 =~ "getting full"))
     end
 
+    test "injects current time on fresh epoch with no prior messages" do
+      now = ~U[2026-04-07 15:30:00Z]
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+      context = %{epoch: %{last_invoked_at: nil}, now: now}
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      assert Enum.any?(injections, &(&1 =~ "current time is"))
+      assert Enum.any?(injections, &(&1 =~ "Central"))
+    end
+
+    test "no fresh time injection when epoch has prior messages" do
+      now = ~U[2026-04-07 15:30:00Z]
+      last = ~U[2026-04-07 15:25:00Z]
+      message = %{text: "hello", is_fresh: false}
+      context = %{epoch: %{last_invoked_at: last}, now: now}
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      refute Enum.any?(injections, &(&1 =~ "current time is"))
+    end
+
     test "multiple injections can fire simultaneously" do
       now = ~U[2026-03-05 11:00:00Z]
       last = ~U[2026-03-05 10:00:00Z]
