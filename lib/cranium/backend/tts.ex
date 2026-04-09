@@ -31,7 +31,8 @@ defmodule Cranium.Backend.TTS.ExoVoice do
     format = Keyword.get(opts, :format, "mp3")
 
     voice = Keyword.get(opts, :voice, "af_exo")
-    payload = %{input: text, voice: voice, response_format: format}
+    speed = Keyword.get(opts, :speed, 0.9)
+    payload = %{input: text, voice: voice, speed: speed, response_format: format}
     plug = Keyword.get(opts, :plug)
 
     req_opts =
