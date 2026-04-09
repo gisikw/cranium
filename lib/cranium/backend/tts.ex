@@ -30,7 +30,7 @@ defmodule Cranium.Backend.TTS.ExoVoice do
     url = Keyword.get(opts, :url) || tts_url()
     format = Keyword.get(opts, :format, "mp3")
 
-    voice = Keyword.get(opts, :voice, "exo")
+    voice = Keyword.get(opts, :voice, "af_exo")
     payload = %{input: text, voice: voice, response_format: format}
     plug = Keyword.get(opts, :plug)
 
