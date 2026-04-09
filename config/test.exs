@@ -28,4 +28,7 @@ config :cranium, :paths,
 # Profile config — test fixture
 config :cranium, :profiles_path, Path.join(File.cwd!(), "test/fixtures/profiles.yaml")
 
+# TTS prosody config — test fixture
+config :cranium, :tts_config_path, Path.join(File.cwd!(), "test/fixtures/tts.yaml")
+
 config :logger, level: :warning

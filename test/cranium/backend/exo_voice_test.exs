@@ -18,6 +18,43 @@ defmodule Cranium.Backend.ExoVoiceTest do
       assert {:ok, ^audio} = ExoVoice.synthesize("Hello world", plug: {Req.Test, @plug_name})
     end
 
+    test "sends voice and speed from tts.yaml config" do
+      Req.Test.stub(@plug_name, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        payload = Jason.decode!(body)
+
+        assert payload["voice"] == "af_exo"
+        assert payload["speed"] == 0.85
+
+        conn
+        |> Plug.Conn.put_resp_content_type("audio/mpeg")
+        |> Plug.Conn.send_resp(200, <<1, 2, 3>>)
+      end)
+
+      assert {:ok, _} = ExoVoice.synthesize("Hello", plug: {Req.Test, @plug_name})
+    end
+
+    test "opts override config file values" do
+      Req.Test.stub(@plug_name, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        payload = Jason.decode!(body)
+
+        assert payload["voice"] == "af_bella"
+        assert payload["speed"] == 1.2
+
+        conn
+        |> Plug.Conn.put_resp_content_type("audio/mpeg")
+        |> Plug.Conn.send_resp(200, <<1, 2, 3>>)
+      end)
+
+      assert {:ok, _} =
+               ExoVoice.synthesize("Hello",
+                 voice: "af_bella",
+                 speed: 1.2,
+                 plug: {Req.Test, @plug_name}
+               )
+    end
+
     test "returns {:error, {:http_error, 503, _}} on non-200" do
       Req.Test.stub(@plug_name, fn conn ->
         Plug.Conn.send_resp(conn, 503, "Service Unavailable")

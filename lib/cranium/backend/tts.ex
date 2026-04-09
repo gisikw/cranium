@@ -21,17 +21,23 @@ defmodule Cranium.Backend.TTS.ExoVoice do
   TTS backend (OpenAI-compatible).
 
   Sends text to the configured TTS endpoint (TTS_URL env var).
+  Prosody settings (voice, speed) are loaded from `~/.config/cranium/tts.yaml`
+  on each call, so edits take effect immediately without restart.
   """
 
   @behaviour Cranium.Backend.TTS
+
+  @defaults %{"voice" => "af_exo", "speed" => 1.0}
 
   @impl true
   def synthesize(text, opts) do
     url = Keyword.get(opts, :url) || tts_url()
     format = Keyword.get(opts, :format, "mp3")
 
-    voice = Keyword.get(opts, :voice, "af_exo")
-    speed = Keyword.get(opts, :speed, 0.78)
+    prosody = load_prosody()
+    voice = Keyword.get(opts, :voice) || prosody["voice"]
+    speed = Keyword.get(opts, :speed) || prosody["speed"]
+
     payload = %{input: text, voice: voice, speed: speed, response_format: format}
     plug = Keyword.get(opts, :plug)
 
@@ -49,6 +55,26 @@ defmodule Cranium.Backend.TTS.ExoVoice do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp load_prosody do
+    path = tts_config_path()
+
+    case YamlElixir.read_from_file(path) do
+      {:ok, config} when is_map(config) ->
+        Map.merge(@defaults, config)
+
+      _ ->
+        @defaults
+    end
+  end
+
+  defp tts_config_path do
+    Application.get_env(:cranium, :tts_config_path) ||
+      Path.join(
+        System.get_env("XDG_CONFIG_HOME", Path.expand("~/.config")),
+        "cranium/tts.yaml"
+      )
   end
 
   defp tts_url do
