@@ -146,19 +146,30 @@ defmodule Cranium.Effects.HandoffWriter do
   defp handle_stream_result(stream_pid, conversation_id, epoch_id) do
     case collect_text(stream_pid) do
       {:ok, text} ->
-        Cranium.Store.save_handoff(epoch_id, text)
-        write_to_hoard(conversation_id, text)
+        trimmed = String.trim(text)
 
-        Cranium.Events.broadcast(
-          conversation_id,
-          {:handoff_complete, conversation_id, %{epoch_id: epoch_id}}
-        )
+        if trimmed == "" do
+          Logger.warning("Handoff text is empty — discarding",
+            conversation_id: conversation_id,
+            stage: :effects
+          )
 
-        Logger.info("Handoff complete",
-          conversation_id: conversation_id,
-          stage: :effects,
-          length: String.length(text)
-        )
+          {:error, :empty_handoff}
+        else
+          Cranium.Store.save_handoff(epoch_id, text)
+          write_to_hoard(conversation_id, text)
+
+          Cranium.Events.broadcast(
+            conversation_id,
+            {:handoff_complete, conversation_id, %{epoch_id: epoch_id}}
+          )
+
+          Logger.info("Handoff complete",
+            conversation_id: conversation_id,
+            stage: :effects,
+            length: String.length(text)
+          )
+        end
 
       {:error, reason} ->
         Logger.error("Handoff generation failed: #{inspect(reason)}",
@@ -268,6 +279,11 @@ defmodule Cranium.Effects.HandoffWriter do
     receive do
       {:llm_text, text} ->
         do_collect(ref, acc <> text)
+
+      {:llm_stop, {:error, reason}} ->
+        Process.demonitor(ref, [:flush])
+        Logger.error("LLM stream ended with error: #{inspect(reason)}")
+        {:error, {:llm_error, reason}}
 
       {:llm_stop, _} ->
         Process.demonitor(ref, [:flush])
