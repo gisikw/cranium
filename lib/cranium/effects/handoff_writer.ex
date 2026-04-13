@@ -51,7 +51,7 @@ defmodule Cranium.Effects.HandoffWriter do
     messages = [%{"role" => "user", "content" => "/handoff"}]
 
     projects_dir = Application.get_env(:cranium, :paths)[:projects] || "~/Projects"
-    working_dir = Cranium.Context.Router.resolve_project_dir(conversation_id, projects_dir)
+    working_dir = Cranium.Context.Router.resolve_working_dir(conversation_id, projects_dir)
 
     opts = [
       cc_session_id: cc_session_id,
