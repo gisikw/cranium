@@ -141,6 +141,8 @@ level. That drift is a bug in cranium, not a style preference.
 
 ### Ecto
 
+- Production database is `cranium_prod` — not `cranium_dev`. When querying
+  the running service's data, use `psql -U postgres -d cranium_prod`.
 - All database access goes through `Cranium.Store` — no direct `Repo` calls
   from other actors
 - Migrations are forward-only (no rollback logic required, but migrations must
