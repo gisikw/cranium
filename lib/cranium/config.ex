@@ -40,7 +40,8 @@ defmodule Cranium.Config do
       context_window: nil,
       saturation_warn: nil,
       saturation_critical: nil,
-      openai_system_mode: :replace
+      openai_system_mode: :replace,
+      private: false
     ]
 
     @type t :: %__MODULE__{
@@ -52,7 +53,8 @@ defmodule Cranium.Config do
             context_window: pos_integer() | nil,
             saturation_warn: number() | nil,
             saturation_critical: number() | nil,
-            openai_system_mode: :replace | :prepend | :append
+            openai_system_mode: :replace | :prepend | :append,
+            private: boolean()
           }
   end
 
@@ -76,7 +78,8 @@ defmodule Cranium.Config do
            context_window: profile.context_window,
            saturation_warn: profile.saturation_warn,
            saturation_critical: profile.saturation_critical,
-           openai_system_mode: profile.openai_system_mode
+           openai_system_mode: profile.openai_system_mode,
+           private: profile.private
          }}
 
       [] ->
@@ -228,7 +231,8 @@ defmodule Cranium.Config do
           context_window: config["context_window"],
           saturation_warn: config["saturation_warn"],
           saturation_critical: config["saturation_critical"],
-          openai_system_mode: openai_system_mode
+          openai_system_mode: openai_system_mode,
+          private: config["private"] == true
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

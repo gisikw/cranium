@@ -20,12 +20,30 @@ defmodule Cranium.Effects.ConversationSummarizer do
 
   @spec generate(String.t(), String.t() | nil, String.t() | nil) :: :ok | {:error, term()}
   def generate(conversation_id, cc_session_id, profile \\ nil) do
-    case cc_session_id do
-      nil ->
-        generate_generic(conversation_id, profile)
+    if private_profile?(profile) do
+      Logger.debug("Skipping summary for private profile",
+        conversation_id: conversation_id,
+        profile: profile
+      )
 
-      _ ->
-        generate_cc(conversation_id, cc_session_id)
+      {:error, :private_profile}
+    else
+      case cc_session_id do
+        nil ->
+          generate_generic(conversation_id, profile)
+
+        _ ->
+          generate_cc(conversation_id, cc_session_id)
+      end
+    end
+  end
+
+  defp private_profile?(nil), do: false
+
+  defp private_profile?(profile_name) do
+    case Cranium.Config.resolve_profile(profile_name) do
+      {:ok, %{private: true}} -> true
+      _ -> false
     end
   end
 
