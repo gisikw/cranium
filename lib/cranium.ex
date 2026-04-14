@@ -12,15 +12,23 @@ defmodule Cranium do
   Cancels any active inference, marks the current epoch as cleared,
   generates a handoff document (async), and creates a fresh epoch.
   The next message will start with the handoff injected.
+
+  ## Options
+
+    * `:source` - origin identifier for the clear event (e.g., "submit", "api", "tool")
+    * `:continuation` - instruction to execute after handoff completes. If provided,
+      the ContinuationDispatcher will start a new pass with this text once the
+      handoff finishes generating.
   """
   @spec clear_epoch(String.t(), keyword()) :: :ok
   def clear_epoch(conversation_id, opts \\ []) do
     source = Keyword.get(opts, :source)
+    continuation = Keyword.get(opts, :continuation)
 
     case Cranium.Store.get_epoch(conversation_id) do
       {:ok, epoch} ->
         cancel(conversation_id)
-        Cranium.Store.clear_epoch(conversation_id)
+        Cranium.Store.clear_epoch(conversation_id, continuation)
 
         Cranium.Events.broadcast(
           conversation_id,

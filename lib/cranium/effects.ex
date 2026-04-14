@@ -23,7 +23,8 @@ defmodule Cranium.Effects do
   def init(_opts) do
     children = [
       {Task.Supervisor, name: Cranium.Effects.TaskSupervisor},
-      Cranium.Effects.PassReactor
+      Cranium.Effects.PassReactor,
+      Cranium.Effects.ContinuationDispatcher
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

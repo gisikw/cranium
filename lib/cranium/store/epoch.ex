@@ -16,6 +16,7 @@ defmodule Cranium.Store.Epoch do
     field :profile, :string
     field :last_landscape_at, :utc_datetime
     field :interrupted_context, :string
+    field :continuation, :string
 
     timestamps(type: :utc_datetime)
   end
@@ -34,7 +35,8 @@ defmodule Cranium.Store.Epoch do
       :cc_session_id,
       :profile,
       :last_landscape_at,
-      :interrupted_context
+      :interrupted_context,
+      :continuation
     ])
     |> validate_required([:conversation_id])
   end

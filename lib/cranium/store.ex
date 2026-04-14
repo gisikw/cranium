@@ -99,10 +99,13 @@ defmodule Cranium.Store do
   generation since there's no running session to summarize.
 
   Returns `{:ok, new_epoch_id}` or `:not_found`.
+
+  If `continuation` is provided, it's stored on the new epoch for the
+  ContinuationDispatcher to pick up after handoff completes.
   """
-  @spec clear_epoch(String.t()) :: {:ok, String.t()} | :not_found
-  def clear_epoch(conversation_id) do
-    GenServer.call(__MODULE__, {:clear_epoch, conversation_id})
+  @spec clear_epoch(String.t(), String.t() | nil) :: {:ok, String.t()} | :not_found
+  def clear_epoch(conversation_id, continuation \\ nil) do
+    GenServer.call(__MODULE__, {:clear_epoch, conversation_id, continuation})
   end
 
   @doc """
@@ -421,7 +424,7 @@ defmodule Cranium.Store do
     {:reply, {:ok, summaries}, state}
   end
 
-  defp do_handle_call({:clear_epoch, conversation_id}, _from, state) do
+  defp do_handle_call({:clear_epoch, conversation_id, continuation}, _from, state) do
     result =
       from(e in Epoch,
         where: e.conversation_id == ^conversation_id and e.status != "cleared",
@@ -438,9 +441,14 @@ defmodule Cranium.Store do
           |> Epoch.changeset(%{status: "cleared"})
           |> Repo.update!()
 
+          new_epoch_attrs = %{conversation_id: conversation_id}
+
+          new_epoch_attrs =
+            if continuation, do: Map.put(new_epoch_attrs, :continuation, continuation), else: new_epoch_attrs
+
           new_epoch =
             %Epoch{}
-            |> Epoch.changeset(%{conversation_id: conversation_id})
+            |> Epoch.changeset(new_epoch_attrs)
             |> Repo.insert!()
 
           {:ok, new_epoch.id}

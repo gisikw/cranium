@@ -366,48 +366,94 @@ defmodule Cranium.Inference.Agent do
   end
 
   defp execute_tools_and_continue(state, stream_id, opts) do
-    alias Cranium.Inference.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
+    alias Cranium.Inference.Agent.ToolRouter
 
     tool_calls = Enum.reverse(state.tool_calls_pending)
 
     Logger.info("Executing #{length(tool_calls)} tool call(s)")
 
-    # Build assistant content blocks (text + tool_use)
-    assistant_content = build_assistant_content(state.partial_output, tool_calls)
+    # Check for clear_context tool — it triggers early exit
+    clear_call = Enum.find(tool_calls, fn tc -> match?({:clear, _}, ToolRouter.route(tc)) end)
 
-    # Execute each tool call and collect results
-    tool_results =
-      Enum.map(tool_calls, fn tool_call ->
-        result =
-          case ToolRouter.route(tool_call) do
-            {:marker, marker_type, input} ->
-              {result_text, marker} = MarkerEmitter.handle(marker_type, input)
-              emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
-              result_text
+    if clear_call do
+      # Execute all non-clear tools first, then handle clear
+      other_calls = Enum.reject(tool_calls, fn tc -> tc == clear_call end)
 
-            {:execute, module, input} ->
-              case ToolExecutor.execute(module, input) do
-                {:ok, text} -> ToolExecutor.truncate_result(text)
-                {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
-              end
-
-            {:unknown, name} ->
-              ~s({"error": "unknown tool: #{name}"})
-          end
-
-        %{
-          role: "user",
-          content: [%{type: "tool_result", tool_use_id: tool_call.id, content: result}]
-        }
+      Enum.each(other_calls, fn tool_call ->
+        execute_single_tool(tool_call, stream_id, state.conversation_id)
       end)
 
-    # Append assistant message + tool results to conversation
-    assistant_msg = %{role: "assistant", content: assistant_content}
-    updated_messages = state.messages ++ [assistant_msg | tool_results]
+      # Clear context and exit pass
+      {:clear, continuation} = ToolRouter.route(clear_call)
 
-    # Clear pending state and re-enter inference
-    state = %{state | partial_output: [], tool_calls_pending: []}
-    run_inference(state, stream_id, updated_messages, opts)
+      Logger.info("Executing clear_context tool",
+        conversation_id: state.conversation_id,
+        has_continuation: continuation != nil
+      )
+
+      # Trigger epoch clear with optional continuation
+      clear_opts = [source: "tool"]
+      clear_opts = if continuation, do: Keyword.put(clear_opts, :continuation, continuation), else: clear_opts
+      Cranium.clear_epoch(state.conversation_id, clear_opts)
+
+      # Emit final message and end stream
+      clear_message = if continuation do
+        "Context cleared. Continuation will execute after handoff completes."
+      else
+        "Context cleared."
+      end
+
+      emit(stream_id, state.conversation_id, {:chunk, stream_id, clear_message})
+      emit(stream_id, state.conversation_id, {:stream_end, stream_id})
+
+      {:ok, :cleared}
+    else
+      # No clear — continue normal tool execution flow
+      tool_results =
+        Enum.map(tool_calls, fn tool_call ->
+          result = execute_single_tool(tool_call, stream_id, state.conversation_id)
+
+          %{
+            role: "user",
+            content: [%{type: "tool_result", tool_use_id: tool_call.id, content: result}]
+          }
+        end)
+
+      # Build assistant content blocks (text + tool_use)
+      assistant_content = build_assistant_content(state.partial_output, tool_calls)
+
+      # Append assistant message + tool results to conversation
+      assistant_msg = %{role: "assistant", content: assistant_content}
+      updated_messages = state.messages ++ [assistant_msg | tool_results]
+
+      # Clear pending state and re-enter inference
+      state = %{state | partial_output: [], tool_calls_pending: []}
+      run_inference(state, stream_id, updated_messages, opts)
+    end
+  end
+
+  defp execute_single_tool(tool_call, stream_id, conversation_id) do
+    alias Cranium.Inference.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
+
+    case ToolRouter.route(tool_call) do
+      {:marker, marker_type, input} ->
+        {result_text, marker} = MarkerEmitter.handle(marker_type, input)
+        emit(stream_id, conversation_id, {:chunk, stream_id, {:marker, marker}})
+        result_text
+
+      {:execute, module, input} ->
+        case ToolExecutor.execute(module, input) do
+          {:ok, text} -> ToolExecutor.truncate_result(text)
+          {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+        end
+
+      {:clear, _continuation} ->
+        # Should not reach here — clear is handled separately
+        "Context cleared."
+
+      {:unknown, name} ->
+        ~s({"error": "unknown tool: #{name}"})
+    end
   end
 
   defp build_assistant_content(partial_output, tool_calls) do
