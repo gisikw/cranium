@@ -473,6 +473,7 @@ defmodule Cranium.Store do
       profile: e.profile,
       last_landscape_at: e.last_landscape_at,
       interrupted_context: e.interrupted_context,
+      continuation: e.continuation,
       inserted_at: e.inserted_at,
       updated_at: e.updated_at
     }
