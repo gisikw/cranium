@@ -61,6 +61,8 @@ defmodule Cranium.Inference.Agent do
     field :tool_calls_pending, list(), default: []
     field :partial_output, list(), default: []
     field :usage, map(), default: %{input_tokens: 0, output_tokens: 0}
+    # For CC path: tracks pending clear_context call (nil or continuation string)
+    field :pending_clear, String.t() | nil, default: nil
   end
 
   # --- Public API ---
@@ -287,17 +289,25 @@ defmodule Cranium.Inference.Agent do
 
       {:llm_tool_use, tool_call} ->
         if state.llm_backend.manages_tool_loop?() do
-          # CC path: only marker tool calls come through, handle inline
+          # CC path: marker and meta-tool calls come through, handle inline
           case Cranium.Inference.Agent.ToolRouter.route(tool_call) do
             {:marker, marker_type, input} ->
               {_result, marker} = Cranium.Inference.Agent.MarkerEmitter.handle(marker_type, input)
               emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
+              receive_loop(state, stream_id, llm_pid, ref, opts)
+
+            {:clear, continuation} ->
+              # Track clear_context call, execute on end_turn
+              Logger.info("CC path: clear_context called",
+                conversation_id: state.conversation_id,
+                has_continuation: continuation != nil
+              )
+
+              receive_loop(%{state | pending_clear: continuation || :no_continuation}, stream_id, llm_pid, ref, opts)
 
             _ ->
-              :ok
+              receive_loop(state, stream_id, llm_pid, ref, opts)
           end
-
-          receive_loop(state, stream_id, llm_pid, ref, opts)
         else
           # Anthropic path: accumulate for batch execution
           state = %{state | tool_calls_pending: [tool_call | state.tool_calls_pending]}
@@ -333,7 +343,35 @@ defmodule Cranium.Inference.Agent do
         )
 
       {:llm_stop, "end_turn"} ->
-        {:ok, state}
+        # Check for pending clear_context from CC path
+        if state.pending_clear do
+          continuation = if state.pending_clear == :no_continuation, do: nil, else: state.pending_clear
+
+          Logger.info("CC path: executing pending clear_context",
+            conversation_id: state.conversation_id,
+            has_continuation: continuation != nil
+          )
+
+          # Trigger epoch clear with optional continuation
+          clear_opts = [source: "tool"]
+          clear_opts = if continuation, do: Keyword.put(clear_opts, :continuation, continuation), else: clear_opts
+          Cranium.clear_epoch(state.conversation_id, clear_opts)
+
+          # Emit final message and end stream
+          clear_message =
+            if continuation do
+              "Context cleared. Continuation will execute after handoff completes."
+            else
+              "Context cleared."
+            end
+
+          emit(stream_id, state.conversation_id, {:chunk, stream_id, clear_message})
+          emit(stream_id, state.conversation_id, {:stream_end, stream_id})
+
+          {:ok, :cleared}
+        else
+          {:ok, state}
+        end
 
       {:llm_stop, "tool_use"} ->
         Process.demonitor(ref, [:flush])

@@ -3,12 +3,12 @@ defmodule Cranium.Backend.LLM.CCMcpServer do
   MCP configuration generator for the Claude Code backend.
 
   Generates the `--mcp-config` JSON file that tells Claude Code about
-  the cranium-markers MCP server (show, show_code, play_audio tools).
+  the cranium-markers MCP server (show, show_code, play_audio, clear_context).
   """
 
-  @marker_tools ~w(show show_code play_audio)
+  @marker_tools ~w(show show_code play_audio clear_context)
 
-  @doc "List of marker tool names exposed via MCP."
+  @doc "List of marker and meta-tool names exposed via MCP."
   @spec marker_tools() :: [String.t()]
   def marker_tools, do: @marker_tools
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Minimal MCP stdio server exposing cranium marker tools.
+# Minimal MCP stdio server exposing cranium marker and meta-tools.
 #
-# Tools: show, show_code, play_audio
+# Tools: show, show_code, play_audio, clear_context
 #
-# All tool calls return {"success": true}. Cranium detects marker calls
+# All tool calls return {"success": true}. Cranium detects calls
 # by parsing CC's stream-json output; this server just needs to exist
 # so CC knows the tools are available.
 #
@@ -12,7 +12,12 @@
 
 set -euo pipefail
 
-TOOLS='[{"name":"show","description":"Display an image or media item inline in the conversation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","description":"URL or path to the media item"}}}},{"name":"show_code","description":"Display a code block with syntax highlighting.","inputSchema":{"type":"object","properties":{"code":{"type":"string","description":"The code to display"},"language":{"type":"string","description":"Programming language for highlighting"}}}},{"name":"play_audio","description":"Play an audio clip inline in the conversation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","description":"URL or path to the audio file"}}}}]'
+TOOLS='[
+  {"name":"show","description":"Display an image or media item inline in the conversation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","description":"URL or path to the media item"}}}},
+  {"name":"show_code","description":"Display a code block with syntax highlighting.","inputSchema":{"type":"object","properties":{"code":{"type":"string","description":"The code to display"},"language":{"type":"string","description":"Programming language for highlighting"}}}},
+  {"name":"play_audio","description":"Play an audio clip inline in the conversation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","description":"URL or path to the audio file"}}}},
+  {"name":"clear_context","description":"Clear the current context and start a fresh epoch. Use when context is getting full or you want to reset conversation state. A handoff document will be generated to preserve important context. If you provide a continuation, that instruction executes automatically after handoff completes.","inputSchema":{"type":"object","properties":{"continuation":{"type":"string","description":"Optional instruction to execute after context is cleared and handoff completes"}}}}
+]'
 
 while IFS= read -r line; do
   [ -z "$line" ] && continue
