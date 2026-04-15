@@ -167,6 +167,10 @@ defmodule Cranium.Inference.Agent do
     # staring at nothing.
     result =
       case result do
+        {:ok, :cleared} ->
+          # clear_context path already emitted stream_end, skip post-processing
+          {:ok, :cleared}
+
         {:ok, final_state} when final_state.partial_output == [] ->
           Logger.warning("Model returned empty response, emitting placeholder",
             conversation_id: state.conversation_id)
@@ -179,9 +183,17 @@ defmodule Cranium.Inference.Agent do
           other
       end
 
-    emit(stream_id, state.conversation_id, {:stream_end, stream_id})
+    # Skip stream_end for cleared path (already emitted)
+    unless match?({:ok, :cleared}, result) do
+      emit(stream_id, state.conversation_id, {:stream_end, stream_id})
+    end
 
     case result do
+      {:ok, :cleared} ->
+        # Return success with empty output — the handoff/continuation flow handles the rest
+        reply = %{stream_id: stream_id, status: :cleared, output: "", usage: state.usage}
+        {:reply, {:ok, reply}, %{state | status: :idle, stream_id: nil, pending_clear: nil}}
+
       {:ok, final_state} ->
         Logger.info("Inference complete",
           output_length: length(final_state.partial_output),
