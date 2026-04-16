@@ -69,15 +69,6 @@ defmodule Cranium.Inference.Agent.ToolRouter do
   @doc "Collect Anthropic tool definitions from all registered tools and marker tools."
   @spec tool_definitions() :: list(map())
   def tool_definitions do
-    marker_defs =
-      Enum.map(@marker_tools, fn name ->
-        %{
-          name: name,
-          description: "Display marker: #{name}",
-          input_schema: %{type: "object", properties: %{}}
-        }
-      end)
-
     clear_def = %{
       name: "clear_context",
       description: """
@@ -100,13 +91,9 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       }
     }
 
-    registered_defs =
-      Application.get_env(:cranium, :tools, [])
-      |> Enum.map(fn {_name, module} -> module.schema() end)
-
     muse_defs = Cranium.Muse.tool_definitions()
 
-    [clear_def | marker_defs] ++ muse_defs ++ registered_defs
+    [clear_def | muse_defs]
   end
 
   defp find_handler(name, input) do

@@ -197,7 +197,7 @@ defmodule Cranium.Inference.AgentTest do
       assert is_list(tools)
       assert length(tools) > 0
       names = Enum.map(tools, & &1.name)
-      assert "show" in names
+      assert "clear_context" in names
     end
 
     test "cancel terminates LLM process mid-inference" do

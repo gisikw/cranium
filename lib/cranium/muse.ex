@@ -19,7 +19,7 @@ defmodule Cranium.Muse do
   @spec load_tools!() :: :ok
   def load_tools! do
     tools =
-      case run([@binary, "--tools"]) do
+      case run([@binary, "--read-only", "--tools"]) do
         {:ok, output} ->
           case Jason.decode(output) do
             {:ok, raw} when is_list(raw) ->
@@ -68,7 +68,7 @@ defmodule Cranium.Muse do
     opts = [stderr_to_stdout: true]
     opts = if working_dir, do: Keyword.put(opts, :cd, working_dir), else: opts
 
-    case run([@binary, "--exec", payload], opts) do
+    case run([@binary, "--read-only", "--exec", payload], opts) do
       {:ok, output} -> {:ok, output}
       {:error, reason} -> {:error, reason}
     end

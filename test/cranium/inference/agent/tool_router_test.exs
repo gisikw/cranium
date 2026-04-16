@@ -44,25 +44,20 @@ defmodule Cranium.Inference.Agent.ToolRouterTest do
   end
 
   describe "tool_definitions/0" do
-    test "includes marker tool definitions" do
+    test "includes clear_context meta-tool" do
       defs = ToolRouter.tool_definitions()
       names = Enum.map(defs, & &1.name)
-      assert "show" in names
-      assert "show_code" in names
-      assert "play_audio" in names
+      assert "clear_context" in names
     end
 
-    test "includes registered tool schemas" do
+    test "omits registered tools from advertised set (temporary lockdown)" do
       original = Application.get_env(:cranium, :tools, [])
       on_exit(fn -> Application.put_env(:cranium, :tools, original) end)
 
       ToolRouter.register("test_tool", Cranium.Inference.Agent.ToolRouterTest.TestTool)
       defs = ToolRouter.tool_definitions()
       names = Enum.map(defs, & &1.name)
-      assert "test_tool" in names
-
-      tool_def = Enum.find(defs, &(&1.name == "test_tool"))
-      assert tool_def.description == "A test tool"
+      refute "test_tool" in names
     end
   end
 end
