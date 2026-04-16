@@ -25,6 +25,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
   @type route_result ::
           {:marker, atom(), map()}
           | {:execute, module(), map()}
+          | {:muse, String.t(), map()}
           | {:clear, String.t() | nil}
           | {:unknown, String.t()}
 
@@ -39,6 +40,9 @@ defmodule Cranium.Inference.Agent.ToolRouter do
 
       name in @marker_tools ->
         {:marker, String.to_existing_atom(name), input}
+
+      Cranium.Muse.handles?(name) ->
+        {:muse, name, input}
 
       true ->
         find_handler(name, input)
@@ -100,7 +104,9 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       Application.get_env(:cranium, :tools, [])
       |> Enum.map(fn {_name, module} -> module.schema() end)
 
-    [clear_def | marker_defs] ++ registered_defs
+    muse_defs = Cranium.Muse.tool_definitions()
+
+    [clear_def | marker_defs] ++ muse_defs ++ registered_defs
   end
 
   defp find_handler(name, input) do

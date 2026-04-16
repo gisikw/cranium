@@ -31,6 +31,7 @@ defmodule Cranium.Backend.LLM.Ollama do
     system = Keyword.get(opts, :system)
     max_tokens = Keyword.get(opts, :max_tokens)
     thinking = Keyword.get(opts, :thinking)
+    tools = Keyword.get(opts, :tools, [])
 
     ollama_messages = build_messages(system, messages)
 
@@ -38,8 +39,9 @@ defmodule Cranium.Backend.LLM.Ollama do
       %{model: model, messages: ollama_messages, stream: true}
       |> maybe_add_options(max_tokens)
       |> maybe_add_thinking(thinking)
+      |> maybe_add_tools(tools)
 
-    Logger.info("Ollama request: model=#{model} messages=#{length(ollama_messages)} think=#{thinking}")
+    Logger.info("Ollama request: model=#{model} messages=#{length(ollama_messages)} tools=#{length(tools)} think=#{thinking}")
 
     stream_fn = fn {:data, data}, {req, resp} ->
       if resp.status == 200 do
@@ -126,21 +128,43 @@ defmodule Cranium.Backend.LLM.Ollama do
     [%{role: "system", content: system} | normalize_messages(messages)]
   end
 
-  # Normalize from Anthropic-style content blocks to Ollama's plain string format
+  # Translate Anthropic-shaped messages into Ollama's chat protocol.
+  # Assistant messages with tool_use blocks become `role: "assistant"` with
+  # a `tool_calls` array. User messages carrying only tool_result blocks
+  # become one or more `role: "tool"` messages. Everything else flattens
+  # to plain string content.
   defp normalize_messages(messages) do
-    Enum.map(messages, fn msg ->
-      role = msg[:role] || msg["role"]
-      content = msg[:content] || msg["content"]
+    Enum.flat_map(messages, &normalize_message/1)
+  end
 
-      text =
-        case content do
-          s when is_binary(s) -> s
-          blocks when is_list(blocks) -> flatten_content_blocks(blocks)
-          _ -> ""
+  defp normalize_message(msg) do
+    role = to_string(msg[:role] || msg["role"])
+    content = msg[:content] || msg["content"]
+
+    case {role, content} do
+      {_, text} when is_binary(text) ->
+        [%{role: role, content: text}]
+
+      {"assistant", blocks} when is_list(blocks) ->
+        text = flatten_content_blocks(blocks)
+        tool_calls = extract_tool_uses(blocks)
+
+        base = %{role: "assistant", content: text}
+        if tool_calls == [], do: [base], else: [Map.put(base, :tool_calls, tool_calls)]
+
+      {"user", blocks} when is_list(blocks) ->
+        {tool_results, other} = split_tool_results(blocks)
+
+        tool_msgs = Enum.map(tool_results, &to_tool_message/1)
+
+        case flatten_content_blocks(other) do
+          "" -> tool_msgs
+          text -> tool_msgs ++ [%{role: "user", content: text}]
         end
 
-      %{role: to_string(role), content: text}
-    end)
+      _ ->
+        [%{role: role, content: ""}]
+    end
   end
 
   defp flatten_content_blocks(blocks) do
@@ -153,6 +177,40 @@ defmodule Cranium.Backend.LLM.Ollama do
     end)
   end
 
+  defp extract_tool_uses(blocks) do
+    Enum.flat_map(blocks, fn
+      %{type: "tool_use", name: name, input: input} ->
+        [%{type: "function", function: %{name: name, arguments: input}}]
+
+      %{"type" => "tool_use", "name" => name, "input" => input} ->
+        [%{type: "function", function: %{name: name, arguments: input}}]
+
+      _ ->
+        []
+    end)
+  end
+
+  defp split_tool_results(blocks) do
+    Enum.split_with(blocks, fn
+      %{type: "tool_result"} -> true
+      %{"type" => "tool_result"} -> true
+      _ -> false
+    end)
+  end
+
+  defp to_tool_message(%{type: "tool_result", content: content}),
+    do: %{role: "tool", content: stringify_tool_content(content)}
+
+  defp to_tool_message(%{"type" => "tool_result", "content" => content}),
+    do: %{role: "tool", content: stringify_tool_content(content)}
+
+  defp stringify_tool_content(content) when is_binary(content), do: content
+
+  defp stringify_tool_content(content) when is_list(content),
+    do: flatten_content_blocks(content)
+
+  defp stringify_tool_content(other), do: inspect(other)
+
   # --- Helpers ---
 
   defp maybe_add_options(body, nil), do: body
@@ -164,6 +222,27 @@ defmodule Cranium.Backend.LLM.Ollama do
   defp maybe_add_thinking(body, true), do: Map.put(body, :think, true)
   defp maybe_add_thinking(body, false), do: Map.put(body, :think, false)
   defp maybe_add_thinking(body, _nil), do: body
+
+  defp maybe_add_tools(body, []), do: body
+  defp maybe_add_tools(body, nil), do: body
+
+  defp maybe_add_tools(body, tools) when is_list(tools) do
+    Map.put(body, :tools, Enum.map(tools, &to_ollama_tool/1))
+  end
+
+  defp to_ollama_tool(%{name: name, description: description, input_schema: schema}) do
+    %{
+      type: "function",
+      function: %{name: name, description: description, parameters: schema}
+    }
+  end
+
+  defp to_ollama_tool(%{"name" => name, "description" => description, "input_schema" => schema}) do
+    %{
+      type: "function",
+      function: %{name: name, description: description, parameters: schema}
+    }
+  end
 
   defp split_lines(buffer) do
     case String.split(buffer, "\n") do

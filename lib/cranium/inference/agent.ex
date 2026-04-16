@@ -430,7 +430,7 @@ defmodule Cranium.Inference.Agent do
       other_calls = Enum.reject(tool_calls, fn tc -> tc == clear_call end)
 
       Enum.each(other_calls, fn tool_call ->
-        execute_single_tool(tool_call, stream_id, state.conversation_id)
+        execute_single_tool(tool_call, stream_id, state.conversation_id, opts)
       end)
 
       # Clear context and exit pass
@@ -461,7 +461,7 @@ defmodule Cranium.Inference.Agent do
       # No clear — continue normal tool execution flow
       tool_results =
         Enum.map(tool_calls, fn tool_call ->
-          result = execute_single_tool(tool_call, stream_id, state.conversation_id)
+          result = execute_single_tool(tool_call, stream_id, state.conversation_id, opts)
 
           %{
             role: "user",
@@ -482,7 +482,7 @@ defmodule Cranium.Inference.Agent do
     end
   end
 
-  defp execute_single_tool(tool_call, stream_id, conversation_id) do
+  defp execute_single_tool(tool_call, stream_id, conversation_id, opts) do
     alias Cranium.Inference.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
 
     case ToolRouter.route(tool_call) do
@@ -490,6 +490,15 @@ defmodule Cranium.Inference.Agent do
         {result_text, marker} = MarkerEmitter.handle(marker_type, input)
         emit(stream_id, conversation_id, {:chunk, stream_id, {:marker, marker}})
         result_text
+
+      {:muse, name, input} ->
+        working_dir = Keyword.get(opts, :working_dir)
+        Logger.info("Executing muse tool: #{name}", stage: :agent, working_dir: working_dir)
+
+        case Cranium.Muse.exec(name, input, working_dir) do
+          {:ok, text} -> ToolExecutor.truncate_result(text)
+          {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+        end
 
       {:execute, module, input} ->
         case ToolExecutor.execute(module, input) do
