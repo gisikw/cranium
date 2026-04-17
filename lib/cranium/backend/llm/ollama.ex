@@ -81,41 +81,61 @@ defmodule Cranium.Backend.LLM.Ollama do
 
   defp dispatch_line(caller, line) do
     case Jason.decode(line) do
-      {:ok, %{"done" => false, "message" => %{"content" => text}}} when text != "" ->
-        send(caller, {:llm_text, text})
-
-      {:ok, %{"done" => true, "message" => %{"tool_calls" => tool_calls}}}
-      when is_list(tool_calls) and tool_calls != [] ->
-        Enum.each(tool_calls, fn tc ->
-          func = tc["function"] || %{}
-
-          send(caller, {:llm_tool_use, %{
-            id: generate_tool_id(),
-            name: func["name"],
-            input: func["arguments"] || %{}
-          }})
-        end)
-
-        send(caller, {:llm_stop, "tool_use"})
-
-      {:ok, %{"done" => true} = final} ->
-        usage = %{
-          input_tokens: final["prompt_eval_count"] || 0,
-          output_tokens: final["eval_count"] || 0
-        }
-
-        send(caller, {:llm_usage, usage})
-        send(caller, {:llm_stop, "end_turn"})
-
-      {:ok, %{"done" => false}} ->
-        # Empty content chunk, ignore
-        :ok
+      {:ok, chunk} ->
+        dispatch_chunk(caller, chunk)
 
       {:error, _} ->
         Logger.warning("Ollama: failed to parse NDJSON line", line: String.slice(line, 0..100))
+    end
+  end
+
+  # Ollama may stream tool_calls in either a `done: false` or `done: true`
+  # chunk depending on model and timing; text content may arrive alongside.
+  # Extract each field wherever it appears, independent of `done`.
+  defp dispatch_chunk(caller, chunk) do
+    message = chunk["message"] || %{}
+
+    case message["content"] do
+      text when is_binary(text) and text != "" -> send(caller, {:llm_text, text})
+      _ -> :ok
+    end
+
+    case message["tool_calls"] do
+      calls when is_list(calls) and calls != [] ->
+        Enum.each(calls, &dispatch_tool_call(caller, &1))
+        Process.put(:emitted_tool_calls, true)
 
       _ ->
         :ok
+    end
+
+    if chunk["done"] == true, do: dispatch_done(caller, chunk)
+  end
+
+  defp dispatch_tool_call(caller, tc) do
+    func = tc["function"] || %{}
+
+    send(caller, {:llm_tool_use, %{
+      id: generate_tool_id(),
+      name: func["name"],
+      input: func["arguments"] || %{}
+    }})
+  end
+
+  defp dispatch_done(caller, chunk) do
+    emitted_tools = Process.get(:emitted_tool_calls, false)
+    Process.delete(:emitted_tool_calls)
+
+    if emitted_tools do
+      send(caller, {:llm_stop, "tool_use"})
+    else
+      usage = %{
+        input_tokens: chunk["prompt_eval_count"] || 0,
+        output_tokens: chunk["eval_count"] || 0
+      }
+
+      send(caller, {:llm_usage, usage})
+      send(caller, {:llm_stop, "end_turn"})
     end
   end
 
