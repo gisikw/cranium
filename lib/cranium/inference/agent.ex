@@ -495,16 +495,28 @@ defmodule Cranium.Inference.Agent do
         working_dir = Keyword.get(opts, :working_dir)
         Logger.info("Executing muse tool: #{name}", stage: :agent, working_dir: working_dir)
 
-        case Cranium.Muse.exec(name, input, working_dir) do
-          {:ok, text} -> ToolExecutor.truncate_result(text)
-          {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
-        end
+        emit_tool_use(stream_id, conversation_id, tool_call, name, input)
+
+        result =
+          case Cranium.Muse.exec(name, input, working_dir) do
+            {:ok, text} -> ToolExecutor.truncate_result(text)
+            {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+          end
+
+        emit_tool_result(stream_id, conversation_id, tool_call.id, result)
+        result
 
       {:execute, module, input} ->
-        case ToolExecutor.execute(module, input) do
-          {:ok, text} -> ToolExecutor.truncate_result(text)
-          {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
-        end
+        emit_tool_use(stream_id, conversation_id, tool_call, tool_call.name, input)
+
+        result =
+          case ToolExecutor.execute(module, input) do
+            {:ok, text} -> ToolExecutor.truncate_result(text)
+            {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+          end
+
+        emit_tool_result(stream_id, conversation_id, tool_call.id, result)
+        result
 
       {:clear, _continuation} ->
         # Should not reach here — clear is handled separately
@@ -513,6 +525,16 @@ defmodule Cranium.Inference.Agent do
       {:unknown, name} ->
         ~s({"error": "unknown tool: #{name}"})
     end
+  end
+
+  defp emit_tool_use(stream_id, conversation_id, tool_call, name, input) do
+    payload = %{id: tool_call.id, name: name, input: input}
+    emit(stream_id, conversation_id, {:chunk, stream_id, {:tool_use, payload}})
+  end
+
+  defp emit_tool_result(stream_id, conversation_id, tool_use_id, content) do
+    payload = %{tool_use_id: tool_use_id, content: content}
+    emit(stream_id, conversation_id, {:chunk, stream_id, {:tool_result, payload}})
   end
 
   defp build_assistant_content(partial_output, tool_calls) do
