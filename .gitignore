@@ -23,3 +23,5 @@ cranium.yaml
 cmd/crn-post-image/crn-post-image
 cmd/crn-post-audio/crn-post-audio
 cmd/crn-breadcrumb/crn-breadcrumb
+cmd/crn-summarize/crn-summarize
+cmd/crn-tts/crn-tts
