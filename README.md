@@ -1,13 +1,14 @@
-# Cranium v2
+# Cranium
 
 An OTP application that bridges conversational interfaces (Hearth voice client,
-Matrix via Go bridge) to LLM inference with context management, profile-based
+Matrix via headjack) to LLM inference with context management, profile-based
 backend routing, and streaming output. Built for fault tolerance and runtime
 introspection.
 
-Cranium v2 is the inference and context layer. The Go bridge
-([cranium](../cranium/)) handles Matrix protocol integration and forwards
-messages to v2's HTTP API. Hearth (iOS) connects directly.
+Cranium is the inference and context layer. Matrix protocol integration is
+handled externally by [headjack](../headjack/), which forwards messages to
+cranium's HTTP API. Hearth (iOS) connects directly. An OpenAI-compatible API
+is also available for third-party clients.
 
 ## Glossary
 
@@ -15,13 +16,13 @@ These terms are settled and used consistently throughout the codebase.
 
 | Term | Definition | Elixir module | Identifier |
 |------|-----------|---------------|------------|
-| **Conversation** | Persistent, named, indefinite interaction context. "roost", "cranium-v2", "exo-local". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
+| **Conversation** | Persistent, named, indefinite interaction context. "roost", "cranium", "exo-local". Has a lifetime history. Survives everything. | — (identity, not a process) | `conversation_id` |
 | **Epoch** | A span of continuous context within a conversation. Starts fresh (possibly with a handoff from the previous epoch). Ends on `!clear` or context exhaustion. Tracks saturation, turn count, accumulated messages. Persisted in Store, no dedicated GenServer. | `Cranium.Store.Epoch` (schema) | `epoch_id` |
 | **Pass** | A single trip through the system. One user message in, one assistant response out (may include multiple turns internally). | — (pipeline traversal) | `stream_id` |
 | **Profile** | Named configuration binding a backend, model, identity document, and saturation thresholds. Resolved per-pass from the request's `profile` field, falling back to the default. | `Cranium.Config.Profile` | profile name |
 | **Turn** | A single dispatch to the model within a pass. A pass with tool calls contains multiple turns (send context → get response → execute tool → re-send). | — (within Agent loop) | — |
-| **Transport** | Protocol adapter that accepts input and delivers output. HTTP is the sole transport; Matrix integration is handled externally by the Go bridge. | `Cranium.Transport.HTTP` | — |
-| **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (Kokoro), LLM (Claude Code, Anthropic, Ollama). | `Cranium.Backend.*` | — |
+| **Transport** | Protocol adapter that accepts input and delivers output. HTTP is the sole transport; Matrix integration is handled externally by bridge clients. | `Cranium.Transport.HTTP` | — |
+| **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (ExoVoice), LLM (Claude Code, Anthropic, Ollama). | `Cranium.Backend.*` | — |
 | **Handoff** | Summary document generated on `!clear`, capturing epoch context for the next epoch. | — (stored entity) | — |
 | **Landscape** | Cross-conversation awareness — summaries from other active conversations injected into the system prompt. | `Cranium.Inference.Landscape` | — |
 | **Marker** | SCTE-style positional cue in the output stream. The model calls tools like `show`, `show_code`, `play_audio` that are intercepted and emitted as markers at the model's intended position. | — (stream event) | — |
@@ -29,8 +30,8 @@ These terms are settled and used consistently throughout the codebase.
 
 ### Deprecated Terms
 
-These terms appear in cranium v1 and design documents but should **not** appear
-in v2 code:
+These terms appear in legacy code and design documents but should **not** appear
+in current code:
 
 | Old term | Replacement |
 |----------|-------------|
@@ -60,10 +61,11 @@ for the four rules that enforce this.
 └─────────────────┘     └──────┬───────┘
          ▲                      │
          │                      ▼
-┌────────┴────────┐     ┌──────────────┐     ┌──────────────┐
-│     Store       │◀────│  PassReactor │     │   Egress     │
-│  (Ecto/Postgres)│     │  (effects)   │     │  (delivery)  │
-└─────────────────┘     └──────────────┘     └──────────────┘
+┌────────┴────────┐     ┌──────────────┐     ┌──────────────────┐
+│     Store       │◀────│  PassReactor │     │ OutputSegmenter  │
+│  (Ecto/Postgres)│     │  (effects)   │     │ + Manifest       │
+└─────────────────┘     └──────────────┘     │  (delivery)      │
+                                             └──────────────────┘
                                               ▲
                                               │ segments, TTS
                                         ┌─────┴──────┐
@@ -82,8 +84,8 @@ for the four rules that enforce this.
 3. **Harness** (per-conversation GenServer) receives the turn. Dispatches to
    the resolved LLM backend. Streams response chunks via PubSub. Handles
    multi-turn tool use loops.
-4. **Egress** subscribes to stream events, segments output for TTS, writes to
-   the segment manifest.
+4. **OutputSegmenter** subscribes to stream events, segments output at sentence
+   or paragraph boundaries for TTS, and writes to the segment **Manifest**.
 5. **PassReactor** (effects) updates epoch state (saturation, turn count,
    session ID), triggers periodic summarization and handoff generation.
 6. **Store** persists epochs, messages, summaries, and handoffs in Postgres.
@@ -94,6 +96,7 @@ Profiles are defined in `~/.config/cranium/profiles.yaml`:
 
 ```yaml
 default: exo
+ollama_url: http://localhost:11434
 
 profiles:
   exo:
@@ -121,6 +124,9 @@ profile is used. Each profile controls:
 - **thinking** — whether to request extended thinking (Ollama)
 - **context_window** / **saturation_warn** / **saturation_critical** — per-profile
   context management thresholds
+- **openai_system_mode** — how OpenAI-compat client system messages combine with
+  the profile identity (`:replace`, `:prepend`, `:append`)
+- **private** — if true, skip cross-conversation summarization for this profile
 
 ### LLM Backends
 
@@ -136,6 +142,21 @@ Claude Code is the primary backend — it handles tool execution, file access,
 and session continuity natively. Anthropic and Ollama are stateless backends
 that receive the full assembled context each pass.
 
+### Tool System
+
+Non-CC backends use a tool kernel for sandboxed tool execution:
+
+| Source | Resolution |
+|--------|-----------|
+| **Markers** (`show`, `show_code`, `play_audio`) | Intercepted by `MarkerEmitter`, returns fake success, emits positional marker into stream |
+| **clear_context** | Triggers `Cranium.clear_epoch/2` with optional continuation argument |
+| **Muse tools** | Delegated to the [muse](../muse/) tool kernel via `muse --rw <dir> --exec <payload>`, sandboxed to the conversation's working directory |
+| **Built-in tools** (e.g. `subagent`) | Registered in `ToolRouter`, executed by `ToolExecutor` |
+
+Muse tool definitions are loaded at boot via `muse --tools` and advertised to
+backends in Anthropic tool shape. If muse is not on PATH, tool loading is
+skipped gracefully.
+
 ### Module Reference
 
 #### Inference
@@ -149,6 +170,7 @@ that receive the full assembled context each pass.
 | `Inference.Landscape` | Builds cross-conversation awareness from stored summaries. |
 | `Inference.SystemPrompt` | Assembles the system prompt from identity doc, handoff, and injections. |
 | `Inference.Conversation` | Starts and manages per-conversation supervisor (TurnAssembler + Harness). |
+| `Inference.NixEnv` | ETS cache for Nix devShell PATH resolution (used by ClaudeCode backend). |
 
 #### Context
 
@@ -162,11 +184,12 @@ that receive the full assembled context each pass.
 | Module | Responsibility |
 |--------|---------------|
 | `Inference.Agent.Harness` | Core agent loop within a pass: stream response → detect tool calls → execute → continue. |
-| `Inference.Agent.ToolRouter` | Maps tool names to executors, distinguishes real tools from markers. |
+| `Inference.Agent.Tool` | Tool behaviour — contract for executable tools. |
+| `Inference.Agent.ToolRouter` | Maps tool names to executors, distinguishes real tools from markers and muse delegations. |
 | `Inference.Agent.ToolExecutor` | Runs tool calls, returns results to the agent loop. |
 | `Inference.Agent.MarkerEmitter` | Intercepts SCTE-style marker tools, returns fake success, emits positional markers into the output stream. |
 | `Inference.Agent.Tools.Bash` | Shell command execution tool. |
-| `Inference.Agent.Tools.Subagent` | Spawns sub-agent inference passes. |
+| `Inference.Agent.Tools.Subagent` | Spawns sub-agent inference passes via `claude -p`. |
 
 #### Effects
 
@@ -175,6 +198,7 @@ that receive the full assembled context each pass.
 | `Effects.PassReactor` | Reacts to pass completion: updates epoch state (saturation, turn count, cc_session_id), triggers summarization. |
 | `Effects.HandoffWriter` | On `!clear`, generates a handoff document via separate LLM call summarizing the epoch. |
 | `Effects.ConversationSummarizer` | Periodically generates cross-conversation summaries for the landscape. |
+| `Effects.ContinuationDispatcher` | After handoff completes, auto-dispatches a new pass if the cleared epoch carried a continuation. |
 
 #### Media
 
@@ -190,7 +214,8 @@ that receive the full assembled context each pass.
 
 | Module | Responsibility |
 |--------|---------------|
-| `Transport.HTTP` | Plug router. Handles `/v1/submit`, `/v1/input/*`, `/v1/streams/*`, `/v1/conversations/*`, SSE endpoints. |
+| `Transport.HTTP` | Plug router. Handles `/v1/submit`, `/v1/input/*`, `/v1/streams/*`, `/v1/conversations/*`, SSE and OpenAI-compat endpoints. |
+| `Transport.OpenAI` | OpenAI-compatible chat completions handler (`/v1/chat/completions`, `/v1/models`). |
 | `Transport.Manifest` | Event-driven segment manifest — growing playlist of heterogeneous content blocks. |
 | `Transport.SegmentRegistry` | Tracks chunked audio input takes: open, buffer chunks, seal, detect completeness. |
 
@@ -198,7 +223,7 @@ that receive the full assembled context each pass.
 
 | Entity | Purpose |
 |--------|---------|
-| Epochs | Per-conversation state: status, saturation, turn count, cc_session_id, profile |
+| Epochs | Per-conversation state: status, saturation, turn count, cc_session_id, profile, continuation |
 | Messages | Conversation history (role, content, token counts) |
 | Summaries | Cross-conversation awareness cache |
 
@@ -215,7 +240,9 @@ post-inference state mutations.
 
 Epoch clearing (`!clear`) is handled directly by `Cranium.clear_epoch/1`:
 cancel active inference, mark the old epoch as cleared, generate a handoff
-document (async), and create a fresh epoch.
+document (async), and create a fresh epoch. If the `clear_context` tool
+provided a continuation argument, `ContinuationDispatcher` auto-sends it
+as a new pass once the handoff completes.
 
 ### Cancel Model
 
@@ -323,6 +350,16 @@ on first retrieval.
 | `GET /v1/events` | Global SSE firehose (all conversations). |
 | `POST /v1/clear` | Clear the active epoch for a conversation. |
 
+#### OpenAI-Compatible
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /v1/chat/completions` | Chat completions. Model field selects a profile. Supports streaming. |
+| `GET /v1/models` | Lists available profiles as models. |
+
+Ephemeral — no history persistence, no landscape injection. The `openai_system_mode`
+profile field controls how client system messages combine with the profile identity.
+
 ### Input Protocol
 
 The chunked audio protocol borrows from broadcast remote-contribution models
@@ -351,7 +388,7 @@ Client                            Server
 
 ### Prerequisites
 
-- Elixir 1.18+ / OTP 27+
+- Elixir 1.19+ / OTP 27+
 - PostgreSQL 16+
 - Nix (optional, for reproducible dev environment)
 
@@ -377,7 +414,7 @@ iex -S mix
 
 ```
 lib/
-  cranium.ex                            # Public API
+  cranium.ex                            # Public API (clear_epoch, cancel)
   cranium/
     application.ex                      # OTP supervision tree
     config.ex                           # Profile system (YAML → ETS)
@@ -386,6 +423,8 @@ lib/
     dispatch.ex                         # Per-pass routing annotations
     drain.ex                            # Graceful shutdown coordination
     messages.ex                         # Message vocabulary (PassHeader, TextInput, Segment, etc.)
+    muse.ex                             # Muse tool kernel bridge (load + exec)
+    release.ex                          # Mix release tasks
 
     inference/
       turn_assembler.ex                 # Context assembly (per-conversation)
@@ -393,6 +432,7 @@ lib/
       agent.ex                          # Single-pass agent loop
       agent/
         harness.ex                      # Agent-internal inference loop
+        tool.ex                         # Tool behaviour
         tool_router.ex                  # Tool name → executor mapping
         tool_executor.ex                # Tool call execution
         marker_emitter.ex               # SCTE marker interception
@@ -403,20 +443,21 @@ lib/
       history.ex                        # Conversation history retrieval
       landscape.ex                      # Cross-conversation summaries
       system_prompt.ex                  # System prompt assembly
-      turn_assembly.ex                  # Turn data structure
+      turn_assembly.ex                  # Turn assembly supervisor
       nix_env.ex                        # Nix devShell environment resolution
 
     context/
       router.ex                         # conversation_id → working directory
       turn_injector.ex                  # Per-turn context injections
 
-    effects.ex                          # Effect dispatch
+    effects.ex                          # Effects supervisor
     effects/
       pass_reactor.ex                   # Post-inference state mutations
       handoff_writer.ex                 # Handoff generation on !clear
       conversation_summarizer.ex        # Periodic cross-conversation summaries
+      continuation_dispatcher.ex        # Auto-continue after handoff with continuation
 
-    media.ex                            # Media dispatch
+    media.ex                            # Media supervisor
     media/
       transcoder.ex                     # Transcription dispatch
       transcoder/
@@ -429,6 +470,7 @@ lib/
 
     transport/
       http.ex                           # Plug router (all HTTP endpoints)
+      openai.ex                         # OpenAI-compatible chat completions
       manifest.ex                       # Segment manifest (event-driven)
       segment_registry.ex               # Chunked audio take tracking
 
@@ -441,7 +483,7 @@ lib/
         anthropic.ex                    # Anthropic Messages API backend
         ollama.ex                       # Ollama HTTP API backend
       sse.ex                            # SSE stream parser (Anthropic)
-      tts.ex                            # TTS behaviour + Kokoro impl
+      tts.ex                            # TTS behaviour + ExoVoice impl
 
     store.ex                            # Persistence boundary (GenServer)
     store/

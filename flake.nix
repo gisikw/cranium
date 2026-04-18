@@ -1,5 +1,5 @@
 {
-  description = "Cranium v2 — Streaming message pipeline";
+  description = "Cranium — Streaming inference and context layer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -69,7 +69,7 @@
           ];
 
           shellHook = ''
-            echo "cranium-v2 dev shell"
+            echo "cranium dev shell"
             echo "  just         — list recipes"
             echo ""
             echo "Elixir $(elixir --version | tail -1)"

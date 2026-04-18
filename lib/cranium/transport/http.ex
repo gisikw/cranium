@@ -1,6 +1,6 @@
 defmodule Cranium.Transport.HTTP do
   @moduledoc """
-  HTTP transport for cranium v2.
+  HTTP transport for cranium.
 
   Endpoints:
   - `POST /v1/submit` — accept input, create epoch, return stream_id

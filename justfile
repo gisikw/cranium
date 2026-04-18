@@ -1,4 +1,4 @@
-# === Project: cranium-v2 ===
+# === Project: cranium ===
 #
 # Justfile conventions (see exocortex/scripts/justfile.template):
 #
