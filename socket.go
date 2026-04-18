@@ -589,8 +589,13 @@ func (b *Bridge) synthesizeAndPostAudio(ctx context.Context, roomID id.RoomID, t
 	}
 
 	var firstEventID id.EventID
+	lastFileName := fmt.Sprintf("tts_last.%s", ext)
 	for i, chunk := range batches {
-		eventID, err := b.synthesizeChunk(ctx, roomID, chunk, voice, format, contentType, fileName)
+		chunkFileName := fileName
+		if i == len(batches)-1 {
+			chunkFileName = lastFileName
+		}
+		eventID, err := b.synthesizeChunk(ctx, roomID, chunk, voice, format, contentType, chunkFileName)
 		if err != nil {
 			log.Printf("TTS chunk %d/%d failed: %v", i+1, len(batches), err)
 			if i == 0 {
