@@ -72,20 +72,14 @@ defmodule Cranium.Inference.Agent.ToolRouter do
     clear_def = %{
       name: "clear_context",
       description: """
-      Clear the current context and start a fresh epoch. Use this when context is getting full
-      or when you want to reset the conversation state. A handoff document will be generated
-      to preserve important context for the next epoch.
-
-      If you provide a continuation, that instruction will be executed automatically after
-      the handoff completes — use this when you want to continue working after clearing
-      (e.g., "implement the plan we discussed").
+      Clear the current context and start a fresh epoch. Use when context is getting full or you want to reset conversation state. A handoff document will be generated to preserve important context. If you provide a continuation, that instruction executes automatically after handoff completes.
       """,
       input_schema: %{
         type: "object",
         properties: %{
           continuation: %{
             type: "string",
-            description: "Optional instruction to execute after context is cleared and handoff completes"
+            description: "Optional instruction to execute after context is cleared and handoff completes. Keep this BRIEF (1-2 sentences) — a detailed handoff document from the outgoing session is automatically injected into the new session, so do NOT repeat conversation context here. Use this only to guide the resumption tone or next action (e.g., 'continue the conversation' or 'pick up where we left off on the work topic')."
           }
         }
       }
