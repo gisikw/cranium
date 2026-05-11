@@ -207,26 +207,15 @@ invariant OrientationNeverBlocks {
 }
 
 ------------------------------------------------------------
--- Open Questions
+-- Design Decisions
 ------------------------------------------------------------
 
-open question "Multi-turn orientation" {
-    -- Currently fixed at 1 turn. The config exists for future expansion.
-    -- Multi-turn would require the orientation pass to self-dispatch
-    -- N times before releasing the gate. Not needed yet but the spec
-    -- should accommodate it cleanly if the time comes.
-}
+-- Turn count: One orientation turn. Config exists for future expansion
+-- but multi-turn is not specced. If needed, orientation would self-dispatch
+-- N times before releasing the gate.
 
-open question "Orientation prompt customization per profile" {
-    -- Should different profiles get different orientation prompts?
-    -- A local model might benefit from a more structured prompt than
-    -- Opus. For now, one prompt fits all.
-}
+-- Profile gating: None. All profiles get orientation, including local models.
 
-open question "Orientation output in history display" {
-    -- The orientation message is in Store and in the agent's context.
-    -- If a client later fetches conversation history (e.g., for display),
-    -- should orientation messages be filtered out or tagged so the UI can
-    -- hide them? The origin: "orientation" tag makes filtering possible.
-    -- For now, convention is that clients ignore it.
-}
+-- History visibility: Orientation messages are persisted and in context but
+-- not broadcast. origin: "orientation" tag enables client-side filtering
+-- if a UI ever needs to hide them. Private by convention.
