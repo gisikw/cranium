@@ -1,0 +1,232 @@
+-- allium: 3
+
+-- Waking Room
+--
+-- Gives the agent private orientation time before the first user message
+-- in a new epoch. Replaces the step-function cold start with a liminal
+-- space where the agent can read its handoff, cross-room context, and
+-- reflect before being "on."
+--
+-- The orientation turn is real inference — persisted to history, included
+-- in context for subsequent turns — but silent: not broadcast to clients
+-- via firehose or manifest. Private by convention, not cryptography.
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Pass, backpressure)
+
+use conversation-lifecycle
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    orientation_turn_count: Integer = 1
+    orientation_prompt: String = "This is your private orientation time before the conversation begins. Read your handoff and cross-room context. Reflect on where things stand — what's in progress, what matters, what you want to bring to this session. This is journaling, not performance. The user will not see this output. Think out loud."
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity OrientationPass {
+    pass_id: String
+    stream_id: String
+    conversation_id: String
+    epoch_id: String
+    status: pending | in_progress | complete | failed
+
+    transitions status {
+        pending -> in_progress
+        in_progress -> complete
+        in_progress -> failed
+        terminal: complete, failed
+    }
+
+    @guidance
+        -- An OrientationPass is a synthetic pass injected by TurnAssembler
+        -- when the first real pass arrives for a fresh epoch (turn_count = 0).
+        -- It is dispatched BEFORE the user's pass, using the existing
+        -- backpressure mechanism to hold the user's message.
+        --
+        -- Key differences from a normal pass:
+        -- 1. Silent: OutputSegmenter does not subscribe to its stream.
+        --    Firehose does not forward its events. No manifest is created.
+        -- 2. No tools: dispatched with tool definitions disabled.
+        -- 3. Tagged origin: "orientation" (distinguishable in message history).
+        -- 4. Prompt is the configured orientation_prompt, not user text.
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule TriggerOrientation {
+    when: AssembleTurn(header, input)
+        where epoch.turn_count = 0
+
+    requires: not header.ephemeral
+
+    -- Hold the user's pass
+    let user_pass = {header, input}
+
+    -- Synthesize an orientation pass
+    let orientation = OrientationPass.created(
+        pass_id: new_id(),
+        stream_id: new_id(),
+        conversation_id: header.conversation_id,
+        epoch_id: epoch.id,
+        status: pending
+    )
+
+    -- Dispatch orientation first, queue user pass behind it
+    ensures: orientation.status = in_progress
+    ensures: Dispatch orientation pass with:
+        text: config.orientation_prompt
+        origin: "orientation"
+        tools: disabled
+        silent: true
+    ensures: user_pass is queued (same as existing backpressure queue)
+
+    @guidance
+        -- This intercepts the normal AssembleTurn flow when turn_count = 0.
+        -- The orientation pass receives all normal context injection:
+        -- handoff (via SystemPrompt, since is_fresh = true), landscape
+        -- (via TurnInjector), time-gap reminders. This is the whole point —
+        -- the agent gets the same context it would on turn 1, but with
+        -- space to process it before responding to the user.
+        --
+        -- The user's pass goes into the existing backpressure queue.
+        -- When orientation completes (PassDone), the queued pass dispatches
+        -- exactly as it does today for any queued pass.
+}
+
+rule OrientationCompletes {
+    when: PassComplete(conversation_id, stream_id, outcome)
+        where origin = "orientation" and outcome.reason = complete
+
+    ensures: orientation.status = complete
+
+    -- Normal PassReactor behavior applies:
+    -- assistant message persisted, epoch updated, PassDone emitted.
+    -- The queued user pass dispatches via existing DispatchQueuedPass.
+
+    @guidance
+        -- After orientation, turn_count = 1. When the user's pass
+        -- dispatches, turn_count is no longer 0, so orientation does
+        -- not re-trigger. This is the natural gate — no explicit flag
+        -- needed.
+}
+
+rule OrientationFails {
+    when: PassComplete(conversation_id, stream_id, outcome)
+        where origin = "orientation" and outcome.reason = error
+
+    ensures: orientation.status = failed
+
+    -- PassDone still fires (via existing PassErrored rule).
+    -- The queued user pass dispatches normally.
+
+    @guidance
+        -- Orientation is best-effort. If inference fails, the user's
+        -- message dispatches as if orientation never happened. The agent
+        -- cold-starts like it does today. No error is surfaced to the user.
+}
+
+-- == Continuation Interaction ==
+
+rule ContinuationWithOrientation {
+    -- No new rule needed — this falls out of existing behavior.
+    --
+    -- Sequence:
+    -- 1. clear_context(continuation: "...") fires
+    -- 2. Handoff generates (async)
+    -- 3. HandoffComplete → ContinuationDispatcher fires
+    -- 4. Continuation submits a pass (origin: "continuation")
+    -- 5. This is turn 1 of the new epoch → TriggerOrientation fires
+    -- 6. Orientation dispatches, continuation queues behind it
+    -- 7. Orientation completes → continuation dispatches
+    --
+    -- The continuation is NOT the orientation. The continuation is the
+    -- user's (agent's) intended next action. Orientation happens first
+    -- so the agent has context before executing the continuation.
+
+    @guidance
+        -- This sequencing is load-bearing. The continuation often references
+        -- context from the prior epoch ("pick up the next ticket"). Without
+        -- orientation, the agent would execute the continuation with only
+        -- the handoff in the system prompt but no time to process it.
+        -- With orientation, it has already read and reflected on the handoff
+        -- before the continuation arrives.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OrientationOncePerEpoch {
+    for e in Epochs:
+        count(OrientationPasses where epoch_id = e.id) <= 1
+
+    @guidance
+        -- Guaranteed by the turn_count gate: orientation fires when
+        -- turn_count = 0, and the orientation pass increments turn_count
+        -- to 1. No flag or state machine needed beyond what already exists.
+}
+
+invariant OrientationIsSilent {
+    for o in OrientationPasses:
+        no manifest segments exist for o.stream_id
+        no firehose events forwarded for o.stream_id
+
+    @guidance
+        -- Enforced by skipping OutputSegmenter.subscribe_stream for
+        -- orientation passes and not broadcasting stream events to the
+        -- conversation-level firehose. The assistant message IS persisted
+        -- to Store (it's in context for subsequent turns) but the output
+        -- delivery pipeline never sees it.
+}
+
+invariant OrientationHasNoTools {
+    for o in OrientationPasses:
+        tool_definitions = empty during o's inference
+
+    @guidance
+        -- Orientation is reflection, not action. Tools are disabled to
+        -- keep the turn pure. For CC backend: tools = "".
+        -- For API/Ollama backends: tool definitions omitted from request.
+}
+
+invariant OrientationNeverBlocks {
+    for o in OrientationPasses where o.status = failed:
+        queued user pass dispatches regardless
+
+    @guidance
+        -- Orientation failure must not block the user's message.
+        -- The existing PassErrored → PassDone → DispatchQueuedPass
+        -- chain handles this without special casing.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Multi-turn orientation" {
+    -- Currently fixed at 1 turn. The config exists for future expansion.
+    -- Multi-turn would require the orientation pass to self-dispatch
+    -- N times before releasing the gate. Not needed yet but the spec
+    -- should accommodate it cleanly if the time comes.
+}
+
+open question "Orientation prompt customization per profile" {
+    -- Should different profiles get different orientation prompts?
+    -- A local model might benefit from a more structured prompt than
+    -- Opus. For now, one prompt fits all.
+}
+
+open question "Orientation output in history display" {
+    -- The orientation message is in Store and in the agent's context.
+    -- If a client later fetches conversation history (e.g., for display),
+    -- should orientation messages be filtered out or tagged so the UI can
+    -- hide them? The origin: "orientation" tag makes filtering possible.
+    -- For now, convention is that clients ignore it.
+}
