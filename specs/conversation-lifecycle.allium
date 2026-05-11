@@ -1,0 +1,565 @@
+-- allium: 3
+
+-- Conversation Lifecycle
+--
+-- The core behavioral spine of cranium: how conversations are structured,
+-- how passes (user→LLM→response cycles) flow through the system, and how
+-- epochs (context spans) are created, cleared, and handed off.
+--
+-- Scope: Epoch lifecycle, pass lifecycle, backpressure, handoff generation,
+-- summary generation, continuation dispatch. Does NOT cover inference
+-- internals (agent loop, tool routing), context injection, media pipeline,
+-- or transport details — those are separate specs.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Backend {
+    -- LLM backend (ClaudeCode, Anthropic, Ollama)
+    -- Managed by the inference pipeline spec
+}
+
+external entity Profile {
+    -- Resolved configuration profile (backend, model, identity, thresholds)
+    -- Managed by the profile/config spec
+    backend: Backend
+    model: String
+    private: Boolean
+    context_window: Integer
+    saturation_warn: Float
+    saturation_critical: Float
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value Usage {
+    input_tokens: Integer
+    output_tokens: Integer
+    cache_creation_input_tokens: Integer
+    cache_read_input_tokens: Integer
+}
+
+value PassOutcome {
+    reason: complete | cancelled | error
+    output: String?
+    usage: Usage?
+    cc_session_id: String?
+    saturation: Float?
+    turn_count: Integer?
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- Origin of a pass (who submitted it)
+-- Not an exhaustive enum — extensible by transport layer
+-- Common values: "matrix", "api", "continuation", "hearth"
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Epoch {
+    conversation_id: String
+    status: active | inferring | cleared
+    turn_count: Integer
+    saturation: Float
+    handoff: String?
+    cc_session_id: String?
+    profile: String?
+    last_reminder_bucket: Integer
+    last_landscape_at: Timestamp?
+    interrupted_context: String?
+    continuation: String?
+    inserted_at: Timestamp
+    updated_at: Timestamp
+
+    -- Relationships
+    messages: Message with epoch_id = this.id
+
+    -- Derived
+    is_fresh: turn_count = 0
+    saturation_percent: saturation * 100
+
+    -- Transition graph
+    transitions status {
+        active -> inferring
+        inferring -> active
+        active -> cleared
+        inferring -> cleared
+        terminal: cleared
+    }
+
+    @guidance
+        -- An epoch represents a single context span within a conversation.
+        -- Clearing an epoch marks it terminal and creates a fresh successor.
+        -- The "inferring" status is set while a pass is in flight and reverts
+        -- to "active" on pass completion (any outcome).
+        -- Only one non-cleared epoch may exist per conversation_id at a time.
+}
+
+entity Message {
+    conversation_id: String
+    epoch_id: String
+    role: user | assistant
+    content: String
+    origin: String?
+    inserted_at: Timestamp
+
+    @guidance
+        -- Messages are append-only within an epoch. They are never modified
+        -- or deleted — epoch clearing creates a new epoch, leaving old messages
+        -- associated with the cleared epoch for handoff generation.
+}
+
+entity Summary {
+    conversation_id: String
+    content: String
+    updated_at: Timestamp
+
+    @guidance
+        -- One summary per conversation_id (upsert semantics). Used by the
+        -- Landscape module for cross-conversation awareness injection.
+        -- Private-profiled conversations are excluded from summarization.
+}
+
+entity Pass {
+    pass_id: String
+    stream_id: String
+    conversation_id: String
+    epoch_id: String
+    text: String
+    origin: String?
+    profile: String?
+    disposition: List<String>
+    ephemeral: Boolean
+
+    -- Derived
+    is_audio: text starts_with "[Transcribed from audio]"
+
+    @guidance
+        -- A pass is the unit of work: one user message in, one LLM response
+        -- out, including any tool-call loops. Passes are identified by pass_id
+        -- for correlation and stream_id for output delivery.
+        -- Ephemeral passes (e.g. OpenAI-compat endpoint) skip all persistence:
+        -- no epoch resolution, no message storage, no handoff, no summary.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    summary_interval: Integer = 10
+    stale_pass_timeout_minutes: Integer = 20
+    interrupted_context_max_chars: Integer = 2000
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Pass Submission ==
+
+rule SubmitTextPass {
+    when: SubmitTextPass(conversation_id, text, profile, disposition, origin, ephemeral, model)
+
+    -- Correlation: PassHeader and TextInput arrive separately, matched by pass_id
+    let pass_id = new_id()
+    let stream_id = new_id()
+
+    ensures: PassHeader.created(
+        pass_id: pass_id,
+        conversation_id: conversation_id,
+        stream_id: stream_id,
+        profile: profile,
+        disposition: disposition,
+        origin: origin,
+        ephemeral: ephemeral,
+        model: model
+    )
+    ensures: TextInput.created(pass_id: pass_id, text: text)
+
+    @guidance
+        -- Transport emits PassHeader and TextInput as separate events.
+        -- TurnAssembler correlates them by pass_id. This decoupling allows
+        -- audio passes to substitute TakeComplete for TextInput using the
+        -- same correlation mechanism.
+}
+
+rule AssembleTurn {
+    when: header: PassHeader and input: (TextInput | TakeComplete)
+        where header.pass_id = input.pass_id
+
+    requires: no active_pass for header.conversation_id
+        -- Backpressure: if a pass is already in flight, queue this pair
+
+    -- Epoch resolution
+    let epoch = get_or_create_active_epoch(header.conversation_id)
+
+    -- Persist user message (unless ephemeral)
+    ensures: Message.created(
+        conversation_id: header.conversation_id,
+        epoch_id: epoch.id,
+        role: user,
+        content: input.text,
+        origin: header.origin
+    ) unless header.ephemeral
+
+    -- Dispatch to inference
+    ensures: TurnReady(
+        conversation_id: header.conversation_id,
+        stream_id: header.stream_id,
+        epoch_id: epoch.id,
+        turn_count: epoch.turn_count
+    )
+
+    @guidance
+        -- Context assembly happens here: system prompt, turn injection
+        -- (landscape, time-gap, saturation warning, interrupted context),
+        -- and history retrieval. These are covered by the context system spec.
+        -- The user message is persisted AFTER history is fetched but BEFORE
+        -- inference starts, so it doesn't appear twice.
+}
+
+rule QueuePass {
+    when: header: PassHeader and input: (TextInput | TakeComplete)
+        where header.pass_id = input.pass_id
+
+    requires: active_pass exists for header.conversation_id
+
+    ensures: pass is queued
+    ensures: queued pass replaces any previously queued pass
+
+    @guidance
+        -- At most one pass is queued. If a third arrives while one is
+        -- in-flight and one is queued, the queued pass is replaced.
+        -- This is intentional: the newest message is the most relevant.
+}
+
+-- == Pass Completion ==
+
+rule PassCompletes {
+    when: PassComplete(conversation_id, stream_id, outcome)
+        where outcome.reason = complete
+
+    requires: epoch: Epoch where conversation_id = conversation_id and status = inferring
+
+    -- Persist assistant response
+    ensures: Message.created(
+        conversation_id: conversation_id,
+        epoch_id: epoch.id,
+        role: assistant,
+        content: outcome.output
+    ) unless ephemeral
+
+    -- Update epoch state
+    ensures: epoch.status = active
+    ensures: epoch.saturation = outcome.saturation
+    ensures: epoch.turn_count = outcome.turn_count
+    ensures: epoch.cc_session_id = outcome.cc_session_id
+    ensures: epoch.interrupted_context = nil
+
+    -- Trigger summary if interval reached
+    ensures: SummaryGeneration(conversation_id)
+        when outcome.turn_count % config.summary_interval = 0
+        and config.summary_interval > 0
+
+    -- Release backpressure
+    ensures: PassDone(stream_id)
+
+    @guidance
+        -- PassDone is the backpressure release signal. It fires AFTER all
+        -- Store mutations complete, so the next turn's history fetch sees
+        -- the assistant message. This ordering is load-bearing.
+}
+
+rule PassCancelled {
+    when: PassComplete(conversation_id, stream_id, outcome)
+        where outcome.reason = cancelled
+
+    requires: epoch: Epoch where conversation_id = conversation_id
+
+    -- Persist partial output if any
+    ensures: Message.created(
+        conversation_id: conversation_id,
+        epoch_id: epoch.id,
+        role: assistant,
+        content: outcome.output
+    ) when outcome.output != "" unless ephemeral
+
+    -- Capture interrupted context breadcrumb (truncated)
+    ensures: epoch.status = active
+    ensures: epoch.interrupted_context = truncate(outcome.output, config.interrupted_context_max_chars)
+        when outcome.output != ""
+
+    ensures: PassDone(stream_id)
+
+    @guidance
+        -- Interrupted context is injected as a system-reminder on the next
+        -- turn so the model has continuity. Truncated to 2000 chars to avoid
+        -- bloating the context window.
+}
+
+rule PassErrored {
+    when: PassComplete(conversation_id, stream_id, outcome)
+        where outcome.reason = error
+
+    requires: epoch: Epoch where conversation_id = conversation_id
+
+    ensures: epoch.status = active
+    ensures: PassDone(stream_id)
+
+    @guidance
+        -- On error, no message is persisted. The epoch returns to active
+        -- and the backpressure lock is released. The error is logged but
+        -- not surfaced to the conversation history.
+}
+
+rule DispatchQueuedPass {
+    when: PassDone(stream_id)
+
+    requires: queued_pass exists for conversation_id
+
+    ensures: queued_pass is dispatched (AssembleTurn fires)
+    ensures: queue is cleared
+
+    @guidance
+        -- This is the backpressure release path. When a pass completes
+        -- and a queued pair is waiting, the queue drains immediately.
+}
+
+-- == Epoch Clear ==
+
+rule ClearEpoch {
+    when: ClearEpoch(conversation_id, continuation, source)
+
+    requires: epoch: Epoch where conversation_id = conversation_id and status != cleared
+
+    -- Cancel in-flight inference if any
+    ensures: CancelInference(conversation_id)
+
+    -- Mark current epoch as terminal
+    ensures: epoch.status = cleared
+
+    -- Create fresh successor epoch
+    ensures: new_epoch: Epoch.created(
+        conversation_id: conversation_id,
+        continuation: continuation
+    )
+
+    -- Notify system
+    ensures: EpochCleared(conversation_id, epoch.id, source)
+
+    -- Generate handoff asynchronously
+    ensures: HandoffGeneration(conversation_id, epoch.id, epoch.cc_session_id, epoch.profile)
+
+    @guidance
+        -- Clear can be triggered by: user "!clear" command, the clear_context
+        -- tool (with optional continuation), or the API /v1/clear endpoint.
+        -- The continuation, if provided, is stored on the NEW epoch and
+        -- dispatched after the handoff completes.
+}
+
+rule CancelInference {
+    when: CancelInference(conversation_id)
+
+    -- Direct cast to Agent process (bypasses blocked Harness)
+    ensures: active Agent for conversation_id receives cancel
+    ensures: Agent captures partial output and exits
+
+    @guidance
+        -- Cancel bypasses the Harness GenServer (which is blocked in
+        -- Agent.infer) by looking up the Agent PID in the conversation
+        -- registry and sending a cast directly. The Agent kills the LLM
+        -- backend immediately and returns partial output.
+}
+
+-- == Handoff Generation ==
+
+rule GenerateHandoff {
+    when: HandoffGeneration(conversation_id, epoch_id, cc_session_id, profile)
+
+    -- CC path: resume session, invoke /handoff skill
+    -- Generic path: assemble history, call backend with skill prompt
+
+    ensures: handoff_text is generated from conversation context
+    ensures: Epoch(epoch_id).handoff = handoff_text
+    ensures: handoff_text written to hoard filesystem
+    ensures: HandoffComplete(conversation_id, epoch_id)
+
+    @guidance
+        -- Handoff generation is async (fire-and-forget Task). The handoff
+        -- is stored on the CLEARED epoch (not the new one) since it
+        -- summarizes that epoch's content. SystemPrompt reads it back via
+        -- get_latest_handoff and injects it as <room-handoff> on the first
+        -- turn of the successor epoch.
+        -- Empty epochs (no messages) skip handoff generation.
+}
+
+-- == Continuation Dispatch ==
+
+rule DispatchContinuation {
+    when: HandoffComplete(conversation_id, epoch_id)
+
+    requires: epoch: Epoch where conversation_id = conversation_id
+        and continuation is not nil and continuation != ""
+
+    -- Clear continuation to prevent re-firing
+    ensures: epoch.continuation = nil
+
+    -- Dispatch a new pass with the continuation text
+    ensures: SubmitTextPass(
+        conversation_id: conversation_id,
+        text: epoch.continuation,
+        profile: epoch.profile,
+        disposition: ["text"],
+        origin: "continuation",
+        ephemeral: false
+    )
+
+    @guidance
+        -- Continuations enable the clear_context tool to clear the epoch
+        -- AND start fresh work in one atomic operation. The handoff must
+        -- complete first so the new epoch has context from the prior session.
+}
+
+-- == Summary Generation ==
+
+rule GenerateSummary {
+    when: SummaryGeneration(conversation_id)
+
+    requires: profile: Profile where profile.private = false
+
+    -- CC path: fork session (read-only), invoke /summarize skill
+    -- Generic path: assemble history, call backend with skill prompt
+
+    ensures: summary_text is generated (2-4 sentences)
+    ensures: Summary is upserted for conversation_id
+    ensures: Landscape is notified of update
+
+    @guidance
+        -- Summary generation is async (fire-and-forget Task). Private profiles
+        -- are excluded entirely — their conversations never appear in the
+        -- cross-room landscape.
+        -- Summaries are also written to hoard as JSON for disk-based fallback.
+}
+
+-- == Stale Pass Cleanup ==
+
+rule SweepStalePasses {
+    when: SweepTimer (every 1 minute)
+
+    ensures: pending passes older than config.stale_pass_timeout_minutes are removed
+    ensures: associated take_index entries are cleaned up
+
+    @guidance
+        -- Handles orphaned PassHeaders that never received matching content
+        -- (e.g., client disconnected mid-upload). Prevents memory leaks in
+        -- the TurnAssembler's pending map.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneActiveEpochPerConversation {
+    for c in Conversations:
+        count(Epochs where conversation_id = c and status != cleared) <= 1
+
+    @guidance
+        -- Enforced by Store.get_or_create_epoch: queries for non-cleared
+        -- epochs with ORDER BY inserted_at DESC LIMIT 1. Clear marks the
+        -- existing epoch before creating the successor, maintaining the
+        -- invariant within a single GenServer call.
+}
+
+invariant OneActivePassPerConversation {
+    for c in Conversations:
+        count(active passes for c) <= 1
+
+    @guidance
+        -- Enforced by TurnAssembler's active_pass field. A second arriving
+        -- pair is queued, not dispatched. PassDone releases the lock.
+        -- At most one queued pass exists (newest wins).
+}
+
+invariant MessagesAreAppendOnly {
+    Messages are never updated or deleted
+
+    @guidance
+        -- Message history is immutable within an epoch. Epoch clearing
+        -- creates a new epoch; old messages remain associated with the
+        -- cleared epoch for handoff generation and auditing.
+}
+
+invariant EphemeralPassesLeaveNoTrace {
+    for p in Passes where p.ephemeral = true:
+        no Message exists with pass origin from p
+        no Epoch mutation occurs from p
+
+    @guidance
+        -- Ephemeral passes (OpenAI-compat endpoint, one-shot queries)
+        -- bypass all persistence: no epoch resolution, no message storage,
+        -- no saturation tracking, no handoff, no summary.
+}
+
+invariant PassDoneAfterPersistence {
+    PassDone fires only after all Store mutations for that pass are committed
+
+    @guidance
+        -- This ordering guarantee prevents the next turn from fetching
+        -- history before the prior assistant message is persisted. The
+        -- PassReactor (Effects) owns this signal, not the Harness.
+}
+
+invariant HandoffBeforeContinuation {
+    ContinuationDispatcher fires only after HandoffComplete
+
+    @guidance
+        -- The continuation needs the handoff injected so the new session
+        -- has context from the cleared epoch. ContinuationDispatcher
+        -- subscribes to HandoffComplete events, not EpochCleared.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface EpochLifecycleAPI {
+    facing caller: ExternalSystem
+
+    -- Public API (Cranium module)
+    provides: ClearEpoch(conversation_id, opts) when epoch exists
+    provides: CancelInference(conversation_id) when agent is active
+
+    @guidance
+        -- The thin public API surface. Transport (HTTP) and tool routing
+        -- (clear_context marker) both call through here.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Epoch saturation auto-clear" {
+    -- Should cranium auto-clear at the critical saturation threshold?
+    -- Currently saturation_critical is tracked but no auto-clear fires.
+    -- The agent is warned and expected to self-clear via clear_context tool.
+}
+
+open question "Concurrent conversation supervisors" {
+    -- Conversation supervisors are started on-demand and never stopped.
+    -- Should there be a reaper for idle conversations? What's the memory
+    -- cost of keeping them alive indefinitely?
+}
+
+open question "Queue depth" {
+    -- Currently at most one pass is queued (newest wins). Should there be
+    -- a deeper queue, or is "latest message is most relevant" the right
+    -- semantic for interactive conversation?
+}

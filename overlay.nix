@@ -6,7 +6,7 @@
     exec = "/bin/sh -c '\"${storePath}/bin/cranium\" eval \"Cranium.Release.migrate()\" && exec \"${storePath}/bin/cranium\" start'";
     user = "dev";
     group = "users";
-    workingDirectory = "/home/dev/Projects/cranium-v2";
+    workingDirectory = "/home/dev/Projects/cranium";
     after = [ "network-online.target" "postgresql.service" ];
     restart = "on-failure";
     restartSec = 5;
