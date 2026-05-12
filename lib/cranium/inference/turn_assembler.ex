@@ -403,7 +403,8 @@ defmodule Cranium.Inference.TurnAssembler do
       stream_id: orientation_stream_id,
       origin: "orientation",
       profile: header.profile,
-      disposition: ["text"]
+      disposition: ["text"],
+      ephemeral: true
     }
 
     orientation_input = %TextInput{
