@@ -141,10 +141,18 @@ defmodule Cranium.Inference.Agent do
     emit(stream_id, state.conversation_id, {:stream_start, stream_id, metadata})
 
     # Start the LLM backend stream — skip tool definitions for managed-loop backends
+    # or when tools are explicitly disabled (e.g. orientation passes).
+    # For CC backend, tools: "" disables all tools including MCP; for API/Ollama,
+    # an empty list omits tool definitions from the request.
+    tools_disabled = context[:tools_disabled] == true
+
     tools =
-      if state.llm_backend.manages_tool_loop?(),
-        do: [],
-        else: Cranium.Inference.Agent.ToolRouter.tool_definitions()
+      cond do
+        tools_disabled and state.llm_backend.manages_tool_loop?() -> ""
+        tools_disabled -> []
+        state.llm_backend.manages_tool_loop?() -> []
+        true -> Cranium.Inference.Agent.ToolRouter.tool_definitions()
+      end
 
     disposition = Map.get(context, :disposition, ["text"])
 

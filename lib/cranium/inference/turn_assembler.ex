@@ -41,6 +41,8 @@ defmodule Cranium.Inference.TurnAssembler do
   @sweep_interval_ms :timer.minutes(1)
   @registry Cranium.Inference.ConversationRegistry
 
+  @orientation_prompt "This is your private orientation time before the conversation begins. Read your handoff and cross-room context. Reflect on where things stand — what's in progress, what matters, what you want to bring to this session. This is journaling, not performance. The user will not see this output. Think out loud."
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
@@ -209,6 +211,22 @@ defmodule Cranium.Inference.TurnAssembler do
   # This was previously Epoch.submit's context pipeline.
 
   defp assemble_and_dispatch(state, %PassHeader{} = header, input) do
+    ephemeral = header.ephemeral == true
+
+    # 1. Resolve epoch from Store (get existing or create fresh)
+    {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(header.conversation_id)
+    is_fresh = epoch_ctx.turn_count == 0
+
+    # Waking room: on fresh epoch, dispatch an orientation pass first and
+    # queue the user's pass behind it via existing backpressure.
+    if is_fresh and not ephemeral and header.origin != "orientation" do
+      dispatch_orientation(state, header, input, epoch_ctx)
+    else
+      do_assemble_and_dispatch(state, header, input, epoch_ctx)
+    end
+  end
+
+  defp do_assemble_and_dispatch(state, %PassHeader{} = header, input, epoch_ctx) do
     text =
       case input do
         %TextInput{text: text} -> text
@@ -222,9 +240,6 @@ defmodule Cranium.Inference.TurnAssembler do
       "TurnAssembler: assembling pass=#{header.pass_id} conversation=#{header.conversation_id}",
       transport: :turn_assembler
     )
-
-    # 1. Resolve epoch from Store (get existing or create fresh)
-    {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(header.conversation_id)
 
     epoch_id = epoch_ctx.epoch_id
     turn_count = epoch_ctx.turn_count
@@ -354,7 +369,9 @@ defmodule Cranium.Inference.TurnAssembler do
       turn_count: turn_count,
       injection_flags: injection_flags,
       origin: header.origin,
-      pass_id: header.pass_id
+      pass_id: header.pass_id,
+      silent: header.origin == "orientation",
+      tools_disabled: header.origin == "orientation"
     }
 
     case Registry.lookup(@registry, {header.conversation_id, :harness}) do
@@ -366,6 +383,39 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     %{state | active_pass: stream_id}
+  end
+
+  # --- Waking Room ---
+  # Dispatches a synthetic orientation pass and queues the user's pass behind it.
+
+  defp dispatch_orientation(state, %PassHeader{} = header, input, epoch_ctx) do
+    Logger.info(
+      "TurnAssembler: fresh epoch — dispatching orientation before pass=#{header.pass_id}",
+      conversation_id: header.conversation_id
+    )
+
+    orientation_pass_id = Cranium.Stage.new_stream_id()
+    orientation_stream_id = Cranium.Stage.new_stream_id()
+
+    orientation_header = %PassHeader{
+      pass_id: orientation_pass_id,
+      conversation_id: header.conversation_id,
+      stream_id: orientation_stream_id,
+      origin: "orientation",
+      profile: header.profile,
+      disposition: ["text"]
+    }
+
+    orientation_input = %TextInput{
+      pass_id: orientation_pass_id,
+      text: @orientation_prompt
+    }
+
+    # Queue the user's original pass — it will dispatch after orientation completes
+    state = %{state | queued: {header, input}}
+
+    # Dispatch orientation through the normal assembly pipeline
+    do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
   end
 
   defp resolve_profile(%PassHeader{profile: profile_name, model: model_override, system: system_override}) do

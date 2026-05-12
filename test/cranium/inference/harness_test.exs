@@ -51,11 +51,19 @@ defmodule Cranium.Inference.HarnessTest do
     end
   end
 
+  # Pre-seed an epoch with turn_count > 0 so orientation doesn't fire.
+  # Tests that care about orientation behavior test it explicitly.
+  defp seed_epoch(conversation_id) do
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id, %{turn_count: 1})
+    epoch_id
+  end
+
   describe "TurnAssembler → Harness integration" do
     test "assembles context and runs inference on PassHeader + TextInput" do
       conversation_id = "test-harness-#{System.unique_integer([:positive])}"
       pass_id = "pass-#{System.unique_integer([:positive])}"
       stream_id = "stream-#{System.unique_integer([:positive])}"
+      seed_epoch(conversation_id)
 
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
@@ -93,7 +101,7 @@ defmodule Cranium.Inference.HarnessTest do
       Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}})
 
       # Wait for pass_complete (enriched payload from Harness)
-      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 1, reason: :complete}}, 5000
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 2, reason: :complete}}, 5000
       assert sat == 0.5
 
       # Flush Effects to ensure async Store mutations complete
@@ -102,7 +110,7 @@ defmodule Cranium.Inference.HarnessTest do
       # Verify Store was updated (by Persistence.Effects)
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
       assert epoch.saturation == 0.5
-      assert epoch.turn_count == 1
+      assert epoch.turn_count == 2
       assert epoch.status == "active"
 
       # Verify user message was persisted (by TurnAssembler)
@@ -117,6 +125,7 @@ defmodule Cranium.Inference.HarnessTest do
       conversation_id = "test-cancel-#{System.unique_integer([:positive])}"
       pass_id = "pass-#{System.unique_integer([:positive])}"
       stream_id = "stream-#{System.unique_integer([:positive])}"
+      seed_epoch(conversation_id)
       test_pid = self()
 
       Cranium.Backend.LLM.Mock
@@ -172,6 +181,7 @@ defmodule Cranium.Inference.HarnessTest do
 
     test "backpressure queues second pass until first completes" do
       conversation_id = "test-backpressure-#{System.unique_integer([:positive])}"
+      seed_epoch(conversation_id)
 
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, 2, fn _messages, _opts ->
@@ -218,9 +228,9 @@ defmodule Cranium.Inference.HarnessTest do
       # Flush Effects to ensure async Store mutations complete
       flush_effects()
 
-      # Verify two turns were counted
+      # Verify two turns were counted (seeded at 1, +2 passes = 3)
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
-      assert epoch.turn_count == 2
+      assert epoch.turn_count == 3
     end
   end
 end

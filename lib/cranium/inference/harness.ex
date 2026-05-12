@@ -73,10 +73,16 @@ defmodule Cranium.Inference.Harness do
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
 
-    Logger.info("Harness: starting inference pass=#{turn[:pass_id]} stream=#{stream_id}")
+    silent = turn[:silent] == true
 
-    # Subscribe OutputSegmenter to the raw stream before inference starts
-    :ok = GenServer.call(Cranium.Media.OutputSegmenter, {:subscribe_stream, stream_id})
+    Logger.info("Harness: starting inference pass=#{turn[:pass_id]} stream=#{stream_id}#{if silent, do: " (silent)"}")
+
+    # Subscribe OutputSegmenter to the raw stream before inference starts.
+    # Silent passes (e.g. orientation) skip this — their output is persisted
+    # but not broadcast to clients via manifest or firehose.
+    unless silent do
+      :ok = GenServer.call(Cranium.Media.OutputSegmenter, {:subscribe_stream, stream_id})
+    end
 
     # Start Agent with profile-resolved backend
     {:ok, agent_pid} =
@@ -106,7 +112,8 @@ defmodule Cranium.Inference.Harness do
       model: turn[:model],
       thinking: turn[:thinking],
       ephemeral: ephemeral,
-      dispatch: turn[:dispatch]
+      dispatch: turn[:dispatch],
+      tools_disabled: turn[:tools_disabled] == true
     }
 
     result = Cranium.Inference.Agent.infer(agent_pid, context)
