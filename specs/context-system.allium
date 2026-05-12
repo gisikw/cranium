@@ -1,0 +1,541 @@
+-- allium: 3
+
+-- Context System
+--
+-- How cranium assembles the full context payload for each inference turn:
+-- system prompt (identity + handoff), cross-room landscape, per-turn
+-- injections (time awareness, saturation warnings, interrupted context),
+-- and conversation history. Also covers saturation tracking — the feedback
+-- loop that measures context utilization and warns the agent as it fills.
+--
+-- Scope: System prompt assembly, landscape cache and injection, turn
+-- injection pipeline, history assembly, saturation computation and
+-- warning. Does NOT cover inference internals (agent loop, tool routing),
+-- media pipeline, transport, or profile/config resolution — those are
+-- separate specs.
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Message, Pass, Summary)
+
+use conversation-lifecycle
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Profile {
+    -- Resolved from profiles.yaml by Config module.
+    -- Managed by the profile/config spec.
+    identity: String
+    context_window: Integer
+    saturation_warn: Float
+    saturation_critical: Float
+    private: Boolean
+}
+
+external entity ConversationSummarizer {
+    -- Async effect that generates summaries every N turns.
+    -- Managed by the conversation lifecycle spec (GenerateSummary rule).
+    -- Notifies Landscape on completion.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    time_gap_threshold_seconds: Integer = 1800
+    saturation_bucket_size: Integer = 5
+    default_saturation_warn: Float = 50
+    default_saturation_critical: Float = 80
+    default_context_window: Integer = 200000
+    -- interrupted_context_max_chars owned by conversation-lifecycle spec
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value LandscapeEntry {
+    conversation_id: String
+    room_name: String
+    summary: String
+    last_message_ts: Timestamp
+}
+
+value InjectionFlags {
+    landscape_injected: Boolean
+    saturation_warned_bucket: Integer?
+}
+
+value AssembledTurn {
+    system: String
+    messages: [FormattedMessage]
+    conversation_id: String
+    stream_id: String
+    epoch_id: String
+    turn_count: Integer
+    context_window: Integer?
+
+    @guidance
+        -- The fully assembled payload sent to Harness for inference.
+        -- system is the complete system prompt string.
+        -- messages is the Anthropic API message list (history + current).
+}
+
+value FormattedMessage {
+    role: user | assistant
+    content: String | [ContentPart]
+
+    @guidance
+        -- Text-only messages use a plain string content.
+        -- Messages with image attachments use a content array:
+        -- image parts first, then a text part last.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity SystemPromptCache {
+    -- Singleton GenServer. Keyed by conversation_id.
+    -- Caches the resolved handoff per conversation so the system prompt
+    -- is stable across all turns within an epoch.
+    entries: Map<String, String | :none>
+
+    @guidance
+        -- The cache maps conversation_id to either a handoff string or
+        -- the :none sentinel (meaning "looked it up, nothing there").
+        -- :none prevents repeated DB/disk reads for conversations with
+        -- no handoff history.
+}
+
+entity LandscapeCache {
+    -- Singleton GenServer. Holds the full cross-room summary map.
+    entries: Map<String, LandscapeEntry>
+
+    @guidance
+        -- Loaded once on init from DB + hoard disk (DB wins on conflict).
+        -- Updated in-place via summary_updated casts from
+        -- ConversationSummarizer — no DB re-read on update.
+        -- Deferred loading via handle_continue so supervisor start
+        -- is non-blocking.
+}
+
+------------------------------------------------------------
+-- Rules: System Prompt Assembly
+------------------------------------------------------------
+
+rule AssembleSystemPrompt {
+    when: AssembleTurn(conversation_id, is_fresh, identity)
+
+    -- On fresh epoch: invalidate cached handoff for this conversation
+    -- On subsequent turns: use cached value
+
+    let handoff = resolve_handoff(conversation_id)
+
+    ensures: system_prompt =
+        identity when handoff is nil
+    ensures: system_prompt =
+        identity + "\n\n<room-handoff>\n" + handoff + "\n</room-handoff>"
+        when handoff is not nil
+
+    @guidance
+        -- The system prompt contains exactly two components:
+        -- 1. Identity — the profile's identity file content, or the
+        --    PassHeader.system override if present.
+        -- 2. Room handoff — the handoff document from the previous epoch,
+        --    wrapped in <room-handoff> XML tags.
+        --
+        -- identity resolution: PassHeader.system (direct override) wins
+        -- over profile identity. If neither exists, identity is "".
+}
+
+rule ResolveHandoff {
+    when: resolve_handoff(conversation_id)
+
+    -- Check cache first
+    -- On cache miss:
+    --   1. Query Store for latest epoch with non-nil handoff field
+    --   2. If not found, scan hoard disk at paths.handoffs/<conversation_id>/
+    --      for .md files, pick lexicographically last (newest timestamp)
+    --   3. Cache the result (or :none sentinel if nothing found)
+
+    ensures: handoff = content from Store or disk
+    ensures: handoff = nil when no handoff exists anywhere
+    ensures: handoff = nil when paths.handoffs not configured and Store has nothing
+
+    @guidance
+        -- The disk fallback exists for legacy handoff files written by
+        -- the Go predecessor. New handoffs are always in the DB.
+        -- Lexicographic sort on timestamp-named .md files yields newest.
+        -- If paths.handoffs is not configured, disk fallback is skipped.
+}
+
+------------------------------------------------------------
+-- Rules: Landscape
+------------------------------------------------------------
+
+rule LoadLandscape {
+    when: LandscapeCache starts
+
+    -- Deferred via handle_continue (non-blocking supervisor start)
+    -- 1. Load all summaries from DB (Store.get_all_summaries)
+    -- 2. Load all .json files from paths.summaries/ on disk
+    -- 3. Merge: DB entries always win over hoard entries
+
+    ensures: LandscapeCache.entries populated with merged map
+
+    @guidance
+        -- Hoard JSON format: {room_name, summary, last_message_ts (unix), last_summary_ts}
+        -- DB schema: {conversation_id, content, updated_at}
+        -- Both are normalized to LandscapeEntry shape on load.
+        -- conversation_id doubles as room_name for DB entries.
+}
+
+rule UpdateLandscapeEntry {
+    when: ConversationSummarizer completes for conversation_id
+
+    ensures: LandscapeCache.entries[conversation_id] updated in-place
+        with new summary content and last_message_ts = now
+
+    @guidance
+        -- This is a GenServer cast, not a call — fire-and-forget from
+        -- the summarizer's perspective. No DB re-read; the entry is
+        -- constructed from the summarizer's output directly.
+}
+
+rule BuildLandscapeBlock {
+    when: TurnInjector requests landscape for conversation_id
+
+    -- 1. Exclude the current conversation's own entry
+    -- 2. Filter by :since timestamp if provided (delta mode, strict >)
+    -- 3. Sort by last_message_ts descending
+    -- 4. Format as <cross-room-context> block
+
+    requires: at least one entry survives filtering
+
+    ensures: block formatted as:
+        "<cross-room-context>\nHere's what's happening in your other rooms:\n\n"
+        + "- **room_name** (last active {ago}): {summary}\n" for each entry
+        + "</cross-room-context>"
+    ensures: nil when no entries survive filtering
+
+    @guidance
+        -- Relative time formatting:
+        --   < 60s: "just now"
+        --   < 1h: "{minutes}m ago"
+        --   < 1d: "{hours}h{minutes}m ago" (zero-padded minutes)
+        --   >= 1d: "about {days} day(s) ago"
+        -- These timestamps use raw UTC diff, not Central time.
+}
+
+------------------------------------------------------------
+-- Rules: Turn Injection Pipeline
+------------------------------------------------------------
+
+-- Turn injection prepends <system-reminder> blocks to the user message.
+-- The pipeline runs in a fixed order and each injection is conditional.
+-- Final prefix order: [time-gap OR fresh-time, landscape, saturation, interrupted-context]
+-- Blocks are joined by "\n\n", then "\n" before the original message text.
+
+rule InjectLandscape {
+    when: AssembleTurn(conversation_id, is_fresh, epoch)
+
+    -- Full landscape (no :since filter) on fresh epochs
+    -- Delta landscape (:since = epoch.last_landscape_at) on idle return
+    -- No landscape otherwise
+
+    requires: is_fresh = true
+        or time_gap_elapsed(epoch.last_invoked_at) = true
+
+    let since = nil when is_fresh
+    let since = epoch.last_landscape_at when not is_fresh
+
+    ensures: landscape block prepended to message text when block is not nil
+    ensures: InjectionFlags.landscape_injected = true when block is not nil
+    ensures: Epoch.last_landscape_at updated to now when block is not nil
+
+    @guidance
+        -- Landscape is position 1 in the injection order (after time
+        -- awareness, before saturation). On fresh epochs, the full
+        -- landscape gives the agent a complete picture of what's
+        -- happening across all rooms. On idle return (>30 min gap),
+        -- delta injection shows only rooms with activity since the
+        -- last landscape was injected.
+        -- The landscape_injected flag triggers Store.update_epoch to
+        -- record when the last landscape was shown.
+        -- On fresh epochs, both InjectFreshTime and full landscape
+        -- fire on the same turn. On idle return, both InjectTimeGap
+        -- and delta landscape fire on the same turn.
+}
+
+rule InjectTimeGap {
+    when: AssembleTurn with epoch.last_invoked_at not nil
+
+    requires: elapsed since epoch.last_invoked_at >= config.time_gap_threshold_seconds
+
+    ensures: message prepended with:
+        "<system-reminder>It's been {humanized_elapsed} since the last
+        message in this conversation. The current time is {central_time}
+        Central.</system-reminder>"
+
+    @guidance
+        -- Elapsed time humanization:
+        --   < 1h: "about {minutes} minutes"
+        --   < 1d: "about {hours} hour(s)"
+        --   >= 1d: "about {days} day(s)"
+        -- Time is formatted in US Central timezone (CDT UTC-5 or CST UTC-6
+        -- based on DST rules: CDT from 2nd Sunday in March to 1st Sunday
+        -- in November).
+        -- Mutually exclusive with InjectFreshTime — this fires when there
+        -- IS a last_invoked_at.
+}
+
+rule InjectFreshTime {
+    when: AssembleTurn with is_fresh = true and epoch.last_invoked_at = nil
+
+    ensures: message prepended with:
+        "<system-reminder>The current time is {central_time} Central.</system-reminder>"
+
+    @guidance
+        -- Fires only on the very first turn of a brand new epoch with no
+        -- prior messages at all. Gives the session temporal grounding.
+        -- After this turn, last_invoked_at will be set and InjectTimeGap
+        -- takes over for any subsequent idle gaps.
+}
+
+rule InjectSaturationWarning {
+    when: AssembleTurn with epoch.saturation >= warn_threshold
+
+    let current = epoch.saturation
+    let current_bucket = div(trunc(current), config.saturation_bucket_size) * config.saturation_bucket_size
+    let warn = profile.saturation_warn or config.default_saturation_warn
+    let critical = profile.saturation_critical or config.default_saturation_critical
+
+    requires: current >= warn
+    requires: current_bucket > epoch.last_reminder_bucket
+
+    ensures: message prepended with:
+        "<system-reminder>Context window saturation: {current}%.
+        {advice}</system-reminder>"
+    ensures: InjectionFlags.saturation_warned_bucket = current_bucket
+    ensures: Epoch.last_reminder_bucket updated to current_bucket
+
+    @guidance
+        -- Rising-edge detection: the warning fires only when crossing a
+        -- new 5% bucket boundary above the warn threshold. Once a bucket
+        -- fires, it won't fire again until saturation climbs to the next
+        -- bucket. This prevents repeated warnings at the same level.
+        --
+        -- Advice tiers (from most to least urgent):
+        --   >= critical: "Context is getting full. Wrap up current work,
+        --     capture any loose threads as tickets, and suggest a !clear."
+        --   >= critical - 10: "Context is filling up. Start wrapping up —
+        --     finish current task, note open threads."
+        --   >= warn: "Context is past halfway. Be mindful of scope —
+        --     avoid starting large new tasks."
+}
+
+rule InjectInterruptedContext {
+    when: AssembleTurn with epoch.interrupted_context is not nil and not empty
+
+    ensures: message prepended with:
+        "<system-reminder>Your previous response was interrupted. Here's
+        what you were working on:\n\n{interrupted_context}</system-reminder>"
+
+    @guidance
+        -- Interrupted context is set by PassReactor when a pass is
+        -- cancelled with non-empty partial output (truncated to
+        -- config.interrupted_context_max_chars). Cleared on next
+        -- successful pass completion.
+        -- This is the last injection in the prefix order.
+}
+
+------------------------------------------------------------
+-- Rules: History Assembly
+------------------------------------------------------------
+
+rule AssembleHistory {
+    when: AssembleTurn(conversation_id, epoch_id, enriched_text, attachments)
+
+    -- 1. Fetch all messages for this epoch from Store, ordered by
+    --    (inserted_at ASC, id ASC)
+    -- 2. Format each as {role, content} map
+    -- 3. Append current user message as final entry
+
+    ensures: messages list contains all prior epoch messages + current message
+    ensures: current message is last in the list
+    ensures: current message with attachments uses content array format:
+        [image_parts..., {type: "text", text: enriched_text}]
+    ensures: current message without attachments uses plain string content
+
+    @guidance
+        -- History is epoch-scoped. No cross-epoch history bleeds in.
+        -- No artificial message cap — saturation warnings handle context
+        -- pressure organically.
+        --
+        -- CRITICAL ORDERING: History is fetched BEFORE the current user
+        -- message is persisted to Store. The current message is added
+        -- explicitly as the final list entry. Persisting happens after
+        -- history fetch. This prevents the current message appearing
+        -- twice (once from DB, once from explicit append).
+        --
+        -- Image attachments are base64-encoded inline in the Anthropic
+        -- API format: {type: "image", source: {type: "base64",
+        -- media_type: ..., data: base64_string}}.
+}
+
+------------------------------------------------------------
+-- Rules: Saturation Tracking
+------------------------------------------------------------
+
+rule ComputeSaturation {
+    when: inference completes with usage data
+
+    let max_tokens = profile.context_window
+        or pipeline.max_context_tokens
+        or 200000
+    let total = usage.input_tokens + usage.output_tokens
+        + usage.cache_creation_input_tokens
+        + usage.cache_read_input_tokens
+    let saturation = min(total / max_tokens, 1.0)
+
+    ensures: saturation value included in PassOutcome
+    ensures: Epoch.saturation updated via PassReactor
+
+    @guidance
+        -- Saturation is computed in the Harness after inference returns.
+        -- Stored as a float 0.0–1.0 in the DB. Converted to percentage
+        -- (multiplied by 100) when read back through
+        -- Store.get_or_create_epoch, so TurnInjector works in 0–100
+        -- percentage space.
+        --
+        -- All four token fields from the usage response are summed.
+        -- This is intentional — cache tokens still consume context
+        -- window capacity even though they're discounted in billing.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant SystemPromptHandoffStableWithinEpoch {
+    for e in Epochs:
+        the handoff component of the system prompt is identical
+        for all turns within e
+
+    @guidance
+        -- Enforced by the SystemPromptCache: the handoff is resolved
+        -- once on the first turn (is_fresh = true) and cached for all
+        -- subsequent turns.
+        -- Note: the identity component is mtime-cached in ETS and
+        -- re-resolved per call. If the identity file is modified on
+        -- disk mid-epoch, the system prompt CAN change between turns.
+        -- The handoff half is guaranteed stable; the identity half
+        -- is stable in practice but not invariant.
+}
+
+invariant HistoryEpochScoped {
+    for t in Turns:
+        t.messages contains only messages from t.epoch_id
+
+    @guidance
+        -- History.contribute always passes epoch_id to
+        -- Store.get_messages. No cross-epoch history bleeds into a
+        -- new epoch's context. The handoff mechanism bridges epochs
+        -- at the system prompt level instead.
+}
+
+invariant HistoryFetchBeforePersist {
+    for t in Turns:
+        history is fetched before current user message is persisted
+
+    @guidance
+        -- Without this ordering, the current message would appear twice
+        -- in the messages list: once from DB, once from the explicit
+        -- append. TurnAssembler calls History.contribute (step 8) before
+        -- Store.append_message (step 9).
+}
+
+invariant LandscapeSelfExclusion {
+    for build in LandscapeBuilds:
+        build result never contains the requesting conversation's own entry
+
+    @guidance
+        -- Enforced by Enum.reject in Landscape.build. A room never
+        -- sees its own summary in the cross-room context block.
+}
+
+invariant SaturationRisingEdgeOnly {
+    for e in Epochs:
+        saturation warning fires only when current_bucket > last_reminder_bucket
+
+    @guidance
+        -- Bucket tracking (5% increments) prevents repeated warnings
+        -- at the same saturation level. last_reminder_bucket is reset
+        -- to 0 only when a new epoch is created. Within an epoch it
+        -- acts as a high-water mark.
+}
+
+invariant PrivateProfilesExcludedFromLandscape {
+    for p in Profiles where p.private = true:
+        no LandscapeEntry exists for conversations using p
+
+    @guidance
+        -- Private profiles are excluded at the summarization stage
+        -- (see GenerateSummary in conversation-lifecycle spec). No
+        -- summary means no landscape entry. Private conversations
+        -- are invisible to other rooms.
+}
+
+invariant InjectionOrderIsFixed {
+    for t in Turns with injections:
+        injection prefix order is:
+            [time-gap OR fresh-time, landscape, saturation, interrupted-context]
+
+    @guidance
+        -- The order matters because it determines what the model sees
+        -- first. Temporal awareness comes first, then landscape (broadest
+        -- context), then operational warnings, then recovery context.
+        --
+        -- Implementation: injections accumulate via prepend ([x | acc])
+        -- in pipe order: time-gap → fresh-time → landscape → saturation
+        -- → interrupted. The list is then reversed, yielding the final
+        -- prefix order above.
+}
+
+invariant TimeGapAndFreshTimeMutuallyExclusive {
+    for t in Turns:
+        at most one of InjectTimeGap or InjectFreshTime fires
+
+    @guidance
+        -- InjectTimeGap requires last_invoked_at to be non-nil.
+        -- InjectFreshTime requires last_invoked_at to be nil.
+        -- They cannot both fire on the same turn.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Landscape staleness" {
+    -- Should landscape entries have a TTL? Currently a room that was
+    -- active months ago still appears in the landscape if it has a
+    -- summary. The relative timestamp ("about 47 days ago") provides
+    -- some signal, but the block could get long with many stale rooms.
+}
+
+open question "Saturation measurement accuracy" {
+    -- Saturation is computed after inference from the usage response.
+    -- This means the first turn always shows 0% saturation (from the
+    -- epoch default). The warning only fires on the turn AFTER context
+    -- passes the threshold, not on the turn that caused it. Is this
+    -- lag acceptable, or should saturation be estimated pre-inference?
+}
+
+open question "Injection overhead at high saturation" {
+    -- Landscape blocks can be large (all rooms, full summaries). At
+    -- high saturation, injecting landscape on idle return adds tokens
+    -- to an already-pressured context. Should landscape injection be
+    -- suppressed above some saturation threshold?
+}
