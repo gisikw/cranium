@@ -561,11 +561,16 @@ defmodule Cranium.Transport.HTTP do
         end
 
       {:pass_complete, conversation_id, stream_id, meta} ->
-        data = meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
+        # Silent passes (e.g. orientation) are persisted but not broadcast to clients.
+        if meta[:silent] do
+          multi_stream_sse_loop(conn)
+        else
+          data = meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
 
-        case chunk(conn, sse_event("pass_complete", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
-          {:error, _} -> conn
+          case chunk(conn, sse_event("pass_complete", data)) do
+            {:ok, conn} -> multi_stream_sse_loop(conn)
+            {:error, _} -> conn
+          end
         end
 
       {:epoch_started, conversation_id, meta} ->

@@ -246,7 +246,8 @@ defmodule Cranium.Inference.TurnAssembler do
     is_fresh = turn_count == 0
 
     # 2. Broadcast message_received so firehose clients see inbound messages
-    unless ephemeral do
+    #    Orientation prompts are private — suppress their input from the firehose.
+    unless ephemeral or header.origin == "orientation" do
       Cranium.Events.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
         text: text,
         origin: header.origin,
@@ -403,8 +404,7 @@ defmodule Cranium.Inference.TurnAssembler do
       stream_id: orientation_stream_id,
       origin: "orientation",
       profile: header.profile,
-      disposition: ["text"],
-      ephemeral: true
+      disposition: ["text"]
     }
 
     orientation_input = %TextInput{

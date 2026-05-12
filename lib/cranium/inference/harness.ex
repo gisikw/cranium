@@ -155,7 +155,8 @@ defmodule Cranium.Inference.Harness do
         turn_count: new_count,
         cc_session_id: cc_session_id,
         profile: turn[:profile],
-        ephemeral: ephemeral
+        ephemeral: ephemeral,
+        silent: turn[:silent] == true
       }})
 
     # Bridge: TTS cache cleanup
