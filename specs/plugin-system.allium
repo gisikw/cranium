@@ -96,7 +96,7 @@ value Injection {
         --
         -- Content is pre-tagged by the plugin — cranium does not wrap it.
         -- Plugins are responsible for their own XML tags (e.g.,
-        -- <system-reminder>, <gloss>, etc.).
+        -- <system-reminder>, <glossary>, etc.).
         --
         -- Reference priorities for builtins:
         --   time-gap / fresh-time: 10
