@@ -37,29 +37,32 @@ defmodule Cranium.Plugin.ConversationSupervisor do
 
     case Registry.lookup(@registry, {conversation_id, :plugins}) do
       [{sup_pid, _}] ->
-        for %{module: module} = decl <- plugins do
-          metadata = %{session_metadata | plugin_config: decl[:config]}
+        # Idempotent — skip if plugins are already running
+        if DynamicSupervisor.which_children(sup_pid) == [] do
+          for %{module: module} = decl <- plugins do
+            metadata = %{session_metadata | plugin_config: decl[:config]}
 
-          child_spec = {
-            Cranium.Plugin.Server,
-            module: module, session_metadata: metadata
-          }
+            child_spec = {
+              Cranium.Plugin.Server,
+              module: module, session_metadata: metadata
+            }
 
-          case DynamicSupervisor.start_child(sup_pid, child_spec) do
-            {:ok, _pid} ->
-              :ok
+            case DynamicSupervisor.start_child(sup_pid, child_spec) do
+              {:ok, _pid} ->
+                :ok
 
-            :ignore ->
-              Logger.debug("Plugin.ConversationSupervisor: #{inspect(module)} ignored session",
-                conversation_id: conversation_id
-              )
+              :ignore ->
+                Logger.debug("Plugin.ConversationSupervisor: #{inspect(module)} ignored session",
+                  conversation_id: conversation_id
+                )
 
-            {:error, reason} ->
-              Logger.warning(
-                "Plugin.ConversationSupervisor: failed to start #{inspect(module)}",
-                conversation_id: conversation_id,
-                reason: inspect(reason)
-              )
+              {:error, reason} ->
+                Logger.warning(
+                  "Plugin.ConversationSupervisor: failed to start #{inspect(module)}",
+                  conversation_id: conversation_id,
+                  reason: inspect(reason)
+                )
+            end
           end
         end
 

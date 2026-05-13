@@ -271,19 +271,17 @@ defmodule Cranium.Inference.TurnAssembler do
         identity: identity
       )
 
-    # 5b. Start plugins on first turn of epoch
-    if is_fresh do
-      Cranium.Plugin.ConversationSupervisor.start_plugins(
-        header.conversation_id,
-        %{
-          conversation_id: header.conversation_id,
-          epoch_id: epoch_id,
-          room_name: header.conversation_id,
-          profile: profile,
-          plugin_config: nil
-        }
-      )
-    end
+    # 5b. Ensure plugins are running (idempotent — no-ops if already started)
+    Cranium.Plugin.ConversationSupervisor.start_plugins(
+      header.conversation_id,
+      %{
+        conversation_id: header.conversation_id,
+        epoch_id: epoch_id,
+        room_name: header.conversation_id,
+        profile: profile,
+        plugin_config: nil
+      }
+    )
 
     # 5c. Dispatch before_context_build hook to plugins
     turn_context = %{
