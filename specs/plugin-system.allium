@@ -1,0 +1,356 @@
+-- allium: 3
+
+-- Plugin System
+--
+-- How cranium discovers, loads, configures, and orchestrates plugins.
+-- Plugins are session-scoped GenServers that subscribe to hook points in
+-- the conversation lifecycle. They observe turns, maintain their own state,
+-- and optionally inject content into the context pipeline.
+--
+-- Scope: Plugin registration, lifecycle, hook dispatch, injection contract,
+-- hot code reload. Does NOT cover the implementation of specific plugins
+-- (gloss, agenda, etc.) — those are separate specs. Does NOT cover
+-- inference internals, transport, or media pipeline.
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Pass, Message)
+--             context-system.allium (AssembleTurn, injection pipeline)
+
+use conversation_lifecycle
+use context_system
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Profile {
+    -- Resolved from profiles.yaml by Config module.
+    -- Managed by the profile/config spec.
+    plugins: [PluginDeclaration]
+}
+
+external entity Supervisor {
+    -- OTP supervisor managing plugin GenServer processes.
+    -- Standard BEAM supervision — not specified here.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    plugin_beam_path: String
+        -- Filesystem path where plugin .beam files are loaded from.
+        -- Plugins compiled as separate projects place their artifacts here.
+        -- Cranium adds this to the code server's load path at boot.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value PluginDeclaration {
+    module: Atom
+    config: Map?
+
+    @guidance
+        -- Declared per-profile in profiles.yaml. Module is the Elixir
+        -- module name (e.g., Cranium.Plugins.Gloss). Config is an
+        -- optional map passed to the plugin's init alongside session
+        -- metadata. Shape is plugin-defined — cranium does not validate it.
+}
+
+value SessionMetadata {
+    conversation_id: String
+    epoch_id: String
+    room_name: String
+    profile: Profile
+    plugin_config: Map?
+
+    @guidance
+        -- Passed to the plugin's init/1. plugin_config is the config
+        -- map from the PluginDeclaration, or nil if none was declared.
+}
+
+value TurnContext {
+    conversation_id: String
+    epoch_id: String
+    turn_count: Integer
+    message_text: String
+
+    @guidance
+        -- Lightweight metadata passed to hook callbacks. Contains the
+        -- current user message and turn identifiers. Plugins that need
+        -- historical context maintain their own lookback state — cranium
+        -- does not materialize history into TurnContext.
+}
+
+value Injection {
+    priority: Integer
+    content: String
+
+    @guidance
+        -- A single injection to be inserted into the turn's injection
+        -- pipeline. Priority determines ordering relative to other
+        -- injections (both builtin and plugin-provided). Lower numbers
+        -- appear earlier in the final prefix.
+        --
+        -- Content is pre-tagged by the plugin — cranium does not wrap it.
+        -- Plugins are responsible for their own XML tags (e.g.,
+        -- <system-reminder>, <gloss>, etc.).
+        --
+        -- Reference priorities for builtins:
+        --   time-gap / fresh-time: 10
+        --   landscape: 20
+        --   saturation: 30
+        --   interrupted-context: 40
+        --
+        -- Ties in priority are resolved in arbitrary order.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Plugin {
+    module: Atom
+    state: any
+    subscribed_hooks: [HookPoint]
+    session_metadata: SessionMetadata
+
+    @guidance
+        -- A plugin is a GenServer process, one instance per session
+        -- where it opts in. Supervised by cranium — crashes are
+        -- non-fatal to the turn. The supervisor restarts the plugin;
+        -- the current turn proceeds without that plugin's contribution.
+}
+
+------------------------------------------------------------
+-- Hook Points
+------------------------------------------------------------
+
+-- Hook points are named lifecycle events that plugins can subscribe to.
+-- Each hook point defines a callback signature (what the plugin receives
+-- and what it returns). Only before_context_build is fully specified here;
+-- the others are declared as future extension points.
+
+enum HookPoint {
+    before_context_build
+    after_pass_complete
+    on_epoch_start
+    on_epoch_end
+
+    @guidance
+        -- before_context_build: Fires after history assembly, before
+        --   the injection pipeline runs. The plugin's opportunity to
+        --   contribute content to the turn's system-reminder prefix.
+        --
+        -- after_pass_complete: Fires after inference completes and the
+        --   response is persisted. Observation-only for now.
+        --   Not yet specified.
+        --
+        -- on_epoch_start: Fires when a new epoch is created. Distinct
+        --   from plugin init — init fires on process start (which may
+        --   be a restart mid-epoch), on_epoch_start fires once per epoch.
+        --   Not yet specified.
+        --
+        -- on_epoch_end: Fires when an epoch is closing (handoff
+        --   generation, summary). Not yet specified.
+}
+
+------------------------------------------------------------
+-- Rules: Plugin Lifecycle
+------------------------------------------------------------
+
+rule StartPlugins {
+    when: Epoch.created(conversation_id) or Plugin process restarted
+
+    for decl in profile.plugins:
+        let metadata = SessionMetadata(
+            conversation_id,
+            epoch_id,
+            room_name,
+            profile,
+            plugin_config: decl.config
+        )
+
+        -- Start GenServer with metadata.
+        -- Plugin init returns one of:
+        --   {:ok, subscribed_hooks, state} — plugin opts in
+        --   :ignore — plugin declines this session
+
+    ensures: Plugin.created(module: decl.module, subscribed_hooks, state)
+        when init returns {:ok, subscribed_hooks, state}
+    ensures: no Plugin process exists for decl.module
+        when init returns :ignore
+
+    @guidance
+        -- Each plugin declared in the profile gets a start attempt.
+        -- The plugin inspects SessionMetadata in its init and decides
+        -- whether to participate. An empty subscribed_hooks list is
+        -- valid but pointless — prefer :ignore for full opt-out.
+        --
+        -- On mid-session process restart (crash recovery), init is
+        -- called again with the same SessionMetadata. The plugin
+        -- loses its accumulated state. This is the standard OTP
+        -- trade-off — plugins that need durable state should persist
+        -- it externally.
+}
+
+rule StopPlugins {
+    when: Epoch ends for conversation_id
+
+    for p in Plugins where p.session_metadata.conversation_id = conversation_id:
+        ensures: p is terminated gracefully
+
+    @guidance
+        -- Plugin GenServers are session-scoped. When the epoch ends
+        -- (either via !clear or natural session close), all plugins
+        -- for that conversation are stopped.
+}
+
+------------------------------------------------------------
+-- Rules: Hook Dispatch
+------------------------------------------------------------
+
+rule DispatchBeforeContextBuild {
+    when: AssembleTurn(conversation_id, epoch_id, turn_count, message_text)
+
+    let plugins = active Plugins
+        where before_context_build in subscribed_hooks
+        and session_metadata.conversation_id = conversation_id
+
+    let turn_context = TurnContext(
+        conversation_id,
+        epoch_id,
+        turn_count,
+        message_text
+    )
+
+    for p in plugins:
+        let result = invoke p.before_context_build(turn_context)
+        -- result is :skip or [Injection]
+
+    let all_injections = flatten(results where result != :skip)
+
+    ensures: all_injections are merged into the turn injection pipeline
+        ordered by priority alongside builtin injections
+    ensures: turn proceeds normally when a plugin crashes during invocation
+    ensures: turn proceeds normally when all plugins return :skip
+
+    @guidance
+        -- Plugins are invoked sequentially in arbitrary order. Each
+        -- plugin receives the same TurnContext — plugins do not see
+        -- each other's injections.
+        --
+        -- If a plugin's GenServer has crashed and is restarting, it
+        -- is simply absent from the dispatch list for that turn.
+        -- The supervisor restart happens asynchronously.
+        --
+        -- The injections returned by plugins are merged with the
+        -- builtin injections (time-gap, landscape, saturation,
+        -- interrupted-context) and sorted by priority. The result
+        -- is the final injection prefix for the turn.
+}
+
+------------------------------------------------------------
+-- Rules: Hot Code Reload
+------------------------------------------------------------
+
+rule ReloadPlugin {
+    when: plugin module code changes on disk
+
+    ensures: next hook invocation for that plugin runs the new code
+    ensures: plugin GenServer state is preserved across reload
+    ensures: active sessions are not interrupted
+
+    @guidance
+        -- This is standard BEAM hot code swapping. When a new version
+        -- of a plugin module is loaded into the code server, the
+        -- GenServer's next callback invocation automatically runs the
+        -- new code. No process restart. No state loss.
+        --
+        -- Cranium's responsibility is limited to ensuring the
+        -- plugin_beam_path is on the code server's load path at boot.
+        -- The actual reload trigger (file watcher, gitops, manual
+        -- command) is a deployment concern, not specified here.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant PluginCrashNonFatal {
+    for t in Turns:
+        a plugin crash during hook invocation does not prevent
+        the turn from proceeding to inference
+
+    @guidance
+        -- The turn assembler catches plugin invocation failures and
+        -- logs them. The failed plugin's contribution is simply
+        -- absent from that turn's injection set. The supervisor
+        -- restarts the plugin independently.
+}
+
+invariant PluginIsolation {
+    for p1, p2 in Plugins where p1 != p2:
+        p1 cannot observe p2's state or injections
+
+    @guidance
+        -- Plugins are independent GenServers. They do not share state
+        -- and they do not see each other's hook results. Each plugin
+        -- receives the same TurnContext from cranium and produces its
+        -- own injections independently. Ordering between plugins at
+        -- the same priority is arbitrary and must not be relied upon.
+}
+
+invariant InjectionOrderDeterministic {
+    for t in Turns:
+        injections (builtin and plugin) are ordered by priority,
+        with ties broken arbitrarily but consistently within a turn
+
+    @guidance
+        -- The injection pipeline produces a single ordered list from
+        -- all sources. Priority is the sole ordering key. This extends
+        -- the InjectionOrderIsFixed invariant from context-system.allium
+        -- to include plugin-provided injections.
+}
+
+invariant HotReloadStatePreservation {
+    for p in Plugins:
+        when p's module code is reloaded,
+        p's GenServer state is preserved
+
+    @guidance
+        -- Standard OTP guarantee. The GenServer process continues
+        -- with its existing state; only the callback code changes.
+        -- Plugins that need state migration across code versions
+        -- should implement code_change/3.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Plugin ordering within a hook" {
+    -- Currently plugins at the same hook point are invoked in
+    -- arbitrary order. If a use case arises where plugin A must
+    -- run before plugin B (e.g., A's injection informs B's
+    -- decision), we may need an explicit ordering mechanism.
+    -- For now, arbitrary order with isolated invocation is sufficient.
+}
+
+open question "Plugin-to-plugin communication" {
+    -- Plugins are currently fully isolated. If two plugins need
+    -- to coordinate (e.g., agenda consults gloss for term
+    -- definitions), should there be a sanctioned channel? Or
+    -- should such coordination be handled by merging the plugins?
+    -- Deferred until a concrete use case arises.
+}
+
+open question "Builtin migration to plugin contract" {
+    -- The four builtin injectors (time-gap, landscape, saturation,
+    -- interrupted-context) could be reimplemented as plugins. This
+    -- would validate the plugin contract and simplify cranium's core.
+    -- The migration is mechanical once the contract is proven with
+    -- a real external plugin (gloss). Deferred until then.
+}
