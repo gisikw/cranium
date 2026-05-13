@@ -28,6 +28,22 @@ defmodule Cranium do
     case Cranium.Store.get_epoch(conversation_id) do
       {:ok, epoch} ->
         cancel(conversation_id)
+
+        # Dispatch on_epoch_end hooks before clearing — plugins still have
+        # their state and messages are still accessible.
+        {:ok, messages} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch.id)
+
+        epoch_end_context = %{
+          conversation_id: conversation_id,
+          epoch_id: epoch.id,
+          messages: messages
+        }
+
+        Cranium.Plugin.ConversationSupervisor.dispatch_epoch_end(
+          conversation_id,
+          epoch_end_context
+        )
+
         Cranium.Store.clear_epoch(conversation_id, continuation)
 
         Cranium.Events.broadcast(

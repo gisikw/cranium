@@ -22,6 +22,7 @@ defmodule Cranium.Plugin.Server do
   require Logger
 
   @hook_timeout 5_000
+  @epoch_end_timeout 30_000
 
   @type start_opts :: [
           module: module(),
@@ -45,15 +46,19 @@ defmodule Cranium.Plugin.Server do
   Returns `{:ok, result}` on success, `{:error, reason}` on failure.
   The caller should treat errors as `:skip`.
   """
-  @spec call_hook(pid(), :before_context_build, Cranium.Plugin.turn_context()) ::
-          {:ok, :skip | [Cranium.Plugin.injection()]} | {:error, term()}
-  def call_hook(pid, hook, context) do
-    GenServer.call(pid, {:hook, hook, context}, @hook_timeout)
+  @spec call_hook(pid(), Cranium.Plugin.hook(), term(), timeout()) ::
+          {:ok, term()} | {:error, term()}
+  def call_hook(pid, hook, context, timeout \\ nil) do
+    timeout = timeout || default_timeout(hook)
+    GenServer.call(pid, {:hook, hook, context}, timeout)
   catch
     :exit, reason ->
       Logger.warning("Plugin.Server: hook #{hook} failed", reason: inspect(reason))
       {:error, reason}
   end
+
+  defp default_timeout(:on_epoch_end), do: @epoch_end_timeout
+  defp default_timeout(_), do: @hook_timeout
 
   @doc "Return the module and subscribed hooks for a running plugin server."
   @spec info(pid()) :: {:ok, %{module: module(), hooks: [Cranium.Plugin.hook()]}} | {:error, term()}
@@ -82,11 +87,14 @@ defmodule Cranium.Plugin.Server do
   end
 
   @impl true
-  def handle_call({:hook, hook, turn_context}, _from, data) do
+  def handle_call({:hook, hook, context}, _from, data) do
     if hook in data.hooks do
-      case safe_callback(data.module, hook, [turn_context, data.state]) do
+      case safe_callback(data.module, hook, [context, data.state]) do
         {:ok, result, new_state} ->
           {:reply, {:ok, result}, %{data | state: new_state}}
+
+        {:ok, result} ->
+          {:reply, {:ok, result}, data}
 
         {:error, reason} ->
           {:reply, {:error, reason}, data}
@@ -104,6 +112,7 @@ defmodule Cranium.Plugin.Server do
   defp safe_callback(module, callback, args) do
     case apply(module, callback, args) do
       {:ok, result, new_state} -> {:ok, result, new_state}
+      :ok -> {:ok, :ok}
       other -> {:error, {:unexpected_return, other}}
     end
   rescue

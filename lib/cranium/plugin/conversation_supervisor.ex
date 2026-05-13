@@ -108,6 +108,31 @@ defmodule Cranium.Plugin.ConversationSupervisor do
     end
   end
 
+  @doc """
+  Dispatch on_epoch_end to all subscribed plugins for a conversation.
+
+  Fire-and-forget — no injections returned. Each plugin receives the
+  epoch end context (conversation_id, epoch_id, messages) and can
+  perform side effects (e.g., updating glossary files). Crashes and
+  timeouts are logged and swallowed.
+  """
+  @spec dispatch_epoch_end(String.t(), Cranium.Plugin.epoch_end_context()) :: :ok
+  def dispatch_epoch_end(conversation_id, context) do
+    case Registry.lookup(@registry, {conversation_id, :plugins}) do
+      [{sup_pid, _}] ->
+        children = DynamicSupervisor.which_children(sup_pid)
+
+        for {_, pid, :worker, _} when is_pid(pid) <- children do
+          Cranium.Plugin.Server.call_hook(pid, :on_epoch_end, context)
+        end
+
+        :ok
+
+      [] ->
+        :ok
+    end
+  end
+
   defp via(conversation_id) do
     {:via, Registry, {@registry, {conversation_id, :plugins}}}
   end

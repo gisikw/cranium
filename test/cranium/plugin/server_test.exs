@@ -60,6 +60,47 @@ defmodule Cranium.Plugin.ServerTest do
     end
   end
 
+  describe "on_epoch_end hook" do
+    test "dispatches epoch_end to subscribed plugin" do
+      metadata = %{@metadata | plugin_config: %{"test_pid" => self()}}
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochEndTracker, session_metadata: metadata)
+
+      epoch_end_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        messages: [%{role: "user", content: "hello"}]
+      }
+
+      assert {:ok, :ok} = Server.call_hook(pid, :on_epoch_end, epoch_end_context)
+      assert_receive {:epoch_end_called, ^epoch_end_context}
+    end
+
+    test "handles crash in on_epoch_end gracefully" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochEndCrasher, session_metadata: @metadata)
+
+      epoch_end_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        messages: []
+      }
+
+      assert {:error, {:raised, %RuntimeError{}}} = Server.call_hook(pid, :on_epoch_end, epoch_end_context)
+      assert Process.alive?(pid)
+    end
+
+    test "returns :skip for plugins not subscribed to on_epoch_end" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
+      epoch_end_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        messages: []
+      }
+
+      assert {:ok, :skip} = Server.call_hook(pid, :on_epoch_end, epoch_end_context)
+    end
+  end
+
   describe "info/1" do
     test "returns module and hooks" do
       {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)

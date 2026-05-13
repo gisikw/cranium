@@ -60,6 +60,37 @@ defmodule Cranium.TestPlugins.Crasher do
   end
 end
 
+defmodule Cranium.TestPlugins.EpochEndTracker do
+  @moduledoc "Test plugin that tracks on_epoch_end calls via the test process."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(metadata) do
+    {:ok, [:on_epoch_end], %{test_pid: metadata.plugin_config["test_pid"]}}
+  end
+
+  @impl true
+  def on_epoch_end(context, state) do
+    send(state.test_pid, {:epoch_end_called, context})
+    :ok
+  end
+end
+
+defmodule Cranium.TestPlugins.EpochEndCrasher do
+  @moduledoc "Test plugin that raises in on_epoch_end."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(_metadata) do
+    {:ok, [:on_epoch_end], %{}}
+  end
+
+  @impl true
+  def on_epoch_end(_context, _state) do
+    raise "intentional epoch_end crash"
+  end
+end
+
 defmodule Cranium.TestPlugins.MultiInjector do
   @moduledoc "Test plugin that injects multiple items at different priorities."
   @behaviour Cranium.Plugin

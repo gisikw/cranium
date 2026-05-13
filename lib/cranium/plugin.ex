@@ -32,6 +32,11 @@ defmodule Cranium.Plugin do
   pipeline runs. Return `:skip` to contribute nothing, or a list of injections
   with priority and pre-tagged content.
 
+  `on_epoch_end/2` fires when the epoch is clearing, before handoff generation
+  and plugin termination. Receives the full message history for the epoch.
+  Return `:ok` — this is a side-effect-only hook (e.g., updating glossary
+  entries based on conversation content).
+
   ## Injection priorities (builtins for reference)
 
   - 10: time-gap / fresh-time
@@ -57,6 +62,12 @@ defmodule Cranium.Plugin do
           message_text: String.t()
         }
 
+  @type epoch_end_context :: %{
+          conversation_id: String.t(),
+          epoch_id: String.t(),
+          messages: [map()]
+        }
+
   @type injection :: %{priority: integer(), content: String.t()}
 
   @callback init(session_metadata()) ::
@@ -65,5 +76,7 @@ defmodule Cranium.Plugin do
   @callback before_context_build(turn_context(), state :: term()) ::
               {:ok, :skip | [injection()], new_state :: term()}
 
-  @optional_callbacks [before_context_build: 2]
+  @callback on_epoch_end(epoch_end_context(), state :: term()) :: :ok
+
+  @optional_callbacks [before_context_build: 2, on_epoch_end: 2]
 end
