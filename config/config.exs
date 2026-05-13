@@ -24,6 +24,11 @@ config :cranium, :paths, []
 # Rooms excluded from GET /v1/rooms (ops, infrastructure, etc.)
 config :cranium, :excluded_rooms, []
 
+# Plugin beam path — directory containing compiled plugin .beam files.
+# Plugins compiled as separate projects place their artifacts here.
+# Added to the code server's load path at boot.
+config :cranium, :plugin_beam_path, nil
+
 # Pipeline tuning
 config :cranium, :pipeline,
   summary_interval: 10,

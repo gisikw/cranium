@@ -30,4 +30,13 @@ profiles:
     identity: test/fixtures/test-identity.txt
     openai_system_mode: append
 
+  test-with-plugins:
+    backend: mock
+    model: test-model
+    plugins:
+      - module: Cranium.TestPlugins.Echo
+      - module: Cranium.TestPlugins.Skipper
+        config:
+          threshold: 3
+
 ollama_url: http://localhost:11434

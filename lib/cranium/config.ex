@@ -41,8 +41,11 @@ defmodule Cranium.Config do
       saturation_warn: nil,
       saturation_critical: nil,
       openai_system_mode: :replace,
-      private: false
+      private: false,
+      plugins: []
     ]
+
+    @type plugin_declaration :: %{module: module(), config: map() | nil}
 
     @type t :: %__MODULE__{
             name: String.t(),
@@ -54,7 +57,8 @@ defmodule Cranium.Config do
             saturation_warn: number() | nil,
             saturation_critical: number() | nil,
             openai_system_mode: :replace | :prepend | :append,
-            private: boolean()
+            private: boolean(),
+            plugins: [plugin_declaration()]
           }
   end
 
@@ -79,7 +83,8 @@ defmodule Cranium.Config do
            saturation_warn: profile.saturation_warn,
            saturation_critical: profile.saturation_critical,
            openai_system_mode: profile.openai_system_mode,
-           private: profile.private
+           private: profile.private,
+           plugins: profile.plugins
          }}
 
       [] ->
@@ -222,6 +227,8 @@ defmodule Cranium.Config do
             _ -> :replace
           end
 
+        plugins = parse_plugins(config["plugins"])
+
         profile = %Profile{
           name: name,
           backend: backend,
@@ -232,7 +239,8 @@ defmodule Cranium.Config do
           saturation_warn: config["saturation_warn"],
           saturation_critical: config["saturation_critical"],
           openai_system_mode: openai_system_mode,
-          private: config["private"] == true
+          private: config["private"] == true,
+          plugins: plugins
         }
 
         :ets.insert(@table, {{:profile, name}, profile})
@@ -254,6 +262,17 @@ defmodule Cranium.Config do
 
     Logger.info("Config: loaded #{map_size(profiles)} profiles (default: #{default_name})")
   end
+
+  defp parse_plugins(nil), do: []
+  defp parse_plugins(list) when is_list(list) do
+    Enum.map(list, fn entry ->
+      module_str = entry["module"] || raise "Cranium.Config: plugin entry missing 'module'"
+      module = Module.concat([module_str])
+      config = if is_map(entry["config"]), do: entry["config"], else: nil
+      %{module: module, config: config}
+    end)
+  end
+  defp parse_plugins(_), do: []
 
   defp backend_module(:claudecode), do: Cranium.Backend.LLM.ClaudeCode
   defp backend_module(:anthropic), do: Cranium.Backend.LLM.Anthropic

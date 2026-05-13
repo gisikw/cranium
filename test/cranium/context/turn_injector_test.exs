@@ -236,4 +236,75 @@ defmodule Cranium.Context.TurnInjectorTest do
       refute result.text =~ "<cross-room-context>"
     end
   end
+
+  describe "plugin injection merging" do
+    test "plugin injections are merged into output" do
+      message = %{text: "hello"}
+      context = %{}
+      plugin_injections = [%{priority: 25, content: "<test>plugin-content</test>"}]
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+      assert length(injections) == 1
+      assert hd(injections) == "<test>plugin-content</test>"
+    end
+
+    test "plugin injections are sorted by priority with builtins" do
+      now = ~U[2026-03-05 10:45:00Z]
+      last = ~U[2026-03-05 10:00:00Z]
+
+      message = %{text: "hello"}
+      context = %{
+        epoch: %{last_invoked_at: last, interrupted_context: "fixing deploy"},
+        now: now
+      }
+
+      # Plugin at priority 25 — should appear between time-gap (10) and interrupted (40)
+      plugin_injections = [%{priority: 25, content: "<plugin>middle</plugin>"}]
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+
+      # Find positions
+      time_gap_idx = Enum.find_index(injections, &(&1 =~ "minutes"))
+      plugin_idx = Enum.find_index(injections, &(&1 =~ "<plugin>"))
+      interrupted_idx = Enum.find_index(injections, &(&1 =~ "interrupted"))
+
+      assert time_gap_idx < plugin_idx
+      assert plugin_idx < interrupted_idx
+    end
+
+    test "multiple plugin injections at different priorities" do
+      message = %{text: "hello"}
+      context = %{}
+
+      plugin_injections = [
+        %{priority: 50, content: "<late>late</late>"},
+        %{priority: 5, content: "<early>early</early>"}
+      ]
+
+      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+      assert length(injections) == 2
+      assert Enum.at(injections, 0) == "<early>early</early>"
+      assert Enum.at(injections, 1) == "<late>late</late>"
+    end
+
+    test "process/3 merges plugin injections into message text" do
+      message = %{text: "hello"}
+      context = %{}
+      plugin_injections = [%{priority: 25, content: "<test>injected</test>"}]
+
+      {:ok, result} = TurnInjector.process(message, context, plugin_injections)
+      assert result.text =~ "<test>injected</test>"
+      assert result.text =~ "hello"
+    end
+
+    test "empty plugin injections behave like no-arg version" do
+      message = %{text: "hello"}
+      context = %{}
+
+      {:ok, result_without} = TurnInjector.process(message, context)
+      {:ok, result_with} = TurnInjector.process(message, context, [])
+
+      assert result_without.text == result_with.text
+    end
+  end
 end

@@ -256,7 +256,7 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config} =
+    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile} =
       resolve_profile(header)
 
     # 4. Resolve routing context
@@ -271,7 +271,36 @@ defmodule Cranium.Inference.TurnAssembler do
         identity: identity
       )
 
-    # 6. Turn injections
+    # 5b. Start plugins on first turn of epoch
+    if is_fresh do
+      Cranium.Plugin.ConversationSupervisor.start_plugins(
+        header.conversation_id,
+        %{
+          conversation_id: header.conversation_id,
+          epoch_id: epoch_id,
+          room_name: header.conversation_id,
+          profile: profile,
+          plugin_config: nil
+        }
+      )
+    end
+
+    # 5c. Dispatch before_context_build hook to plugins
+    turn_context = %{
+      conversation_id: header.conversation_id,
+      epoch_id: epoch_id,
+      turn_count: turn_count,
+      message_text: text
+    }
+
+    plugin_injections =
+      Cranium.Plugin.ConversationSupervisor.dispatch_hook(
+        header.conversation_id,
+        :before_context_build,
+        turn_context
+      )
+
+    # 6. Turn injections (merged with plugin injections)
     injection_message = %{
       text: text,
       conversation_id: header.conversation_id,
@@ -291,7 +320,7 @@ defmodule Cranium.Inference.TurnAssembler do
       saturation_critical: saturation_config[:saturation_critical]
     }
 
-    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx)
+    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx, plugin_injections)
 
     # 7. Write injection flags to Store immediately
     injection_flags = %{
@@ -449,7 +478,15 @@ defmodule Cranium.Inference.TurnAssembler do
       saturation_critical: resolved[:saturation_critical]
     }
 
-    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config}
+    # Build a lightweight profile struct for plugin initialization
+    profile = %Cranium.Config.Profile{
+      name: profile_name,
+      backend: resolved.backend,
+      model: model,
+      plugins: resolved[:plugins] || []
+    }
+
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile}
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)

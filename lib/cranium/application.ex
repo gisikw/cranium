@@ -32,6 +32,7 @@ defmodule Cranium.Application do
           └── ConversationDynamicSupervisor
               └── per conversation:
                   Conversation (:one_for_all)
+                  ├── Plugin.ConversationSupervisor
                   ├── TurnAssembler
                   └── Harness
 
@@ -65,6 +66,11 @@ defmodule Cranium.Application do
     ]
 
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
+
+    # Add plugin beam path to code server if configured
+    if path = Application.get_env(:cranium, :plugin_beam_path) do
+      :code.add_patha(String.to_charlist(path))
+    end
 
     # Register built-in tools
     Cranium.Inference.Agent.ToolRouter.register("subagent", Cranium.Inference.Agent.Tools.Subagent)

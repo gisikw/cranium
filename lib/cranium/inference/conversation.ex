@@ -63,6 +63,7 @@ defmodule Cranium.Inference.Conversation do
     conversation_id = Keyword.fetch!(opts, :conversation_id)
 
     children = [
+      {Cranium.Plugin.ConversationSupervisor, conversation_id: conversation_id},
       {Cranium.Inference.TurnAssembler, conversation_id: conversation_id},
       {Cranium.Inference.Harness, conversation_id: conversation_id}
     ]

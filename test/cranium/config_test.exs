@@ -76,6 +76,24 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "plugins" do
+    test "parses plugin declarations from profile" do
+      {:ok, resolved} = Config.resolve_profile("test-with-plugins")
+      assert length(resolved.plugins) == 2
+
+      [echo, skipper] = resolved.plugins
+      assert echo.module == Cranium.TestPlugins.Echo
+      assert echo.config == nil
+      assert skipper.module == Cranium.TestPlugins.Skipper
+      assert skipper.config == %{"threshold" => 3}
+    end
+
+    test "defaults to empty list when no plugins declared" do
+      {:ok, resolved} = Config.resolve_profile("test")
+      assert resolved.plugins == []
+    end
+  end
+
   describe "read_identity/1" do
     test "reads and caches identity file" do
       path = Path.join(File.cwd!(), "test/fixtures/test-identity.txt")

@@ -30,9 +30,9 @@ defmodule Cranium.Context.TurnInjector do
   @default_saturation_critical 80
   @saturation_bucket_size 5
 
-  @spec process(map(), map()) :: {:ok, map()}
-  def process(message, context) do
-    {injections, landscape_injected, saturation_bucket} = build_injections(message, context)
+  @spec process(map(), map(), [map()]) :: {:ok, map()}
+  def process(message, context, plugin_injections \\ []) do
+    {injections, landscape_injected, saturation_bucket} = build_injections(message, context, plugin_injections)
 
     message =
       case injections do
@@ -61,61 +61,72 @@ defmodule Cranium.Context.TurnInjector do
   @doc """
   Build the list of injections for this turn.
 
-  Returns `{injections, landscape_injected}` where the boolean signals
-  to the Epoch that `last_landscape_at` should be updated.
+  Returns `{injections, landscape_injected, saturation_bucket}` where the
+  boolean signals to the Epoch that `last_landscape_at` should be updated.
+
+  Plugin injections (from `Cranium.Plugin.ConversationSupervisor.dispatch_hook/3`)
+  are merged with builtin injections by priority, lower numbers first.
+
+  Builtin priorities: time-gap/fresh-time=10, landscape=20, saturation=30, interrupted=40.
   """
-  @spec build_injections(map(), map()) :: {[String.t()], boolean(), non_neg_integer() | nil}
-  def build_injections(message, context) do
+  @spec build_injections(map(), map(), [map()]) :: {[String.t()], boolean(), non_neg_integer() | nil}
+  def build_injections(message, context, plugin_injections \\ []) do
     {landscape_block, landscape_injected} = resolve_landscape(message, context)
 
-    injections =
+    # Build builtins as {priority, content} tuples
+    builtins =
       []
-      |> maybe_add_time_gap(message, context)
-      |> maybe_add_fresh_time(message, context)
-      |> maybe_prepend(landscape_block)
-      |> maybe_add_saturation(message, context)
-      |> maybe_add_interrupted(message, context)
-      |> Enum.reverse()
+      |> maybe_add_prioritized(10, maybe_time_gap(message, context))
+      |> maybe_add_prioritized(10, maybe_fresh_time(message, context))
+      |> maybe_add_prioritized(20, landscape_block)
+      |> maybe_add_prioritized(30, maybe_saturation(message, context))
+      |> maybe_add_prioritized(40, maybe_interrupted(context))
+
+    # Merge with plugin injections
+    plugin_tuples = Enum.map(plugin_injections, fn %{priority: p, content: c} -> {p, c} end)
+
+    injections =
+      (builtins ++ plugin_tuples)
+      |> Enum.sort_by(fn {priority, _} -> priority end)
+      |> Enum.map(fn {_, content} -> content end)
 
     saturation_bucket = saturation_fired_bucket(context)
 
     {injections, landscape_injected, saturation_bucket}
   end
 
-  defp maybe_add_time_gap(injections, _message, context) do
+  defp maybe_add_prioritized(acc, _priority, nil), do: acc
+  defp maybe_add_prioritized(acc, priority, content), do: [{priority, content} | acc]
+
+  defp maybe_time_gap(_message, context) do
     last_invoked = get_in(context, [:epoch, :last_invoked_at])
     now = Map.get(context, :now, DateTime.utc_now())
 
     case last_invoked do
       nil ->
-        injections
+        nil
 
       ts ->
         elapsed = DateTime.diff(now, ts, :second)
 
         if elapsed >= @time_gap_threshold_seconds do
-          reminder = format_time_gap(elapsed, now)
-          [reminder | injections]
-        else
-          injections
+          format_time_gap(elapsed, now)
         end
     end
   end
 
   # On fresh epochs (no prior messages), inject the current time so the session
   # isn't flying blind until the first idle gap fires.
-  defp maybe_add_fresh_time(injections, message, context) do
+  defp maybe_fresh_time(message, context) do
     last_invoked = get_in(context, [:epoch, :last_invoked_at])
 
     if message[:is_fresh] == true and is_nil(last_invoked) do
       now = Map.get(context, :now, DateTime.utc_now())
-      [format_current_time(now) | injections]
-    else
-      injections
+      format_current_time(now)
     end
   end
 
-  defp maybe_add_saturation(injections, _message, context) do
+  defp maybe_saturation(_message, context) do
     current = get_in(context, [:epoch, :saturation]) || 0
     last_bucket = get_in(context, [:epoch, :last_reminder_bucket]) || 0
     warn = context[:saturation_warn] || @default_saturation_warn
@@ -124,13 +135,7 @@ defmodule Cranium.Context.TurnInjector do
 
     if current >= warn and current_bucket > last_bucket do
       advice = saturation_advice(current, critical)
-
-      reminder =
-        "<system-reminder>Context window saturation: #{trunc(current)}%. #{advice}</system-reminder>"
-
-      [reminder | injections]
-    else
-      injections
+      "<system-reminder>Context window saturation: #{trunc(current)}%. #{advice}</system-reminder>"
     end
   end
 
@@ -147,19 +152,16 @@ defmodule Cranium.Context.TurnInjector do
     end
   end
 
-  defp maybe_add_interrupted(injections, _message, context) do
+  defp maybe_interrupted(context) do
     case get_in(context, [:epoch, :interrupted_context]) do
       nil ->
-        injections
+        nil
 
       "" ->
-        injections
+        nil
 
       ctx ->
-        reminder =
-          "<system-reminder>Your previous response was interrupted. Here's what you were working on:\n\n#{ctx}</system-reminder>"
-
-        [reminder | injections]
+        "<system-reminder>Your previous response was interrupted. Here's what you were working on:\n\n#{ctx}</system-reminder>"
     end
   end
 
@@ -270,8 +272,7 @@ defmodule Cranium.Context.TurnInjector do
     end
   end
 
-  defp maybe_prepend(injections, nil), do: injections
-  defp maybe_prepend(injections, block), do: [block | injections]
+
 
   defp context_now(context), do: Map.get(context, :now, DateTime.utc_now())
 end
