@@ -58,7 +58,7 @@ defmodule Cranium.Plugins.Glossary do
 
       :ignore
     else
-      entries = load_glossary(path)
+      {entries, file_mtimes} = load_glossary(path)
 
       Logger.info("Glossary: loaded #{map_size(entries)} entries from #{path}",
         conversation_id: metadata.conversation_id
@@ -68,7 +68,8 @@ defmodule Cranium.Plugins.Glossary do
         entries: entries,
         path: path,
         priority: config["priority"] || @default_priority,
-        seen: %{}
+        seen: %{},
+        file_mtimes: file_mtimes
       }
 
       {:ok, [:before_context_build], state}
@@ -77,6 +78,7 @@ defmodule Cranium.Plugins.Glossary do
 
   @impl true
   def before_context_build(turn_context, state) do
+    state = maybe_reload(state)
     text = turn_context.message_text
     matches = scan(text, state.entries, state.seen)
 
@@ -101,26 +103,73 @@ defmodule Cranium.Plugins.Glossary do
     end
   end
 
-  # --- Glossary loading ---
+  # --- Reload on file change ---
 
-  defp load_glossary(path) do
+  defp maybe_reload(state) do
+    current = current_file_mtimes(state.path)
+
+    if current == state.file_mtimes do
+      state
+    else
+      {entries, file_mtimes} = load_glossary(state.path)
+
+      Logger.info("Glossary: reloaded #{map_size(entries)} entries (files changed)")
+
+      %{state | entries: entries, file_mtimes: file_mtimes}
+    end
+  end
+
+  defp current_file_mtimes(path) do
     path
     |> Path.join("*.md")
     |> Path.wildcard()
-    |> Enum.reduce(%{}, fn file, acc ->
-      case parse_entry(file) do
-        {:ok, entry} ->
-          # Index by canonical term and each alias
-          acc = Map.put(acc, entry.term, entry)
+    |> Map.new(fn file ->
+      mtime =
+        case File.stat(file) do
+          {:ok, %{mtime: m}} -> m
+          _ -> nil
+        end
 
-          Enum.reduce(entry.aliases, acc, fn alias_name, inner_acc ->
-            Map.put(inner_acc, String.downcase(alias_name), entry)
-          end)
-
-        :error ->
-          acc
-      end
+      {file, mtime}
     end)
+  end
+
+  # --- Glossary loading ---
+
+  defp load_glossary(path) do
+    files =
+      path
+      |> Path.join("*.md")
+      |> Path.wildcard()
+
+    file_mtimes =
+      Map.new(files, fn file ->
+        mtime =
+          case File.stat(file) do
+            {:ok, %{mtime: m}} -> m
+            _ -> nil
+          end
+
+        {file, mtime}
+      end)
+
+    entries =
+      Enum.reduce(files, %{}, fn file, acc ->
+        case parse_entry(file) do
+          {:ok, entry} ->
+            # Index by canonical term and each alias
+            acc = Map.put(acc, entry.term, entry)
+
+            Enum.reduce(entry.aliases, acc, fn alias_name, inner_acc ->
+              Map.put(inner_acc, String.downcase(alias_name), entry)
+            end)
+
+          :error ->
+            acc
+        end
+      end)
+
+    {entries, file_mtimes}
   end
 
   defp parse_entry(file) do

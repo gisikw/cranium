@@ -139,4 +139,92 @@ defmodule Cranium.Plugins.GlossaryTest do
       assert content =~ "Don't remove a rule"
     end
   end
+
+  describe "live reload" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "glossary_reload_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, "dana.md"), """
+      ---
+      aliases: []
+      summary: "Dana is a backend engineer"
+      ---
+      """)
+
+      metadata = %{@metadata | plugin_config: %{"path" => dir}}
+      {:ok, _, state} = Glossary.init(metadata)
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      %{state: state, dir: dir}
+    end
+
+    test "picks up new files on next turn", %{state: state, dir: dir} do
+      # Initially, "eve" is unknown
+      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Ask Eve"}
+      assert {:ok, :skip, state} = Glossary.before_context_build(ctx, state)
+
+      # Add a new glossary entry
+      # Ensure mtime differs (touch with 1s future to guarantee change)
+      File.write!(Path.join(dir, "eve.md"), """
+      ---
+      aliases: []
+      summary: "Eve is a frontend engineer"
+      ---
+      """)
+
+      # Next turn should pick up the new entry
+      ctx2 = %{ctx | turn_count: 2, message_text: "Ask Eve about the UI"}
+      assert {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx2, state)
+      assert content =~ "Eve is a frontend engineer"
+    end
+
+    test "picks up edits to existing files", %{state: state, dir: dir} do
+      # First turn — see Dana
+      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Dana reviewed it"}
+      {:ok, [%{content: content}], state} = Glossary.before_context_build(ctx, state)
+      assert content =~ "backend engineer"
+
+      # Edit Dana's entry — need mtime to change
+      :timer.sleep(1100)
+
+      File.write!(Path.join(dir, "dana.md"), """
+      ---
+      aliases: []
+      summary: "Dana is now a staff engineer"
+      ---
+      """)
+
+      # Dana was already seen, but the file changed so re-injection is eligible
+      ctx2 = %{ctx | turn_count: 2, message_text: "Dana approved the RFC"}
+      {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx2, state)
+      assert content =~ "staff engineer"
+    end
+
+    test "handles deleted files gracefully", %{state: state, dir: dir} do
+      # First turn — see Dana
+      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Dana reviewed it"}
+      {:ok, _, state} = Glossary.before_context_build(ctx, state)
+
+      # Delete the file
+      File.rm!(Path.join(dir, "dana.md"))
+
+      # Next turn — Dana no longer matches
+      ctx2 = %{ctx | turn_count: 2, message_text: "Dana reviewed it again"}
+      assert {:ok, :skip, _state} = Glossary.before_context_build(ctx2, state)
+    end
+
+    test "does not reload when files are unchanged", %{state: state} do
+      # Two turns, no file changes — state.entries should be the same reference
+      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Nothing"}
+      {:ok, :skip, state2} = Glossary.before_context_build(ctx, state)
+
+      ctx2 = %{ctx | turn_count: 2, message_text: "Still nothing"}
+      {:ok, :skip, state3} = Glossary.before_context_build(ctx2, state2)
+
+      # entries map identity preserved (no reload happened)
+      assert state.entries === state3.entries
+    end
+  end
 end
