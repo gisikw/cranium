@@ -67,6 +67,25 @@ defmodule Cranium.Inference.Landscape do
   end
 
   @doc """
+  List all known rooms as `[%{id: String.t(), name: String.t(), description: String.t()}]`.
+
+  Returns every conversation the Landscape knows about (DB + hoard), suitable
+  for a room picker UI. Excludes conversations in the `exclude` list.
+
+  ## Options
+
+  - `:exclude` — list of conversation_ids to omit (default `[]`).
+  - `:name` — GenServer name (default `__MODULE__`, used by tests).
+  """
+  @spec list_rooms(keyword()) :: [map()]
+  def list_rooms(opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    exclude = Keyword.get(opts, :exclude, [])
+
+    GenServer.call(name, {:list_rooms, exclude})
+  end
+
+  @doc """
   Notify the Landscape that a summary was updated.
 
   Called by ConversationSummarizer after writing a summary to Store.
@@ -107,6 +126,22 @@ defmodule Cranium.Inference.Landscape do
       end
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:list_rooms, exclude}, _from, state) do
+    exclude_set = MapSet.new(exclude)
+
+    rooms =
+      state.entries
+      |> Map.values()
+      |> Enum.reject(fn e -> MapSet.member?(exclude_set, e.conversation_id) end)
+      |> Enum.sort_by(& &1.last_message_ts, {:desc, DateTime})
+      |> Enum.map(fn e ->
+        %{id: e.conversation_id, name: e.room_name, description: e.summary}
+      end)
+
+    {:reply, rooms, state}
   end
 
   @impl true

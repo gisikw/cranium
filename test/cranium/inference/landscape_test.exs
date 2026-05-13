@@ -246,6 +246,74 @@ defmodule Cranium.Inference.LandscapeTest do
     end
   end
 
+  describe "list_rooms/1" do
+    test "returns all rooms as id/name/description maps", %{tmp_dir: dir} do
+      write_hoard_summary(dir, "fort-nix.json", %{
+        room_name: "fort-nix",
+        summary: "Working on NixOS infra",
+        last_message_ts: DateTime.to_unix(DateTime.add(@now, -3600, :second))
+      })
+
+      write_hoard_summary(dir, "nerve.json", %{
+        room_name: "nerve",
+        summary: "Building Tauri client",
+        last_message_ts: DateTime.to_unix(DateTime.add(@now, -7200, :second))
+      })
+
+      name = start_landscape(dir)
+
+      rooms = Landscape.list_rooms(name: name)
+      assert length(rooms) == 2
+      [first, second] = rooms
+      assert first.id == "fort-nix"
+      assert first.name == "fort-nix"
+      assert first.description == "Working on NixOS infra"
+      assert second.id == "nerve"
+    end
+
+    test "excludes rooms in the exclude list", %{tmp_dir: dir} do
+      write_hoard_summary(dir, "roost.json", %{
+        room_name: "roost",
+        summary: "Main room"
+      })
+
+      write_hoard_summary(dir, "ops.json", %{
+        room_name: "ops",
+        summary: "Ops stuff"
+      })
+
+      name = start_landscape(dir)
+
+      rooms = Landscape.list_rooms(name: name, exclude: ["ops"])
+      assert length(rooms) == 1
+      assert hd(rooms).id == "roost"
+    end
+
+    test "returns empty list when no entries exist", %{tmp_dir: dir} do
+      name = start_landscape(dir)
+      assert Landscape.list_rooms(name: name) == []
+    end
+
+    test "sorts by recency (most recent first)", %{tmp_dir: dir} do
+      write_hoard_summary(dir, "old.json", %{
+        room_name: "old",
+        summary: "Old room",
+        last_message_ts: DateTime.to_unix(DateTime.add(@now, -7200, :second))
+      })
+
+      write_hoard_summary(dir, "new.json", %{
+        room_name: "new",
+        summary: "New room",
+        last_message_ts: DateTime.to_unix(DateTime.add(@now, -1800, :second))
+      })
+
+      name = start_landscape(dir)
+
+      rooms = Landscape.list_rooms(name: name)
+      assert [%{id: "new"}, %{id: "old"}] = rooms
+    end
+  end
+
   describe "humanize_ago formatting" do
     test "just now for < 60 seconds", %{tmp_dir: dir} do
       write_hoard_summary(dir, "recent.json", %{

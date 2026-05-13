@@ -7,6 +7,7 @@ defmodule Cranium.Transport.HTTP do
   - `GET /v1/streams/:id/events` — per-stream SSE (single pass)
   - `GET /v1/streams/:id/manifest` — segment manifest with current status
   - `GET /v1/streams/:id/segments/:n/:rendition` — individual segment content
+  - `GET /v1/rooms` — list available rooms [{id, name, description}]
   - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
   - `GET /v1/conversations/:id/events` — conversation-level SSE (all passes)
   - `GET /v1/events` — global SSE firehose (all conversations)
@@ -421,6 +422,15 @@ defmodule Cranium.Transport.HTTP do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
+  end
+
+  get "/v1/rooms" do
+    excluded = Application.get_env(:cranium, :excluded_rooms, [])
+    rooms = Cranium.Inference.Landscape.list_rooms(exclude: excluded)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(rooms))
   end
 
   # --- OpenAI-compatible endpoints ---

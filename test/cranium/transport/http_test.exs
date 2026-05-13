@@ -175,6 +175,77 @@ defmodule Cranium.Transport.HTTPTest do
     end
   end
 
+  describe "GET /v1/rooms" do
+    setup do
+      # Use unique conversation_ids per test to avoid cross-test pollution
+      # in the shared Landscape GenServer.
+      test_id = System.unique_integer([:positive])
+      {:ok, test_id: test_id}
+    end
+
+    test "returns 200 with JSON array of rooms", %{test_id: id} do
+      cid = "rooms-test-#{id}"
+
+      GenServer.cast(
+        Cranium.Inference.Landscape,
+        {:summary_updated, cid, "Main room", ~U[2026-03-18 12:00:00Z]}
+      )
+
+      :sys.get_state(Cranium.Inference.Landscape)
+
+      conn =
+        Plug.Test.conn(:get, "/v1/rooms")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      rooms = Jason.decode!(conn.resp_body)
+      assert is_list(rooms)
+      room = Enum.find(rooms, &(&1["id"] == cid))
+      assert room["name"] == cid
+      assert room["description"] == "Main room"
+    end
+
+    test "respects excluded_rooms config", %{test_id: id} do
+      included = "rooms-incl-#{id}"
+      excluded = "rooms-excl-#{id}"
+      original_excluded = Application.get_env(:cranium, :excluded_rooms, [])
+
+      Application.put_env(:cranium, :excluded_rooms, [excluded])
+
+      GenServer.cast(
+        Cranium.Inference.Landscape,
+        {:summary_updated, included, "Main room", ~U[2026-03-18 12:00:00Z]}
+      )
+
+      GenServer.cast(
+        Cranium.Inference.Landscape,
+        {:summary_updated, excluded, "Ops stuff", ~U[2026-03-18 11:00:00Z]}
+      )
+
+      :sys.get_state(Cranium.Inference.Landscape)
+
+      conn =
+        Plug.Test.conn(:get, "/v1/rooms")
+        |> HTTP.call(HTTP.init([]))
+
+      rooms = Jason.decode!(conn.resp_body)
+      ids = Enum.map(rooms, & &1["id"])
+      assert included in ids
+      refute excluded in ids
+
+      Application.put_env(:cranium, :excluded_rooms, original_excluded)
+    end
+
+    test "returns 200 with valid JSON when no test rooms exist" do
+      conn =
+        Plug.Test.conn(:get, "/v1/rooms")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      assert is_list(Jason.decode!(conn.resp_body))
+    end
+  end
+
   describe "catch-all" do
     test "404 on unknown route" do
       conn =

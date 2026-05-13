@@ -21,6 +21,9 @@ config :cranium, :tools, []
 # Paths — configured via environment variables. See .env.example.
 config :cranium, :paths, []
 
+# Rooms excluded from GET /v1/rooms (ops, infrastructure, etc.)
+config :cranium, :excluded_rooms, []
+
 # Pipeline tuning
 config :cranium, :pipeline,
   summary_interval: 10,
