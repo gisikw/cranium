@@ -84,6 +84,20 @@ value TurnContext {
         -- does not materialize history into TurnContext.
 }
 
+value EpochEndContext {
+    conversation_id: String
+    epoch_id: String
+    messages: [Message]
+
+    @guidance
+        -- Passed to on_epoch_end callbacks when an epoch is closing.
+        -- Includes the full message history for the epoch so plugins
+        -- can perform end-of-session work (e.g., scanning conversation
+        -- for glossary updates, generating per-plugin summaries).
+        --
+        -- Messages are ordered chronologically (oldest first).
+}
+
 value Injection {
     priority: Integer
     content: String
@@ -130,8 +144,8 @@ entity Plugin {
 
 -- Hook points are named lifecycle events that plugins can subscribe to.
 -- Each hook point defines a callback signature (what the plugin receives
--- and what it returns). Only before_context_build is fully specified here;
--- the others are declared as future extension points.
+-- and what it returns). before_context_build and on_epoch_end are fully
+-- specified; the others are declared as future extension points.
 
 enum HookPoint {
     before_context_build
@@ -153,8 +167,12 @@ enum HookPoint {
         --   be a restart mid-epoch), on_epoch_start fires once per epoch.
         --   Not yet specified.
         --
-        -- on_epoch_end: Fires when an epoch is closing (handoff
-        --   generation, summary). Not yet specified.
+        -- on_epoch_end: Fires when an epoch is clearing. Receives
+        --   EpochEndContext with the full message history for the epoch.
+        --   Plugins use this for end-of-session side effects (updating
+        --   glossary entries, writing summaries, etc.). Fires before
+        --   plugin processes are stopped and before handoff generation.
+        --   Return value is ignored — this is a side-effect-only hook.
 }
 
 ------------------------------------------------------------
@@ -199,6 +217,8 @@ rule StartPlugins {
 rule StopPlugins {
     when: Epoch ends for conversation_id
 
+    requires: DispatchOnEpochEnd has completed for conversation_id
+
     for p in Plugins where p.session_metadata.conversation_id = conversation_id:
         ensures: p is terminated gracefully
 
@@ -206,6 +226,9 @@ rule StopPlugins {
         -- Plugin GenServers are session-scoped. When the epoch ends
         -- (either via !clear or natural session close), all plugins
         -- for that conversation are stopped.
+        --
+        -- Ordering: on_epoch_end hooks fire BEFORE plugin termination,
+        -- so plugins still have their state when the hook runs.
 }
 
 ------------------------------------------------------------
@@ -250,6 +273,48 @@ rule DispatchBeforeContextBuild {
         -- builtin injections (time-gap, landscape, saturation,
         -- interrupted-context) and sorted by priority. The result
         -- is the final injection prefix for the turn.
+}
+
+rule DispatchOnEpochEnd {
+    when: EpochCleared(conversation_id, epoch_id, source)
+
+    let plugins = active Plugins
+        where on_epoch_end in subscribed_hooks
+        and session_metadata.conversation_id = conversation_id
+
+    let messages = Messages where epoch_id = epoch_id
+        ordered by inserted_at asc
+
+    let epoch_end_context = EpochEndContext(
+        conversation_id,
+        epoch_id,
+        messages
+    )
+
+    for p in plugins:
+        invoke p.on_epoch_end(epoch_end_context)
+        -- Return value is ignored. This hook is for side effects only.
+
+    ensures: all subscribed plugins are invoked before handoff generation
+    ensures: all subscribed plugins are invoked before plugin processes stop
+    ensures: epoch clearing proceeds normally when a plugin crashes during invocation
+    ensures: epoch clearing proceeds normally when a plugin times out
+
+    @guidance
+        -- Fires synchronously in the epoch clear path, after the epoch
+        -- is marked cleared but before handoff generation starts and
+        -- before plugin GenServers are terminated. This ordering is
+        -- intentional: plugins still have their accumulated session state
+        -- (e.g., which terms were mentioned) and can read conversation
+        -- history to perform end-of-session work.
+        --
+        -- The timeout per plugin should be generous (longer than
+        -- before_context_build) since epoch-end work may involve
+        -- LLM calls or disk writes. But it must still be bounded
+        -- to prevent epoch clearing from hanging indefinitely.
+        --
+        -- Plugin crashes or timeouts are logged and swallowed —
+        -- they must not prevent epoch clearing or handoff generation.
 }
 
 ------------------------------------------------------------
@@ -313,6 +378,19 @@ invariant InjectionOrderDeterministic {
         -- all sources. Priority is the sole ordering key. This extends
         -- the InjectionOrderIsFixed invariant from context-system.allium
         -- to include plugin-provided injections.
+}
+
+invariant EpochEndBeforeTermination {
+    for c in Conversations:
+        when epoch clears for c,
+        on_epoch_end hooks complete before plugin GenServers are terminated
+
+    @guidance
+        -- Plugins need their accumulated session state during on_epoch_end
+        -- (e.g., glossary plugin needs its seen-terms set to know which
+        -- entries to check for updates). Terminating before the hook fires
+        -- would destroy that state. The clear path must dispatch the hook
+        -- synchronously before stopping the ConversationSupervisor.
 }
 
 invariant HotReloadStatePreservation {
