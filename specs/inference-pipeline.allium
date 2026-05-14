@@ -1,0 +1,834 @@
+-- allium: 3
+
+-- Inference Pipeline
+--
+-- How cranium routes an assembled turn through LLM inference: the harness that
+-- manages per-conversation execution, the agent that drives the LLM interaction
+-- loop (including tool-call cycling), the tool routing layer (muse, markers,
+-- clear_context), and the streaming protocol that delivers output to consumers.
+--
+-- Scope: Harness lifecycle, Agent state machine, tool routing and execution,
+-- backend streaming protocol, output segmentation, cancel semantics.
+-- Does NOT cover context assembly (system prompt, history, injections — see
+-- context-system.allium), epoch/pass lifecycle transitions (see
+-- conversation-lifecycle.allium), transport delivery (HTTP, SSE, manifest),
+-- or media input (audio segmentation, transcription).
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Pass, PassOutcome, Message)
+--             context-system.allium (AssembledTurn)
+
+use conversation-lifecycle
+use context-system
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Epoch {
+    -- Managed by conversation-lifecycle spec.
+    -- Inference pipeline reads cc_session_id for session resumption
+    -- and writes status transitions (active ↔ inferring).
+    status: active | inferring | cleared
+    cc_session_id: String?
+}
+
+external entity Profile {
+    -- Resolved from profiles.yaml by Config module.
+    backend: Backend
+    model: String
+    thinking: Boolean?
+    context_window: Integer?
+}
+
+external entity Store {
+    -- Persistence layer for messages and epoch state.
+    -- Inference pipeline persists cc_session_id eagerly mid-inference.
+}
+
+external entity OutputConsumer {
+    -- Any subscriber to the raw stream or segment events:
+    -- OutputSegmenter, SSE firehose, Manifest.
+    -- Managed by transport spec.
+}
+
+external entity MuseBinary {
+    -- External muse CLI binary providing sandboxed tool execution.
+    -- Discovered at boot. Absent muse = no muse tools available.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    tool_execution_timeout_seconds: Integer = 30
+    tool_result_max_bytes: Integer = 50000
+    backend_exit_timeout_ms: Integer = 5000
+    backend_kill_escalation_ms: Integer = 2000
+    cc_port_timeout_minutes: Integer = 15
+    segment_first_threshold_words: Integer = 30
+    segment_subsequent_threshold_words: Integer = 100
+    speech_rate_wps: Float = 2.3
+    synthesis_rtf: Float = 0.70
+    segment_min_words: Integer = 8
+    segment_max_batch_words: Integer = 50
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value StreamEvent {
+    stream_id: String
+    payload: TextChunk | CueChunk | StreamStart | StreamEnd
+
+    @guidance
+        -- The universal event type flowing through the inference pipeline.
+        -- Stream events are broadcast on three topics simultaneously:
+        -- global, per-conversation, and per-stream. Consumers subscribe
+        -- to whichever scope suits their needs.
+}
+
+value TextChunk {
+    text: String
+}
+
+value CueChunk {
+    cue_type: marker | tool_use | tool_result
+    data: Map
+
+    @guidance
+        -- Cues are positional metadata embedded in the output stream.
+        -- Markers (show, show_code, play_audio) carry SCTE-style timing
+        -- information — the model's natural placement IS the timing data.
+        -- Tool use/result cues are informational, for firehose consumers.
+}
+
+value ToolCall {
+    id: String
+    name: String
+    input: Map
+}
+
+value ToolResult {
+    tool_use_id: String
+    content: String
+    is_error: Boolean
+}
+
+value ToolRoute {
+    kind: clear | marker | muse | execute | unknown
+    name: String
+    input: Map
+
+    @guidance
+        -- The resolved routing decision for a tool call. ToolRouter
+        -- classifies each call by name into one of five kinds. The
+        -- Agent dispatches execution based on kind.
+}
+
+value InferenceContext {
+    system: String
+    messages: [FormattedMessage]
+    conversation_id: String
+    stream_id: String
+    epoch_id: String
+    cc_session_id: String?
+    working_dir: String
+    backend: Backend
+    model: String
+    thinking: Boolean?
+    context_window: Integer?
+    ephemeral: Boolean
+    tools_disabled: Boolean
+    silent: Boolean
+    origin: String?
+    pass_id: String
+
+    @guidance
+        -- The fully assembled payload received by Harness from
+        -- TurnAssembler. Contains everything needed to execute one
+        -- inference pass. This is the AssembledTurn from context-system
+        -- plus inference-specific routing metadata.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum BackendType {
+    claude_code
+    anthropic
+    ollama
+
+    @guidance
+        -- Determines the harness type and tool loop ownership.
+        -- claude_code: subprocess, manages its own tool loop.
+        -- anthropic: Anthropic Messages API, Agent manages tool loop.
+        -- ollama: Ollama /api/chat, Agent manages tool loop.
+}
+
+enum AgentStatus {
+    idle
+    inferring
+    tool_use
+    cancelled
+
+    @guidance
+        -- idle: awaiting work or completed.
+        -- inferring: in receive_loop waiting for LLM stream.
+        -- tool_use: executing tools between inference rounds (API/Ollama only).
+        -- cancelled: received cancel signal, exiting.
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Backend {
+    type: BackendType
+    manages_tool_loop: Boolean
+
+    @guidance
+        -- The LLM backend abstraction. All backends implement the same
+        -- streaming protocol (text chunks, tool calls, usage, stop signals).
+        -- The key behavioral split is manages_tool_loop:
+        --   true (ClaudeCode): CC manages its own tools internally.
+        --     Agent only intercepts marker tool calls via MCP.
+        --   false (Anthropic, Ollama): Agent drives the tool loop —
+        --     accumulates tool calls, executes them, re-enters inference.
+}
+
+entity Agent {
+    conversation_id: String
+    stream_id: String?
+    status: AgentStatus
+    backend: Backend
+    cc_session_id: String?
+    messages: [FormattedMessage]
+    tool_calls_pending: [ToolCall]
+    partial_output: String
+    usage: Usage?
+    pending_clear: String?
+
+    transitions status {
+        idle -> inferring
+        inferring -> idle
+        inferring -> tool_use
+        inferring -> cancelled
+        tool_use -> inferring
+        tool_use -> cancelled
+        terminal: cancelled
+    }
+
+    @guidance
+        -- The Agent is a per-pass process that drives one complete
+        -- inference interaction with the LLM backend. It is spawned
+        -- by Harness, linked to it, and terminated after the pass.
+        --
+        -- For self-managed backends (CC), the agent loops once:
+        --   idle → inferring → idle
+        -- For agent-managed backends (API, Ollama), it may cycle:
+        --   idle → inferring → tool_use → inferring → ... → idle
+        --
+        -- pending_clear tracks a deferred clear_context call. When
+        -- the model invokes clear_context, the clear is deferred until
+        -- the current turn ends (all other tools execute first).
+}
+
+entity Harness {
+    conversation_id: String
+    active_agent: Agent?
+
+    @guidance
+        -- Per-conversation GenServer that receives assembled turns from
+        -- TurnAssembler and orchestrates inference. One Harness exists
+        -- per active conversation, registered in ConversationRegistry.
+        --
+        -- The Harness blocks during inference (Agent.infer is synchronous).
+        -- This is intentional — it prevents concurrent passes on the same
+        -- conversation. Cancel bypasses the blocked Harness by talking
+        -- directly to the Agent via registry lookup.
+}
+
+entity ToolRouter {
+    tool_definitions: [ToolDefinition]
+
+    @guidance
+        -- Stateless classifier that maps tool call names to routing
+        -- decisions. Also provides the tool definition list sent to
+        -- API/Ollama backends.
+        --
+        -- Tool definitions include: clear_context (builtin) + all muse
+        -- tools (loaded from muse binary at boot). Marker tools are NOT
+        -- in the definition list — they're exposed to CC via MCP only.
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Inference Dispatch ==
+
+rule ReceiveTurn {
+    when: TurnReady(context: InferenceContext)
+
+    requires: context.conversation_id matches Harness.conversation_id
+
+    -- Set up output delivery (unless silent)
+    ensures: OutputConsumer.subscribed(context.stream_id)
+        unless context.silent
+
+    -- Spawn Agent
+    ensures: agent: Agent.created(
+        conversation_id: context.conversation_id,
+        stream_id: context.stream_id,
+        status: idle,
+        backend: context.backend,
+        cc_session_id: context.cc_session_id
+    )
+
+    -- Register for cancel access
+    ensures: agent registered as (conversation_id, :agent) in registry
+
+    -- Mark epoch as inferring
+    ensures: Epoch.status = inferring
+        unless context.ephemeral
+
+    -- Begin inference (blocks Harness)
+    ensures: StartInference(agent, context)
+
+    @guidance
+        -- This is the handoff from TurnAssembler to inference execution.
+        -- OutputSegmenter subscription happens BEFORE inference starts so
+        -- no early chunks are missed. Agent registration happens BEFORE
+        -- inference so cancel can find it immediately.
+        --
+        -- Silent passes (orientation) skip OutputSegmenter subscription.
+        -- Their text is persisted to history but never delivered to clients.
+}
+
+-- == Agent Inference Loop ==
+
+rule StartInference {
+    when: StartInference(agent, context)
+
+    -- Determine tool availability
+    let tools = resolve_tools(context)
+
+    -- Emit stream start
+    ensures: StreamEvent(stream_id, StreamStart) broadcast
+
+    -- Call backend
+    ensures: agent.status = inferring
+    ensures: backend.stream_chat(context.messages, tools, context.model) started
+    ensures: agent enters receive loop
+
+    @guidance
+        -- Tool resolution:
+        -- 1. tools_disabled + manages_tool_loop → "" (disables CC tools + MCP)
+        -- 2. tools_disabled + !manages_tool_loop → [] (omits tool defs)
+        -- 3. manages_tool_loop (normal) → [] (CC handles its own)
+        -- 4. Normal → ToolRouter.tool_definitions() (clear_context + muse)
+}
+
+rule ReceiveTextChunk {
+    when: backend emits text chunk during inference
+
+    ensures: StreamEvent(stream_id, TextChunk(text)) broadcast
+    ensures: text appended to agent.partial_output
+
+    @guidance
+        -- Text chunks flow through the Agent to consumers in real time.
+        -- The Agent accumulates the full output for persistence on completion.
+}
+
+rule ReceiveToolCall {
+    when: backend emits tool call during inference
+
+    -- Routing depends on whether the backend manages its own tool loop
+
+    -- Self-managed backend (CC): only marker tools are intercepted
+    ensures: ToolRouter.route(tool_call) when backend.manages_tool_loop
+    ensures: marker is handled inline when route.kind = marker
+    ensures: all other tool calls are ignored (CC handles them)
+
+    -- Agent-managed backend (API, Ollama): accumulate for batch execution
+    ensures: tool_call added to agent.tool_calls_pending
+        when not backend.manages_tool_loop
+
+    @guidance
+        -- The CC backend emits tool calls as informational events
+        -- ({:cc_tool_use, :cc_tool_result}). The CC stream parser
+        -- recognizes four MCP tool names: show, show_code, play_audio,
+        -- and clear_context. ToolRouter then classifies them: the first
+        -- three route as :marker, clear_context routes as :clear.
+        -- Native CC tools (Read, Write, Bash, etc.) are the backend's
+        -- responsibility — they pass through as informational events.
+        --
+        -- For API/Ollama backends, the model emits tool_use stop signals.
+        -- Tool calls accumulate until the stop arrives, then batch execute.
+}
+
+rule HandleMarkerTool {
+    when: ToolRouter.route(tool_call) returns kind = marker
+
+    ensures: StreamEvent(stream_id, CueChunk(marker, payload)) broadcast
+    ensures: tool_result returned to model as success
+
+    @guidance
+        -- Markers are SCTE-style positional cues. The model's natural
+        -- sense of timing determines placement — the marker appears in
+        -- the output stream at exactly the point the model invoked it.
+        -- The model receives a fake {"success": true} result.
+        --
+        -- Marker types: show (visual content), show_code (code display),
+        -- play_audio (audio playback). These are presentation hints for
+        -- clients, not execution commands.
+}
+
+rule HandleClearContext {
+    when: ToolRouter.route(tool_call) returns kind = clear
+
+    let continuation = tool_call.input.continuation
+
+    -- Self-managed backend (CC): defer until end_turn
+    ensures: agent.pending_clear = continuation or :no_continuation
+        when backend.manages_tool_loop
+
+    -- Agent-managed backend (API/Ollama): defer until all other tools execute
+    ensures: clear deferred until tool batch completes
+        when not backend.manages_tool_loop
+
+    @guidance
+        -- clear_context is never executed inline. It is always deferred:
+        -- CC path: deferred until {:llm_stop, "end_turn"} arrives
+        -- API path: all other tools in the batch execute first, then clear
+        --
+        -- This ensures the model's final output is captured before the
+        -- epoch boundary. The continuation (if any) is passed to
+        -- Cranium.clear_epoch for the successor epoch.
+}
+
+rule InferenceStopEndTurn {
+    when: backend emits stop with reason = end_turn
+
+    -- Check for deferred clear
+    ensures: Cranium.clear_epoch(conversation_id, continuation)
+        when agent.pending_clear is not nil
+    ensures: agent.status = idle
+        when agent.pending_clear is nil
+
+    ensures: StreamEvent(stream_id, StreamEnd) broadcast
+        when agent.pending_clear is nil
+
+    @guidance
+        -- Normal completion. The Agent returns its accumulated output
+        -- and usage to the Harness. If a clear was deferred, the epoch
+        -- clears before returning (stream_end is NOT emitted — the
+        -- conversation-lifecycle spec handles the boundary).
+}
+
+rule InferenceStopToolUse {
+    when: backend emits stop with reason = tool_use
+
+    requires: not backend.manages_tool_loop
+    requires: agent.tool_calls_pending is not empty
+
+    ensures: agent.status = tool_use
+    ensures: ExecuteToolBatch(agent)
+
+    @guidance
+        -- API/Ollama backends signal tool_use stop when the model wants
+        -- to call tools. The Agent transitions to tool_use, executes the
+        -- batch, then re-enters inference with the results appended.
+}
+
+rule ExecuteToolBatch {
+    when: ExecuteToolBatch(agent)
+
+    -- Check for clear_context in the batch
+    let clear_call = find tool where route.kind = clear in agent.tool_calls_pending
+    let other_calls = agent.tool_calls_pending excluding clear_call
+
+    -- Execute non-clear tools
+    for tool_call in other_calls:
+        let route = ToolRouter.route(tool_call)
+        let result = execute_tool(route)
+
+        ensures: StreamEvent(stream_id, CueChunk(tool_use, tool_call)) broadcast
+        ensures: StreamEvent(stream_id, CueChunk(tool_result, result)) broadcast
+
+    -- If clear was in the batch, clear epoch after other tools complete
+    ensures: Cranium.clear_epoch(conversation_id, clear_call.continuation)
+        when clear_call exists
+
+    -- Otherwise, append results to messages and re-enter inference
+    ensures: tool results appended to agent.messages
+        when clear_call does not exist
+    ensures: agent.tool_calls_pending = []
+    ensures: agent.status = inferring
+    ensures: backend.stream_chat re-entered with updated messages
+        when clear_call does not exist
+
+    @guidance
+        -- The tool loop: execute → append results → infer again.
+        -- The model sees its tool_use blocks and corresponding tool_result
+        -- blocks in the message history, then continues generating.
+        --
+        -- If clear_context appeared in the batch, it acts as a terminal:
+        -- all other tools execute first (their results are discarded from
+        -- the perspective of the next epoch), then the epoch clears.
+}
+
+-- == Tool Execution ==
+
+rule ExecuteMuseTool {
+    when: execute_tool(route) where route.kind = muse
+
+    -- Delegate to muse binary with sandboxed filesystem access
+    ensures: muse binary invoked with --rw working_dir --exec {tool, input}
+    ensures: result truncated to config.tool_result_max_bytes
+
+    @guidance
+        -- Muse provides sandboxed tool execution via bubblewrap. The
+        -- working directory is projected as a read-write bind mount.
+        -- Tool definitions are loaded from the muse binary at boot time
+        -- (muse --tools). If muse is not on PATH, no muse tools are
+        -- available and the system continues without them.
+}
+
+rule ExecuteRegisteredTool {
+    when: execute_tool(route) where route.kind = execute
+
+    -- Invoke tool module with timeout protection
+    ensures: tool module.execute(input, opts) called
+    ensures: execution bounded by config.tool_execution_timeout_seconds
+    ensures: result truncated to config.tool_result_max_bytes
+
+    @guidance
+        -- Registered tools implement the Tool behaviour (execute, name,
+        -- schema). Executed in a supervised Task with yield/shutdown
+        -- semantics. Timeout returns {:error, :tool_timeout}.
+        -- Current registered tools: bash (sh -c), subagent (claude -p).
+}
+
+-- == Cancel ==
+
+rule CancelInference {
+    when: CancelInference(conversation_id)
+
+    requires: agent: Agent registered for conversation_id
+
+    -- Bypass the blocked Harness — talk directly to Agent
+    ensures: agent receives cancel signal
+    ensures: agent kills backend process immediately
+    ensures: agent.status = cancelled
+    ensures: agent returns partial output to Harness
+
+    @guidance
+        -- Cancel is a cast sent directly to the Agent PID, bypassing
+        -- the Harness GenServer which is blocked in Agent.infer.
+        -- The Agent's receive_loop pattern-matches the cast, kills the
+        -- LLM backend process, and returns {:cancelled, state} with
+        -- whatever output was accumulated.
+        --
+        -- This is the mechanism used by epoch clearing to stop in-flight
+        -- inference. The Harness receives the cancelled result, emits
+        -- pass_complete with reason: :cancelled, and unblocks.
+}
+
+-- == Post-Inference ==
+
+rule HandleInferenceResult {
+    when: Agent.infer returns to Harness
+
+    -- Unregister and stop agent
+    ensures: agent unregistered from (conversation_id, :agent)
+    ensures: agent process stopped
+
+    -- Emit pass outcome
+    ensures: PassComplete(conversation_id, stream_id, outcome)
+        where outcome.reason = complete when inference succeeded
+        where outcome.reason = cancelled when inference was cancelled
+        where outcome.reason = error when inference failed
+
+    @guidance
+        -- The Harness translates the Agent's return value into a
+        -- PassComplete event. Saturation is computed here from usage
+        -- data. The event is consumed by PassReactor (conversation-
+        -- lifecycle spec) which persists the response and releases
+        -- backpressure.
+}
+
+rule AwaitBackendExit {
+    when: Agent inference loop ends
+
+    -- Ensure backend process is fully terminated before returning
+    ensures: backend process exits normally
+        within config.backend_exit_timeout_ms
+    ensures: backend receives shutdown signal
+        when normal exit timeout expires
+    ensures: backend is killed
+        when shutdown timeout expires (config.backend_kill_escalation_ms)
+
+    @guidance
+        -- Prevents overlapping backend sessions for the same conversation.
+        -- Critical for the CC backend where two concurrent claude processes
+        -- on the same session would corrupt state. The escalation path:
+        -- wait → shutdown → kill ensures the process eventually terminates.
+}
+
+-- == Output Segmentation ==
+
+rule SegmentOutput {
+    when: StreamEvent(stream_id, TextChunk(text)) received by OutputSegmenter
+
+    -- Buffer text and apply chunking strategy
+    ensures: text accumulated in per-stream buffer
+    ensures: segments emitted when buffer exceeds threshold
+
+    @guidance
+        -- OutputSegmenter buffers text and splits at natural boundaries
+        -- (paragraph breaks, then sentence breaks as fallback). The
+        -- threshold for emission depends on disposition:
+        --
+        -- Text-only: relaxed mode. First segment at 30 words,
+        -- subsequent at 100 words. Splits on paragraph boundaries.
+        --
+        -- Audio: adaptive mode. Segment size tracks TTS lead time —
+        -- larger batches when ahead, smaller when behind. This keeps
+        -- TTS synthesis fed without buffering too much text.
+        -- Lead time = (words_emitted / speech_rate) - elapsed_time.
+        -- Segment size = lead_time * speech_rate / synthesis_RTF,
+        -- clamped to [8, 50] words.
+        --
+        -- When no paragraph boundary exists in the buffer, falls back
+        -- to sentence splitting ([.!?] followed by whitespace, min 8 words).
+}
+
+rule SegmentCue {
+    when: StreamEvent(stream_id, CueChunk) received by OutputSegmenter
+
+    -- Flush any buffered text as a segment, then emit the cue
+    ensures: buffered text emitted as utterance segment (if non-empty)
+    ensures: cue emitted as a cue segment with positional index
+
+    @guidance
+        -- Cues interrupt the text flow. Any accumulated text is flushed
+        -- as a segment first, ensuring the cue appears at the correct
+        -- position in the output sequence. Cue segments carry the
+        -- cue_type and data for downstream interpretation.
+}
+
+rule SegmentStreamEnd {
+    when: StreamEvent(stream_id, StreamEnd) received by OutputSegmenter
+
+    -- Flush remaining buffer as final segment
+    ensures: remaining buffered text emitted as final utterance segment
+    ensures: per-stream state cleaned up
+
+    @guidance
+        -- The stream_end signal triggers a final flush regardless of
+        -- word count thresholds. Even a single word of remaining text
+        -- becomes a segment. This ensures no output is lost.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneAgentPerConversation {
+    for c in Conversations:
+        count(Agents registered for c) <= 1
+
+    @guidance
+        -- Enforced by the Harness blocking during inference. A second
+        -- turn cannot dispatch until the first completes. The Agent
+        -- is registered before inference and unregistered after.
+        -- The conversation-lifecycle backpressure invariant
+        -- (OneActivePassPerConversation) provides the outer guarantee.
+}
+
+invariant BackendProtocolUniform {
+    for b in Backends:
+        b emits the same streaming message types:
+        text chunks, tool calls, usage snapshots, stop signals
+
+    @guidance
+        -- All three backends (ClaudeCode, Anthropic, Ollama) implement
+        -- the same streaming protocol. The Agent's receive_loop handles
+        -- a single set of message patterns regardless of backend.
+        -- Backend-specific messages (cc_session, cc_tool_use, cc_tool_result)
+        -- are additive — they don't replace the core protocol.
+}
+
+invariant ToolLoopOwnershipExclusive {
+    for a in Agents:
+        exactly one of (Agent, Backend) manages the tool loop
+
+    @guidance
+        -- When manages_tool_loop = true (CC), the Agent does NOT
+        -- accumulate tool calls or re-enter inference. When false
+        -- (API, Ollama), the Agent DOES drive the loop. There is no
+        -- shared or hybrid mode. The behavioral split is total.
+}
+
+invariant ClearContextDeferredAlways {
+    for clear in clear_context tool calls:
+        clear executes after all other tool calls in the same turn
+
+    @guidance
+        -- clear_context is never executed inline with other tools.
+        -- CC path: deferred until end_turn stop signal.
+        -- API path: all other tools in the batch execute first.
+        -- This ensures the model's final output is captured and
+        -- other tools complete their work before the epoch boundary.
+}
+
+invariant MarkerToolsNotInDefinitions {
+    for t in ToolRouter.tool_definitions:
+        t.name not in {show, show_code, play_audio}
+
+    @guidance
+        -- Marker tools are exposed to ClaudeCode via MCP server config,
+        -- not via the tool_definitions list. API/Ollama backends don't
+        -- have MCP, so they don't see marker tools. This is intentional:
+        -- markers are a CC-specific affordance for now.
+}
+
+invariant StreamEventsOrderPreserved {
+    for s in Streams:
+        StreamStart precedes all chunks
+        all chunks precede StreamEnd
+        chunks appear in emission order
+
+    @guidance
+        -- The Agent emits events in strict order. StreamStart before
+        -- the first chunk, StreamEnd after the last. Consumers can
+        -- rely on this ordering for segmentation, manifest building,
+        -- and delivery.
+}
+
+invariant CancelBypassesHarness {
+    CancelInference reaches the Agent without going through Harness
+
+    @guidance
+        -- The Harness is blocked in Agent.infer (synchronous call).
+        -- Cancel looks up the Agent PID in ConversationRegistry and
+        -- sends a cast directly. This is the only way to interrupt
+        -- inference without waiting for it to complete naturally.
+}
+
+invariant BackendExitBeforeNextPass {
+    for consecutive passes p1, p2 on the same conversation:
+        p1's backend process has exited before p2's backend starts
+
+    @guidance
+        -- Enforced by await_backend_exit after each inference loop.
+        -- Prevents overlapping CC sessions (which would corrupt state)
+        -- and ensures clean resource handoff between passes.
+}
+
+invariant EphemeralPassesSkipEpochStatus {
+    for p in Passes where p.ephemeral = true:
+        Epoch.status is not changed to inferring
+
+    @guidance
+        -- Ephemeral passes don't touch epoch state. The Harness skips
+        -- the Store.update_epoch call when the turn is marked ephemeral.
+        -- This prevents fire-and-forget queries from interfering with
+        -- the conversation's state machine.
+}
+
+invariant ToolResultsTruncated {
+    for r in ToolResults:
+        length(r.content) <= config.tool_result_max_bytes
+
+    @guidance
+        -- All tool results (muse, registered, marker) are truncated
+        -- before being returned to the model. This prevents a single
+        -- large tool output from consuming excessive context window.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface StreamingProtocol {
+    facing consumer: OutputConsumer
+    context stream: Stream for conversation_id
+
+    exposes: TextChunk, CueChunk, StreamStart, StreamEnd events
+    exposes: segment_ready events (from OutputSegmenter)
+
+    @guidance
+        -- The streaming protocol is the boundary between inference and
+        -- delivery. Events are broadcast on three topics:
+        --   :global — for system-wide consumers (firehose, pass reactor)
+        --   {:conversation, id} — for per-conversation consumers
+        --   {:stream_raw, stream_id} — for per-stream consumers (segmenter)
+        --
+        -- OutputSegmenter emits {:segment_ready, stream_id, index, data}
+        -- on the stream and conversation topics. Segments carry rendition
+        -- maps (text content, audio metadata) for the transport layer.
+}
+
+surface BackendInterface {
+    facing caller: Agent
+    context backend: Backend
+
+    provides: stream_chat(messages, opts) -> streaming process
+    provides: manages_tool_loop?() -> Boolean
+
+    @guidance
+        -- The LLM backend contract. All backends return a process that
+        -- sends tagged messages to the caller. The Agent's receive_loop
+        -- is backend-agnostic — it handles the same message types
+        -- regardless of implementation.
+        --
+        -- stream_chat options vary by backend:
+        -- CC: system prompt file, session ID, MCP config, working dir
+        -- Anthropic: system prompt, model, tools, max_tokens, thinking
+        -- Ollama: model, system message, tools, thinking
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Per-turn provider switching" {
+    -- Currently the backend is resolved once per conversation from the
+    -- profile. Could the routing decision happen per-turn? Anthropic ↔
+    -- Ollama is ~1 day of work (message format is already normalized).
+    -- CC ↔ anything is harder (subprocess vs stateless API, different
+    -- tool loop ownership). Use case TBD — Kevin was exploring this.
+}
+
+open question "Tool loop unification" {
+    -- The manages_tool_loop split creates two distinct code paths in the
+    -- Agent. Could the CC backend be adapted to NOT manage its own tools,
+    -- letting the Agent drive uniformly? This would simplify the Agent
+    -- but lose CC's native tool capabilities (Read, Write, Bash, etc.).
+    -- The current split is intentional but adds complexity.
+}
+
+open question "Retry on transient backend errors" {
+    -- The pipeline is currently fail-fast with no retry. Should transient
+    -- errors (HTTP 429, 503, connection reset) trigger automatic retry
+    -- with backoff? The risk is latency amplification and the complexity
+    -- of resuming a partially-streamed response.
+}
+
+open question "Marker tools for API/Ollama backends" {
+    -- Markers are currently CC-only (exposed via MCP). API/Ollama backends
+    -- can't call show, show_code, or play_audio. Could these be added to
+    -- tool_definitions for those backends? The model would need to learn
+    -- when to use them without CC's MCP training.
+}
+
+open question "Output segmentation for very long tool outputs" {
+    -- OutputSegmenter handles text chunks well but tool_result cues can
+    -- be very large (up to 50KB after truncation). Should large tool
+    -- results be segmented or summarized before delivery?
+}
