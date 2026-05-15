@@ -1,0 +1,637 @@
+-- allium: 3
+
+-- Profile and Configuration
+--
+-- How cranium loads, validates, and serves profile configuration. A profile
+-- bundles a backend, model, identity file, tuning thresholds, and plugin
+-- declarations — everything needed to configure an inference session. Also
+-- covers working directory routing (how conversation names map to project
+-- directories) and mtime-based hot reload of identity files and nix
+-- devShell environments.
+--
+-- Scope: Profile YAML loading and validation, profile resolution, working
+-- directory routing, identity file caching, nix devShell caching, boot
+-- ordering. Does NOT cover inference internals, plugin lifecycle (see
+-- plugin-system spec), context assembly (see context-system spec), or
+-- transport details.
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    profiles_path: String
+        -- Path to profiles.yaml. Defaults to
+        -- $XDG_CONFIG_HOME/cranium/profiles.yaml, falling back to
+        -- ~/.config/cranium/profiles.yaml if XDG_CONFIG_HOME is unset.
+        -- Overridable via application env :profiles_path (used in tests).
+
+    projects_dir: String = "~/Projects"
+        -- Base directory for project directory routing. Conversation
+        -- names are slugified and matched against subdirectories here.
+
+    excluded_rooms: [String] = []
+        -- Conversation IDs hidden from room listing endpoint.
+
+    plugin_beam_path: String?
+        -- Directory containing compiled plugin .beam files. Added to
+        -- the code server's load path at boot. Nil means no external
+        -- plugins.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value PluginDeclaration {
+    module: Atom
+    config: Map?
+
+    @guidance
+        -- Declared per-profile in profiles.yaml. Module is the Elixir
+        -- module name (e.g., Cranium.Plugins.Glossary). Config is an
+        -- optional map passed to the plugin's init alongside session
+        -- metadata. Shape is plugin-defined — cranium does not validate it.
+}
+
+value SaturationConfig {
+    context_window: Integer?
+    saturation_warn: Float?
+    saturation_critical: Float?
+
+    @guidance
+        -- Extracted from the resolved profile for TurnInjector's use.
+        -- All fields are optional — callers fall back to pipeline
+        -- defaults from config.exs when nil.
+}
+
+value ResolvedProfile {
+    name: String
+    backend_module: Atom
+    backend: claudecode | anthropic | ollama | mock
+    model: String?
+    identity: String?
+    thinking: Boolean?
+    context_window: Integer?
+    saturation_warn: Float?
+    saturation_critical: Float?
+    openai_system_mode: replace | prepend | append
+    private: Boolean
+    plugins: [PluginDeclaration]
+
+    @guidance
+        -- The fully resolved profile returned by Config.resolve_profile.
+        -- identity is the file content (not the path) — read lazily
+        -- from disk with mtime-based caching.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity ProfileStore {
+    -- Singleton GenServer + ETS table. ETS for lock-free public reads,
+    -- GenServer for serialized file I/O (identity caching).
+    profiles: Map<String, Profile>
+    default_name: String
+    ollama_url: String
+    identity_cache: Map<String, {mtime: Timestamp, content: String}>
+
+    @guidance
+        -- ETS layout:
+        --   {{:profile, name}, %Profile{}} — one entry per profile
+        --   {:default, name} — default profile name
+        --   {:ollama_url, url} — Ollama API base URL
+        --   {{:identity, path}, mtime, content} — identity file cache
+        --
+        -- The ETS table is :public with read_concurrency for fast
+        -- lookups. All public API functions read directly from ETS
+        -- without GenServer calls, except identity cache misses.
+}
+
+entity Profile {
+    name: String
+    backend: claudecode | anthropic | ollama | mock
+    model: String?
+    identity_path: String?
+    thinking: Boolean?
+    context_window: Integer?
+    saturation_warn: Float?
+    saturation_critical: Float?
+    openai_system_mode: replace | prepend | append
+    private: Boolean
+    plugins: [PluginDeclaration]
+
+    @guidance
+        -- The stored profile struct. Represents the parsed YAML
+        -- declaration. identity_path is the raw path — the file is
+        -- not read until resolve_profile is called.
+        --
+        -- private profiles are excluded from landscape summarization.
+        -- Their conversations are invisible to cross-room context.
+        --
+        -- openai_system_mode controls how the OpenAI compatibility
+        -- layer merges client system messages with profile identity:
+        --   replace: profile identity replaces client system messages
+        --   prepend: profile identity before client system messages
+        --   append: client system messages before profile identity
+}
+
+entity NixEnvCache {
+    -- Singleton GenServer + ETS table. Same pattern as ProfileStore.
+    entries: Map<String, {mtime: Timestamp, env: [{String, String}]}>
+
+    @guidance
+        -- Keyed by working directory path. Each entry caches the
+        -- resolved nix devShell PATH for a project directory.
+        -- Env is a list of {key, value} charlist tuples suitable
+        -- for Port.open's :env option.
+}
+
+------------------------------------------------------------
+-- Rules: Profile Loading
+------------------------------------------------------------
+
+rule LoadProfiles {
+    when: ProfileStore starts
+
+    -- 1. Read profiles.yaml from config.profiles_path
+    -- 2. Validate YAML structure
+    -- 3. Parse each profile entry
+    -- 4. Populate ETS table
+
+    requires: profiles.yaml file exists at config.profiles_path
+    requires: YAML contains a "profiles" key
+    requires: "profiles" is a non-empty map
+
+    ensures: for each profile in YAML:
+        Profile.created(
+            name: key,
+            backend: parsed backend atom,
+            model: config["model"],
+            identity_path: config["identity"],
+            thinking: config["thinking"] (boolean or nil),
+            context_window: config["context_window"],
+            saturation_warn: config["saturation_warn"],
+            saturation_critical: config["saturation_critical"],
+            openai_system_mode: parsed mode (default: replace),
+            private: config["private"] == true (default: false),
+            plugins: parsed plugin declarations (default: [])
+        )
+
+    ensures: default_name =
+        YAML["default"] when present
+    ensures: default_name =
+        first profile name alphabetically when YAML["default"] absent
+    ensures: ollama_url =
+        YAML["ollama_url"] when present
+
+    @guidance
+        -- Crashes the application on any validation failure:
+        --   - Missing or unreadable profiles.yaml
+        --   - Missing "profiles" key
+        --   - Empty profiles map
+        --   - Unknown backend string (not one of: claudecode, anthropic, ollama, mock)
+        --   - Default profile name not found in profiles map
+        --
+        -- Backend string mapping:
+        --   "claudecode" -> :claudecode
+        --   "anthropic"  -> :anthropic
+        --   "ollama"     -> :ollama
+        --   "mock"       -> :mock
+        --
+        -- Plugin parsing: each entry must have a "module" key (string,
+        -- resolved via Module.concat). Optional "config" key must be a
+        -- map if present. Missing module raises.
+        --
+        -- profiles.yaml is loaded once at boot. There is no runtime
+        -- hot reload of profile definitions — changes require restart.
+}
+
+------------------------------------------------------------
+-- Rules: Profile Resolution
+------------------------------------------------------------
+
+rule ResolveProfile {
+    when: ResolveProfile(name)
+
+    -- Look up the named profile, resolve identity content, return
+    -- the fully resolved profile map.
+
+    let profile = ProfileStore.profiles[name]
+
+    ensures: ResolvedProfile returned with:
+        backend_module mapped from profile.backend,
+        identity = read_identity(profile.identity_path),
+        all other fields from profile
+
+    ensures: {:error, :not_found} when name not in ProfileStore.profiles
+
+    @guidance
+        -- Backend module mapping:
+        --   :claudecode -> Cranium.Backend.LLM.ClaudeCode
+        --   :anthropic  -> Cranium.Backend.LLM.Anthropic
+        --   :ollama     -> Cranium.Backend.LLM.Ollama
+        --   :mock       -> Cranium.Backend.LLM.Mock (dynamic to avoid xref)
+        --
+        -- Identity is resolved lazily — the file is read (or served
+        -- from mtime cache) on every resolve_profile call, not at
+        -- load time. This means edits to identity files take effect
+        -- on the next inference turn without restarting cranium.
+}
+
+rule ResolveProfileForTurn {
+    when: TurnAssembler assembles a turn with PassHeader
+
+    -- 1. Determine profile name (header.profile or default)
+    -- 2. Resolve profile
+    -- 3. Apply per-request overrides
+
+    let name = PassHeader.profile or ProfileStore.default_name
+
+    let resolved = ResolveProfile(name)
+
+    -- Fallback: if named profile not found, warn and use default
+    let resolved = ResolveProfile(ProfileStore.default_name)
+        when resolved = {:error, :not_found}
+
+    -- Per-request overrides
+    let model = PassHeader.model or resolved.model
+    let identity = PassHeader.system when PassHeader.system is non-empty string
+    let identity = resolved.identity otherwise
+
+    ensures: turn dispatched with resolved backend_module, model, identity,
+        profile_name, thinking, saturation_config, and profile struct
+
+    @guidance
+        -- The override precedence is:
+        --   model: PassHeader.model > profile.model
+        --   identity: PassHeader.system > profile.identity > ""
+        --
+        -- PassHeader.system is a direct string override (the body of
+        -- the system prompt), NOT a file path. Used by the OpenAI
+        -- compatibility layer to pass client system messages.
+        --
+        -- The profile struct passed downstream is lightweight — only
+        -- name, backend, model, and plugins. Used by
+        -- Plugin.ConversationSupervisor to start per-profile plugins.
+}
+
+------------------------------------------------------------
+-- Rules: Working Directory Routing
+------------------------------------------------------------
+
+rule ResolveWorkingDir {
+    when: TurnAssembler needs working directory for conversation_id
+
+    -- 1. Slugify conversation_id
+    -- 2. Check if slug matches a project directory
+    -- 3. Use project dir or create temp dir
+
+    let slug = slugify(conversation_id)
+    let candidate = Path.join(config.projects_dir, slug)
+
+    ensures: working_dir = candidate when candidate exists as directory
+    ensures: working_dir = /tmp/cranium/{slug} when candidate does not exist
+    ensures: /tmp/cranium/{slug} is created if it does not exist
+
+    @guidance
+        -- Slugification:
+        --   1. Downcase
+        --   2. Replace non-alphanumeric chars (except hyphens) with hyphens
+        --   3. Collapse consecutive hyphens
+        --   4. Trim leading/trailing hyphens
+        --
+        -- Examples:
+        --   "My-Project"  -> "my-project"  -> ~/Projects/my-project
+        --   "#ops"        -> "ops"         -> ~/Projects/ops (if exists)
+        --   "random chat" -> "random-chat" -> /tmp/cranium/random-chat
+        --
+        -- The working directory determines:
+        --   - ClaudeCode backend's cd and muse --rw grant
+        --   - NixEnv devShell resolution (if flake.nix present)
+        --   - Muse tool kernel execution context
+        --
+        -- The OpenAI compatibility endpoint uses a fixed ephemeral dir
+        -- at /tmp/cranium/openai for all requests, not the router.
+}
+
+rule Slugify {
+    when: slugify(name)
+
+    ensures: result = name
+        |> downcase
+        |> replace non-alphanumeric (except hyphen) with hyphen
+        |> collapse consecutive hyphens
+        |> trim leading and trailing hyphens
+
+    @guidance
+        -- Pure function, no side effects. Used by working directory
+        -- routing and handoff/summary path construction.
+}
+
+------------------------------------------------------------
+-- Rules: Identity File Caching
+------------------------------------------------------------
+
+rule ReadIdentity {
+    when: read_identity(path) called during profile resolution
+
+    -- Mtime-based cache with serialized file reads
+
+    let current_mtime = File.stat(path).mtime
+
+    -- Fast path: ETS cache hit with matching mtime
+    ensures: cached content returned when
+        identity_cache[path].mtime = current_mtime
+
+    -- Slow path: mtime changed or no cache entry
+    -- Serialized through GenServer to avoid duplicate reads
+    ensures: file read from disk and cached with current_mtime when
+        identity_cache[path].mtime != current_mtime
+    ensures: file read from disk and cached when
+        path not in identity_cache
+
+    -- Error handling
+    ensures: nil returned when path does not exist or is unreadable
+
+    @guidance
+        -- The GenServer double-checks the cache before reading — another
+        -- process may have cached the file between the ETS lookup and the
+        -- GenServer call. This prevents duplicate reads under concurrency.
+        --
+        -- This is the mechanism that enables identity hot reload:
+        -- edit the identity .md file on disk, and the next inference turn
+        -- picks up the new content automatically. No restart needed.
+        --
+        -- The cache is keyed by path, not by profile name — two profiles
+        -- sharing the same identity file share one cache entry.
+}
+
+------------------------------------------------------------
+-- Rules: Nix DevShell Caching
+------------------------------------------------------------
+
+rule ResolveNixEnv {
+    when: NixEnvCache.env_for(working_dir)
+
+    -- Resolve nix devShell PATH for projects with flake.nix
+
+    let flake_path = Path.join(working_dir, "flake.nix")
+
+    -- No flake: skip entirely
+    ensures: [] returned when flake_path does not exist
+    ensures: [] returned when working_dir is nil
+
+    -- Cache hit with matching mtime
+    let current_mtime = File.stat(flake_path).mtime
+    ensures: cached env returned when
+        NixEnvCache.entries[working_dir].mtime = current_mtime
+
+    -- Cache miss or stale: resolve through GenServer
+    ensures: nix devShell PATH resolved and cached when
+        mtime changed or no cache entry
+
+    @guidance
+        -- Resolution runs `nix print-dev-env <working_dir>` and extracts
+        -- the PATH variable from the output. The nix PATH is prepended
+        -- to the system PATH, producing a merged PATH.
+        --
+        -- The GenServer double-checks the cache (same pattern as
+        -- identity caching) to avoid duplicate nix evaluations.
+        --
+        -- Negative caching: if nix evaluation fails (bad flake, nix
+        -- error), caches empty env [] with the current mtime. This
+        -- prevents re-running nix print-dev-env on every message.
+        -- The mtime check still applies — if the user fixes the flake,
+        -- the mtime changes and resolution retries.
+        --
+        -- The GenServer handles nix resolution (not the caller) so that
+        -- System.cmd's port EXIT signals don't pollute callers that
+        -- may be trapping exits.
+        --
+        -- GenServer call timeout is 30 seconds — nix evaluation can
+        -- be slow for large flakes.
+}
+
+------------------------------------------------------------
+-- Rules: Room Listing
+------------------------------------------------------------
+
+rule ListRooms {
+    when: GET /v1/rooms
+
+    -- Returns all conversations known to the Landscape cache
+
+    ensures: list of conversations from Landscape
+    ensures: conversations in config.excluded_rooms are filtered out
+
+    @guidance
+        -- Rooms are NOT derived from filesystem directories. They come
+        -- from the Landscape's summary cache (DB + hoard JSON files).
+        -- The mapping from room name to project directory happens at
+        -- resolution time (ResolveWorkingDir), not at listing time.
+        --
+        -- This means a room appears in the list only after it has
+        -- at least one summary — brand new conversations with no
+        -- summary yet won't appear.
+}
+
+------------------------------------------------------------
+-- Rules: OpenAI Profile Mapping
+------------------------------------------------------------
+
+rule OpenAIProfileAsModel {
+    when: POST /v1/chat/completions with model field
+
+    -- The model field in OpenAI API requests maps to a profile name
+
+    let profile = ResolveProfile(model)
+
+    ensures: inference dispatched with resolved profile
+    ensures: error when profile not found
+
+    @guidance
+        -- GET /v1/models returns all profile names as model entries,
+        -- making profiles discoverable through OpenAI-compatible
+        -- model listing.
+        --
+        -- The OpenAI endpoint applies openai_system_mode to merge
+        -- client system messages with profile identity:
+        --   replace: profile identity replaces client system messages
+        --   prepend: profile identity comes before client system messages
+        --   append: client system messages come before profile identity
+        --
+        -- All OpenAI requests use a fixed ephemeral working directory
+        -- at /tmp/cranium/openai. No per-conversation routing.
+}
+
+------------------------------------------------------------
+-- Rules: Boot Sequence
+------------------------------------------------------------
+
+rule BootOrder {
+    when: Cranium.Application starts
+
+    -- Profile-relevant boot ordering within the rest_for_one supervisor
+
+    ensures: plugin_beam_path added to code server before supervisor starts
+    ensures: muse tools loaded before supervisor starts
+
+    ensures: boot order is:
+        1. Drain (SIGTERM handler)
+        2. Store.Repo (DB connection pool)
+        3. Store (storage service)
+        4. Events (pub/sub registry)
+        5. Config (profiles.yaml -> ETS)
+        6. Effects
+        7. Transport
+        8. Media
+        9. Inference (includes NixEnv, SystemPrompt, Landscape)
+
+    @guidance
+        -- rest_for_one strategy means: if Config crashes, everything
+        -- downstream (Effects, Transport, Media, Inference) restarts.
+        -- Config must start before Inference because TurnAssembler
+        -- depends on profile resolution.
+        --
+        -- Pre-supervisor setup happens in Application.start/2:
+        --   1. Plugin beam path added to code server (:code.add_patha)
+        --   2. Built-in tools registered (subagent tool)
+        --   3. Muse tools loaded via shell-out to `muse --tools`
+        -- These happen before the supervisor tree starts, so they are
+        -- available by the time any child process needs them.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ProfilesLoadedBeforeInference {
+    for all inference turns:
+        ProfileStore is populated before any TurnAssembler resolves a profile
+
+    @guidance
+        -- Enforced by supervision tree ordering: Config is child 5,
+        -- Inference is child 9 in a rest_for_one supervisor. Config's
+        -- init/1 is synchronous — ETS is populated before init returns
+        -- and the next child starts.
+}
+
+invariant ProfilesImmutableAtRuntime {
+    for all t after boot:
+        ProfileStore.profiles is unchanged from initial load
+
+    @guidance
+        -- profiles.yaml is loaded once during Config.init/1. There is
+        -- no file watcher, no reload endpoint, no periodic polling.
+        -- The GenServer stores the path in state but never re-reads it.
+        -- To change profiles, restart the application.
+        --
+        -- This is deliberate — profile changes affect backend selection,
+        -- model routing, and plugin declarations. Hot-reloading profiles
+        -- would create complex partial-update semantics for in-flight
+        -- conversations.
+}
+
+invariant IdentityHotReload {
+    for all identity files referenced by profiles:
+        editing the file on disk causes the next resolve_profile call
+        to return the new content
+
+    @guidance
+        -- Enforced by mtime-based cache invalidation in read_identity.
+        -- File.stat checks the current mtime on every call. If it
+        -- differs from the cached mtime, the file is re-read through
+        -- the GenServer.
+        --
+        -- This means identity is effectively hot-reloaded, but there
+        -- is a caveat: the check happens per-call, not via filesystem
+        -- notification. If two calls race, the GenServer's double-check
+        -- ensures only one read occurs.
+}
+
+invariant NixEnvHotReload {
+    for all working directories with flake.nix:
+        editing flake.nix causes the next env_for call to
+        re-evaluate the nix devShell
+
+    @guidance
+        -- Same mtime-based pattern as identity hot reload. Negative
+        -- caching means a broken flake is cached as empty env until
+        -- the flake is modified again (new mtime triggers retry).
+}
+
+invariant WorkingDirDeterministic {
+    for all pairs (conversation_id, projects_dir):
+        resolve_working_dir always returns the same path
+
+    @guidance
+        -- Given a fixed filesystem state, the mapping is deterministic:
+        -- slugify is pure, File.dir? is a point-in-time check, and
+        -- /tmp/cranium/<slug> is created idempotently via mkdir_p.
+        --
+        -- However: if a project directory is created or deleted between
+        -- calls, the result changes. This is expected — the routing
+        -- reflects current filesystem state.
+}
+
+invariant DefaultProfileAlwaysResolvable {
+    for all calls to ResolveProfile(default_name):
+        resolution succeeds
+
+    @guidance
+        -- Enforced at boot: LoadProfiles raises if the default profile
+        -- name is not found in the profiles map. Since profiles are
+        -- immutable at runtime, the default is always resolvable.
+}
+
+invariant SlugifyIdempotent {
+    for all strings s:
+        slugify(slugify(s)) = slugify(s)
+
+    @guidance
+        -- The slugify function's operations (downcase, replace, collapse,
+        -- trim) are all idempotent. Applying them twice yields the same
+        -- result as applying them once. This matters because slugified
+        -- names may be used as conversation_id inputs in some paths.
+}
+
+invariant IdentityCacheSharedAcrossProfiles {
+    for profiles p1, p2 where p1.identity_path = p2.identity_path:
+        read_identity returns the same cached content for both
+
+    @guidance
+        -- The identity cache is keyed by file path, not by profile
+        -- name. Two profiles pointing at the same identity file share
+        -- one cache entry and one mtime check. A single edit to the
+        -- shared file updates both profiles simultaneously.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Projects dir config inconsistency" {
+    -- TurnAssembler reads projects_dir from Application.get_env(:cranium, :projects_dir),
+    -- while HandoffWriter and ConversationSummarizer read from
+    -- Application.get_env(:cranium, :paths)[:projects]. These are different
+    -- config keys. In practice both default to "~/Projects", but they could
+    -- diverge if only one is set.
+}
+
+open question "Profile hot reload" {
+    -- Should profiles.yaml support hot reload? Currently requires restart.
+    -- The mtime-based pattern used for identity files and NixEnv would work
+    -- here, but profile changes have wider blast radius (backend selection,
+    -- plugin declarations, model routing). In-flight conversations would
+    -- need a policy: keep old profile until epoch clear, or switch mid-epoch?
+}
+
+open question "Room listing source" {
+    -- Rooms come from the Landscape cache (summaries), not from filesystem
+    -- project directories. This means new project directories don't appear
+    -- as rooms until a conversation happens and generates a summary. Should
+    -- there be a parallel discovery mechanism that scans projects_dir?
+    -- (Hearth filed a ticket for a room discovery API that may address this.)
+}
