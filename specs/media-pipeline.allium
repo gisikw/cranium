@@ -1,0 +1,982 @@
+-- allium: 3
+
+-- Media Pipeline
+--
+-- How cranium handles audio input and output: chunked audio upload and
+-- reassembly, speech-to-text transcription, adaptive output segmentation
+-- for text and voice clients, and text-to-speech synthesis with eager
+-- warming and lazy fallback.
+--
+-- The media pipeline is event-driven: transport broadcasts raw audio
+-- segments, media actors transform them through transcription and
+-- assembly into text, inference produces streaming output, and the
+-- output segmenter breaks it into deliverable segments that may be
+-- synthesized into audio for voice clients.
+--
+-- Scope: Audio input (single and chunked), transcription (STT), take
+-- assembly, output segmentation (text and voice modes), TTS synthesis
+-- (eager warming, lazy fallback, caching), prosody configuration.
+-- Does NOT cover inference internals (see inference-pipeline.allium),
+-- transport delivery endpoints (see transport-delivery.allium), or
+-- conversation lifecycle (see conversation-lifecycle.allium).
+--
+-- Depends on: conversation-lifecycle.allium (PassHeader, TextInput, TakeComplete)
+--             transport-delivery.allium (Manifest, HTTP endpoints)
+--             inference-pipeline.allium (Agent streaming protocol)
+
+use conversation-lifecycle
+use transport-delivery
+use inference-pipeline
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Transport {
+    -- HTTP transport layer. Receives audio uploads and emits
+    -- Segment events. Serves segment text and audio to clients
+    -- via pull-based manifest API.
+    -- Managed by transport-delivery spec.
+}
+
+external entity TurnAssembler {
+    -- Correlates PassHeader with content (TextInput or TakeComplete)
+    -- by pass_id for inference dispatch.
+    -- Managed by conversation-lifecycle spec.
+}
+
+external entity Agent {
+    -- Inference agent that streams LLM output as chunks.
+    -- Managed by inference-pipeline spec.
+    -- Media pipeline consumes its stream events.
+}
+
+external entity Manifest {
+    -- Per-stream segment playlist for pull-based clients.
+    -- Managed by transport-delivery spec.
+    -- Output segmenter pushes segments to manifest.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- STT
+    stt_url: String
+        -- HTTP endpoint for speech-to-text (Whisper API).
+        -- Set via STT_URL environment variable.
+
+    stt_cache_ttl_seconds: Integer = 1200
+        -- TTL for transcription cache entries (20 minutes).
+
+    -- TTS
+    tts_url: String
+        -- HTTP endpoint for text-to-speech (OpenAI-compatible API).
+        -- Set via TTS_URL environment variable.
+
+    tts_config_path: String = "~/.config/cranium/tts.yaml"
+        -- YAML file for prosody settings (voice, speed).
+        -- Loaded fresh on every synthesis call (hot reload).
+
+    tts_default_voice: String = "af_exo"
+    tts_default_speed: Float = 1.0
+    tts_format: String = "mp3"
+    tts_connect_timeout_ms: Integer = 10000
+    tts_receive_timeout_ms: Integer = 120000
+
+    -- TTS Cache
+    tts_cache_cleanup_delay_ms: Integer = 300000
+        -- Delay before evicting cache entries after stream completes (5 min).
+
+    tts_warming_poll_interval_ms: Integer = 200
+        -- Poll interval when waiting for a warming entry to complete.
+
+    tts_warming_timeout_ms: Integer = 120000
+        -- Maximum wait time for a warming entry (2 min).
+
+    -- Segmentation
+    first_batch_words: Integer = 30
+        -- Word threshold for emitting the first segment.
+
+    subsequent_batch_words: Integer = 100
+        -- Word threshold for subsequent text-only segments.
+
+    speech_rate_wps: Float = 2.3
+        -- Assumed speech rate in words per second (measured 2.2-2.8).
+        -- Underestimates slightly, erring toward staying aggressive.
+
+    synth_rtf: Float = 0.70
+        -- Synthesis real-time factor (measured 0.67-0.71 on Qwen3-TTS 0.6B).
+        -- Used to cap lead time at what synthesis could have produced.
+
+    sentence_min_words: Integer = 8
+        -- Minimum words for sentence-level emission in aggressive mode.
+
+    min_relaxed_words: Integer = 20
+        -- Minimum batch size worth switching to relaxed (paragraph) mode.
+
+    max_batch_words: Integer = 50
+        -- Hard cap on audio batch size (~20s worst-case synthesis time).
+
+    -- Take Management
+    take_stale_timeout_ms: Integer = 1200000
+        -- TTL for stale takes in TakeCollector (20 minutes).
+
+    take_registry_ttl_ms: Integer = 86400000
+        -- TTL for SegmentRegistry entries (24 hours).
+
+    take_sweep_interval_ms: Integer = 60000
+        -- Sweep interval for stale entries (1 minute).
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value Segment {
+    direction: inbound | outbound
+    audio: Binary
+    take_id: String?
+    seq: Integer?
+
+    @guidance
+        -- Raw audio chunk from HTTP transport. Inbound segments are
+        -- user-submitted audio for transcription. The seq field is nil
+        -- for single-segment uploads and a 0-based index for chunked takes.
+}
+
+value Transcription {
+    text: String?
+    failure: term?
+    take_id: String?
+    seq: Integer?
+
+    @guidance
+        -- Result from STT backend. Either text (success) or failure
+        -- (error reason) is populated, never both. The seq field mirrors
+        -- the source Segment's seq — nil for single-segment, indexed
+        -- for chunked.
+}
+
+value SegmentOutput {
+    type: utterance | cue
+    text: String?
+    cue_type: String?
+    data: term?
+    renditions: List<String>
+
+    @guidance
+        -- Emitted by OutputSegmenter as {:segment_ready, stream_id, index, output}.
+        -- Utterances carry text and rendition flags ([:text] or [:text, :audio]).
+        -- Cues carry structured data (images, code blocks) that pass through
+        -- the segmenter unchanged — they're positional markers for transport.
+}
+
+value Prosody {
+    voice: String
+    speed: Float
+
+    @guidance
+        -- TTS prosody settings loaded from tts.yaml on every synthesis call.
+        -- Hot reload: edits take effect immediately without process restart.
+        -- Defaults: voice="af_exo", speed=1.0.
+        -- Merged with config defaults (config wins for missing keys).
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Take {
+    take_id: String
+    stream_id: String
+    conversation_id: String
+    disposition: List<String>
+    origin: String?
+    last_seq: Integer?
+    opened_at: Timestamp
+    completed_at: Timestamp?
+    status: open | sealed | complete
+
+    -- Relationships
+    chunks: map(Integer -> Binary)
+
+    transitions status {
+        open -> sealed
+        sealed -> complete
+        open -> complete
+            -- Can happen if seal and final chunk arrive in the right order
+        terminal: complete
+    }
+
+    @guidance
+        -- A Take represents a chunked audio input session. Opened when
+        -- the client calls /v1/input/start, chunks arrive via PUT, and
+        -- the client seals with /v1/input/:id/done declaring the final
+        -- sequence number. The take is complete when all sequences
+        -- 0..last_seq are present AND the take is sealed.
+        -- Chunks can arrive out of order. Completion is checked on both
+        -- chunk receipt and seal.
+        -- The SegmentRegistry (Transport layer) tracks chunk arrival for
+        -- HTTP response purposes. The TakeCollector (Media layer) tracks
+        -- transcription completion for inference dispatch.
+}
+
+entity TranscriptionCache {
+    key: Integer
+    result: String
+    cached_at: Timestamp
+
+    @guidance
+        -- ETS-based cache keyed by :erlang.phash2 of audio binary.
+        -- Prevents duplicate STT requests for identical audio data.
+        -- Entries are swept every 1 minute; those older than
+        -- stt_cache_ttl_seconds (20 min default) are evicted.
+        -- Read-concurrent ETS table (:set, read_concurrency: true).
+}
+
+entity TTSCacheEntry {
+    stream_id: String
+    segment_index: Integer
+    state: warming | audio | error
+
+    -- Audio binary stored inline when state = audio
+
+    transitions state {
+        warming -> audio
+        warming -> error
+        terminal: audio, error
+    }
+
+    @guidance
+        -- In-memory cache for synthesized audio, keyed by
+        -- {stream_id, segment_index}. The warming state prevents
+        -- duplicate TTS requests when a client polls before eager
+        -- synthesis completes.
+        -- Entries persist until the cleanup timer fires (5 min after
+        -- stream completes). Multiple readers can safely fetch the
+        -- same segment without racing.
+}
+
+------------------------------------------------------------
+-- Supervision Topology
+------------------------------------------------------------
+
+-- The Media supervisor owns five children under one_for_one strategy:
+--
+--   Cranium.Media (Supervisor, one_for_one)
+--   ├── Cranium.Media.Transcoder (GenServer)
+--   │   └── STT coordinator with ETS cache
+--   ├── Cranium.Media.TakeCollector (GenServer)
+--   │   └── Multi-segment transcription assembly
+--   ├── Cranium.Media.OutputSegmenter (GenServer)
+--   │   └── Adaptive output chunking for text and voice
+--   ├── Cranium.Media.TTS.Cache (GenServer)
+--   │   └── In-memory audio cache with warming/lazy paths
+--   └── Cranium.Media.TTS.Warmer (GenServer)
+--       └── Sequential TTS synthesis queue
+
+------------------------------------------------------------
+-- Rules: Audio Input
+------------------------------------------------------------
+
+rule ReceiveSingleAudioUpload {
+    when: HTTP POST /v1/submit with audio field (Plug.Upload)
+
+    let segment = Segment(direction: inbound, audio: file_bytes, take_id: pass_id, seq: nil)
+
+    ensures: broadcast {:segment_received, segment}
+
+    @guidance
+        -- Single-shot audio upload via multipart form. The audio is read
+        -- from the upload temp file and wrapped in a Segment with seq: nil
+        -- (indicating single-segment). The pass_id from the submit request
+        -- doubles as the take_id for correlation.
+        -- The same /v1/submit endpoint also handles text input — audio and
+        -- text are mutually exclusive in a single request.
+}
+
+rule OpenChunkedTake {
+    when: HTTP POST /v1/input/start
+
+    let take_id = new_id()
+    let stream_id = new_id()
+
+    -- Register take in SegmentRegistry for chunk tracking
+    ensures: SegmentRegistry.open(take_id, stream_id, conversation_id, disposition)
+
+    -- Initialize transport manifest for output delivery
+    ensures: Manifest.init_stream(stream_id, conversation_id, disposition)
+
+    -- Emit PassHeader for TurnAssembler correlation
+    ensures: PassHeader.broadcast(
+        pass_id: take_id,
+        conversation_id: conversation_id,
+        stream_id: stream_id,
+        take_id: take_id,
+        disposition: disposition,
+        origin: origin,
+        profile: profile
+    )
+
+    -- Ensure TurnAssembler exists before broadcasting
+    ensures: TurnAssembler.start_or_get(conversation_id)
+
+    @guidance
+        -- Opens a chunked audio input session. The take_id doubles as
+        -- the pass_id for PassHeader/TakeComplete correlation — this is
+        -- the join key that connects audio input to inference output.
+        -- The PassHeader is broadcast immediately so TurnAssembler can
+        -- begin waiting for the corresponding TakeComplete event.
+        -- Returns {take_id, stream_id} to the client for subsequent
+        -- chunk uploads and output polling.
+}
+
+rule ReceiveAudioChunk {
+    when: HTTP PUT /v1/input/:id/:seq with chunk field (Plug.Upload)
+
+    let segment = Segment(direction: inbound, audio: chunk_bytes, take_id: id, seq: seq_int)
+
+    ensures: broadcast {:segment_received, segment}
+
+    @guidance
+        -- Appends a numbered audio chunk to an open take. Each chunk is
+        -- broadcast as a separate Segment event — the Transcoder processes
+        -- them independently and in parallel. Chunks may arrive out of order.
+        -- The SegmentRegistry also tracks chunks for HTTP status responses
+        -- but does NOT participate in the transcription flow.
+}
+
+rule SealChunkedTake {
+    when: HTTP POST /v1/input/:id/done with last_seq
+
+    ensures: broadcast {:take_sealed, id, last_seq}
+    ensures: SegmentRegistry.seal(id, last_seq)
+        -- Returns missing chunk indices to the client
+
+    @guidance
+        -- Declares the final sequence number for a chunked take. After
+        -- sealing, the TakeCollector can check whether all transcriptions
+        -- have arrived (0..last_seq). The SegmentRegistry also checks
+        -- chunk-level completeness and returns missing indices to the
+        -- client for retry.
+        -- The take_sealed event is broadcast BEFORE the SegmentRegistry
+        -- seal call so TakeCollector gets the event regardless of
+        -- SegmentRegistry outcome.
+}
+
+------------------------------------------------------------
+-- Rules: Transcription (STT)
+------------------------------------------------------------
+
+rule TranscribeAudioSegment {
+    when: {:segment_received, segment} where segment.direction = inbound
+
+    let cache_key = phash2(segment.audio)
+
+    -- Check ETS cache first
+    ensures: emit_transcription(cached_result, segment)
+        when TranscriptionCache exists for cache_key
+
+    -- Cache miss: call STT backend
+    ensures: result = STT.process(segment.audio) when cache miss
+    ensures: TranscriptionCache.created(key: cache_key, result: result)
+        when result is ok
+    ensures: broadcast {:transcription_complete, Transcription(text, take_id, seq)}
+        when result is ok
+    ensures: broadcast {:transcription_failed, Transcription(failure, take_id, seq)}
+        when result is error
+
+    @guidance
+        -- The Transcoder is a GenServer subscribing to :global events.
+        -- It filters for {:segment_received, ...} with direction: inbound.
+        -- The ETS cache is keyed by :erlang.phash2 of the raw audio binary,
+        -- preventing duplicate STT requests for identical audio data.
+        -- Cache entries are {key, result_text, monotonic_timestamp}.
+        -- STT backend is an HTTP POST to stt_url with multipart form upload.
+        -- The response is expected as {"text": "..."} on 200 OK.
+        -- Transcription is synchronous within the GenServer — one segment
+        -- at a time. This is a potential bottleneck for high-concurrency
+        -- audio input but acceptable for the current single-user deployment.
+}
+
+rule STTHTTPCall {
+    when: Transcriber.process(audio_binary)
+
+    -- Multipart form upload to STT endpoint
+    ensures: HTTP POST stt_url with form_multipart file field
+
+    -- Response handling
+    ensures: {:ok, trimmed_text} when status=200 and body has "text" key
+    ensures: {:error, {:stt_error, msg}} when status=200 and body has "error" key
+    ensures: {:error, {:http_error, status, body}} for non-200 responses
+
+    @guidance
+        -- The STT backend (Whisper) expects raw audio as a multipart form
+        -- upload with content_type "application/octet-stream". The "error"
+        -- key in a 200 response is a Whisper convention for transcription
+        -- failures (e.g., unintelligible audio). The error check is ordered
+        -- before the text check in pattern matching to handle responses that
+        -- contain both keys.
+}
+
+rule SweepTranscriptionCache {
+    when: :sweep timer (every 1 minute)
+
+    ensures: delete cache entries where cached_at < (now - stt_cache_ttl_seconds)
+
+    @guidance
+        -- ETS select_delete with monotonic time comparison. The sweep
+        -- runs on the Transcoder GenServer's process via Process.send_after.
+}
+
+------------------------------------------------------------
+-- Rules: Take Assembly
+------------------------------------------------------------
+
+rule CompleteSingleSegmentTake {
+    when: {:transcription_complete, transcription}
+        where transcription.seq = nil
+        and transcription.take_id is not nil
+        and transcription.text is not nil
+
+    ensures: broadcast {:take_complete, TakeComplete(take_id, text)}
+
+    @guidance
+        -- Single-segment transcriptions (from single audio upload or
+        -- non-chunked input) bypass the buffering logic entirely.
+        -- The TakeComplete event is emitted immediately and consumed
+        -- by TurnAssembler for pass correlation.
+}
+
+rule BufferChunkedTranscription {
+    when: {:transcription_complete, transcription}
+        where transcription.seq is not nil
+
+    -- Buffer the transcription text by sequence number
+    ensures: take_state.chunks[seq] = text
+
+    -- Check if all chunks 0..last_seq are present (if sealed)
+    ensures: complete_take(take_id) when sealed and all sequences received
+
+    @guidance
+        -- Multi-segment transcriptions are buffered in a per-take map
+        -- keyed by sequence number. Completion is checked after every
+        -- chunk and after every seal event — whichever arrives last
+        -- triggers completion.
+}
+
+rule SealTakeForCompletion {
+    when: {:take_sealed, take_id, last_seq}
+
+    ensures: take_state.sealed = true
+    ensures: take_state.last_seq = last_seq
+    ensures: complete_take(take_id) when all chunks 0..last_seq are present
+
+    @guidance
+        -- Recording the seal allows completion detection when the final
+        -- transcription arrives after the seal. Without the seal, the
+        -- collector doesn't know how many chunks to expect.
+}
+
+rule CompleteTakeFromChunks {
+    when: take is sealed and all chunks 0..last_seq are present
+
+    let text = chunks sorted by seq, joined with no separator
+
+    ensures: broadcast {:take_complete, TakeComplete(take_id, text)}
+    ensures: take state is removed from collector
+
+    @guidance
+        -- Chunks are sorted by sequence number and concatenated directly
+        -- (no separator). This produces a single continuous transcription
+        -- from the ordered audio segments. The take state is cleaned up
+        -- immediately after emission to free memory.
+}
+
+rule HandleChunkedTranscriptionFailure {
+    when: {:transcription_failed, transcription} where transcription.seq is not nil
+
+    -- No recovery: the take will never complete
+
+    @guidance
+        -- If any chunk in a multi-segment take fails transcription, the
+        -- take can never complete (the failed chunk will never appear in
+        -- the chunks map). The take will eventually be swept by the stale
+        -- timeout. There is no retry mechanism — the client would need to
+        -- re-submit the audio.
+}
+
+rule SweepStaleTakes {
+    when: :sweep timer (every config.take_sweep_interval_ms)
+
+    ensures: delete takes where inserted_at < (now - config.take_stale_timeout_ms)
+
+    @guidance
+        -- Prevents memory leaks from abandoned takes (client disconnected
+        -- before sealing, or transcription failures preventing completion).
+        -- Applied to TakeCollector's in-memory state.
+        -- SegmentRegistry has its own TTL-based cleanup (24 hours default)
+        -- since it tracks chunk-level data for HTTP responses.
+}
+
+------------------------------------------------------------
+-- Rules: Output Segmentation
+------------------------------------------------------------
+
+rule InitializeStream {
+    when: {:stream_start, stream_id, metadata}
+
+    ensures: per-stream state created with {
+        text: "",
+        segment_index: 0,
+        disposition: metadata.disposition or ["text"],
+        first_emit_at: nil,
+        words_emitted: 0
+    }
+
+    @guidance
+        -- The OutputSegmenter subscribes to specific stream topics via
+        -- a call to subscribe_stream/1 (which registers for
+        -- {:stream_raw, stream_id} events). Stream metadata carries the
+        -- disposition (["text"] or ["text", "audio"]) which determines
+        -- the segmentation strategy.
+}
+
+rule AccumulateTextChunk {
+    when: {:chunk, stream_id, text} where text is binary
+
+    ensures: text appended to stream buffer
+    ensures: apply segmentation strategy (aggressive or relaxed)
+
+    @guidance
+        -- Text chunks accumulate in a per-stream buffer. On each chunk,
+        -- the segmenter checks whether to emit segments based on the
+        -- current chunking mode.
+        -- Mode selection: if disposition includes "audio" AND the
+        -- safe_batch_words is below min_relaxed_words, use aggressive
+        -- (sentence-level) chunking. Otherwise, use relaxed
+        -- (paragraph-level) chunking.
+}
+
+rule AggressiveChunking {
+    when: disposition includes "audio" and safe_batch_words < config.min_relaxed_words
+
+    -- Try paragraph splits first (better prosody if they fit)
+    ensures: emit paragraph when word_count(paragraph) <= safe_batch_words
+    ensures: sentence-split paragraph when word_count(paragraph) > safe_batch_words
+
+    -- Fall back to sentence boundary when no paragraph break exists
+    ensures: emit at sentence boundary ([.!?] + whitespace) when words >= config.sentence_min_words
+
+    @guidance
+        -- Aggressive mode prioritizes fast synthesis turnaround over
+        -- prosody quality. It emits segments at the earliest viable
+        -- boundary to keep the TTS warmer fed and prevent dead air.
+        -- Paragraphs that fit within the safe runway are emitted whole
+        -- (better prosody). Paragraphs that exceed it are recursively
+        -- sentence-split.
+        -- Sentence boundaries are detected via regex: [.!?] followed by
+        -- whitespace. The minimum word threshold (8 default) prevents
+        -- emitting tiny fragments that would produce poor-quality audio.
+        -- After each emission, the chunking mode is re-evaluated — a
+        -- successful emission may increase lead time enough to switch
+        -- to relaxed mode.
+}
+
+rule RelaxedChunking {
+    when: not aggressive (text-only, or audio with sufficient lead time)
+
+    let threshold = first_batch_words when segment_index = 0
+                  | safe_batch_words when disposition includes "audio"
+                  | subsequent_batch_words otherwise
+
+    -- Batch paragraphs until threshold is met
+    ensures: emit accumulated paragraphs when word_count >= threshold
+
+    @guidance
+        -- Relaxed mode batches multiple paragraphs together for better
+        -- prosody and fewer, larger segments. For text-only streams,
+        -- fixed thresholds are used: 30 words for the first segment
+        -- (fast time-to-first-content), 100 words for subsequent segments.
+        -- For audio streams with sufficient lead time, the threshold is
+        -- derived from the current lead time calculation.
+        -- Paragraphs that don't meet the threshold stay in the buffer
+        -- until more text arrives or the stream ends.
+}
+
+rule FlushOnCue {
+    when: {:chunk, stream_id, {cue_type, data}} (non-text chunk)
+
+    -- Flush buffered text first to preserve stream ordering
+    ensures: emit buffered text as utterance segment (ignoring word thresholds)
+    ensures: emit cue as segment with type: :cue
+
+    @guidance
+        -- SCTE markers (images, code blocks) from the Agent pass through
+        -- unchanged. Text is flushed first so the cue appears at the
+        -- correct position in the segment stream. The cue itself is not
+        -- synthesized — it's a positional marker for the transport layer.
+}
+
+rule FlushOnStreamEnd {
+    when: {:stream_end, stream_id}
+
+    ensures: emit remaining text as final segment (if non-empty after trim)
+    ensures: stream state removed from segmenter
+
+    @guidance
+        -- On stream end, any buffered text becomes the final segment
+        -- regardless of word thresholds. This ensures no text is lost.
+        -- Stream state is cleaned up immediately.
+}
+
+rule EmitSegment {
+    when: text is ready for emission (threshold met, cue flush, or stream end)
+
+    ensures: broadcast {:segment_ready, stream_id, segment_index, SegmentOutput(
+        type: utterance,
+        text: text,
+        renditions: [:text, :audio] when "audio" in disposition, [:text] otherwise
+    )}
+
+    -- Trigger eager TTS warming for audio disposition
+    ensures: TTS.Cache.mark_warming(stream_id, segment_index)
+        when "audio" in disposition
+    ensures: TTS.Warmer.enqueue(stream_id, segment_index, text)
+        when "audio" in disposition
+
+    @guidance
+        -- Every emitted utterance segment is broadcast as a segment_ready
+        -- event. For audio-disposition streams, TTS warming is triggered
+        -- immediately: the cache entry is marked as :warming (preventing
+        -- duplicate synthesis) and the text is enqueued for synthesis.
+        -- The segment_index increments monotonically per stream.
+}
+
+------------------------------------------------------------
+-- Rules: Lead Time Calculation
+------------------------------------------------------------
+
+rule CalculateLeadTime {
+    when: segmentation decision needed for audio-disposition stream
+
+    let audio_ms = words_emitted / config.speech_rate_wps * 1000
+    let elapsed_ms = now - first_emit_at
+    let raw_lead = audio_ms - elapsed_ms
+    let max_lead = elapsed_ms * (1.0 / config.synth_rtf - 1.0)
+    let lead_time = min(raw_lead, max_lead)
+
+    @guidance
+        -- Lead time estimates how far ahead synthesized audio is relative
+        -- to playback. Two components:
+        -- 1. raw_lead: content duration minus wall time (how much audio
+        --    the client has vs how much has elapsed)
+        -- 2. max_lead: RTF-based cap on what synthesis could have actually
+        --    produced (prevents burst scenarios from inflating lead time
+        --    when no synthesis has completed yet)
+        -- The minimum of the two is the effective lead time.
+        -- Before first emission, lead time is 0 (forces aggressive mode).
+}
+
+rule CalculateSafeBatchWords {
+    when: batch size needed for audio-disposition stream
+
+    let safe = lead_time * config.speech_rate_wps / (1000 * config.synth_rtf)
+    let clamped = clamp(safe, config.sentence_min_words, config.max_batch_words)
+
+    @guidance
+        -- The maximum words we can safely queue for synthesis given current
+        -- lead time. The warmer is sequential — the entire chunk must
+        -- finish synthesizing before any of its audio is available.
+        -- Lead must cover the chunk's synthesis time:
+        --   lead >= words / wps * 1000 * rtf
+        -- Inverted: words <= lead * wps / (1000 * rtf)
+        -- Clamped to [sentence_min_words, max_batch_words] to prevent
+        -- degenerate behavior at extremes.
+}
+
+------------------------------------------------------------
+-- Rules: TTS Synthesis
+------------------------------------------------------------
+
+rule EnqueueTTSSynthesis {
+    when: TTS.Warmer.enqueue(stream_id, index, text)
+
+    -- Add to FIFO queue
+    ensures: {stream_id, index, text} queued
+
+    -- Process immediately if not busy
+    ensures: process_next() when not busy
+
+    @guidance
+        -- The warmer maintains a FIFO queue processed sequentially (one
+        -- synthesis task at a time). This prevents overwhelming a single-GPU
+        -- backend with concurrent requests. The warmer GenServer itself
+        -- is never blocked — synthesis runs in a spawned Task that sends
+        -- {:warm_done, ...} back on completion.
+}
+
+rule ProcessTTSQueue {
+    when: {:warm_done, stream_id, index, result, started_at}
+
+    ensures: TTS.Cache.put(stream_id, index, audio) when result is ok
+    ensures: TTS.Cache.put(stream_id, index, :error) when result is error
+    ensures: process_next() to drain queue
+
+    @guidance
+        -- Each completed synthesis updates the cache and triggers the
+        -- next item in the queue. On error, the cache entry is set to
+        -- :error so clients get a fast failure instead of waiting for
+        -- a warming timeout. Synthesis duration is logged for monitoring.
+}
+
+rule SynthesizeTTS {
+    when: Backend.TTS.synthesize(text, opts)
+
+    -- Load prosody from config file (hot reload)
+    let prosody = load_prosody(config.tts_config_path)
+
+    ensures: HTTP POST tts_url with JSON payload {
+        input: text,
+        voice: opts.voice or prosody.voice,
+        speed: opts.speed or prosody.speed,
+        response_format: opts.format or config.tts_format
+    }
+
+    ensures: {:ok, audio_binary} when status = 200 and body is binary
+    ensures: {:error, {:http_error, status, body}} for non-200 responses
+
+    @guidance
+        -- OpenAI-compatible TTS endpoint. Prosody settings are loaded from
+        -- the YAML config file on every call, not cached in process state.
+        -- This allows live tuning of voice and speed without restart.
+        -- The config file path follows XDG conventions (XDG_CONFIG_HOME
+        -- or ~/.config/cranium/tts.yaml).
+        -- Timeouts: 10s connect, 120s receive. The receive timeout is
+        -- generous because synthesis time scales with text length.
+}
+
+------------------------------------------------------------
+-- Rules: TTS Caching
+------------------------------------------------------------
+
+rule GetCachedAudio {
+    when: TTS.Cache.get(stream_id, index)
+
+    -- Three states in the cache lookup
+    ensures: {:ok, audio} when entry exists and is audio binary
+    ensures: await_warm(stream_id, index) when entry is :warming
+    ensures: synthesize_lazy(stream_id, index) when entry not found
+
+    @guidance
+        -- The cache serves as a coordination point between eager warming
+        -- (OutputSegmenter → Warmer → Cache) and client polling (HTTP
+        -- GET /v1/streams/:id/segments/:n/audio → Cache).
+        -- :error entries are evicted on read and treated as :not_found,
+        -- triggering lazy synthesis as a retry path.
+}
+
+rule AwaitWarmingEntry {
+    when: cache returns :warming for a get request
+
+    -- Poll at config.tts_warming_poll_interval_ms until audio appears
+    ensures: {:ok, audio} when warming completes
+    ensures: {:error, :warming_timeout} after config.tts_warming_timeout_ms
+    ensures: {:error, :warming_failed} if entry transitions to :not_found
+
+    @guidance
+        -- Polling prevents duplicate TTS requests. The client's HTTP
+        -- handler blocks while polling, so this occupies a connection
+        -- thread. The 200ms interval and 120s timeout are conservative
+        -- for single-user deployment.
+        -- :warming_failed occurs if the cache entry is evicted between
+        -- polls (shouldn't happen in practice since cleanup delay is
+        -- 5 minutes).
+}
+
+rule LazySynthesis {
+    when: cache has no entry and no warming marker
+
+    -- Look up segment text from text_cache (populated by segment_ready events)
+    ensures: synthesize on caller's process using TTS backend
+    ensures: {:error, :segment_not_found} when text not in cache
+
+    @guidance
+        -- Lazy synthesis is the fallback path when eager warming didn't
+        -- happen (e.g., text-only stream that a client later requests
+        -- audio for). The TTS.Cache listens to {:segment_ready, ...}
+        -- events and caches the text content for lazy synthesis.
+        -- Synthesis runs on the HTTP handler's process (not the warmer),
+        -- so it doesn't block other warming tasks.
+}
+
+rule CacheTextFromSegmentReady {
+    when: {:segment_ready, stream_id, index, %{type: :utterance, text: text}}
+
+    ensures: text_cache[{stream_id, index}] = text
+
+    @guidance
+        -- The TTS.Cache subscribes to :global events and captures
+        -- utterance text for lazy synthesis fallback. Cue segments
+        -- are ignored (no audio for structural markers).
+}
+
+rule ScheduleCacheCleanup {
+    when: TTS.Cache.schedule_cleanup(stream_id)
+
+    ensures: cleanup timer set for config.tts_cache_cleanup_delay_ms
+    ensures: on timer: evict all entries and text_cache for stream_id
+
+    @guidance
+        -- Called when a stream completes (pass_complete event). The delay
+        -- allows clients to poll remaining segments after the stream ends.
+        -- If schedule_cleanup is called again for the same stream (e.g.,
+        -- due to a duplicate event), the previous timer is cancelled and
+        -- a new one is set.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ChunksCanArriveOutOfOrder {
+    for every chunked take:
+        chunks may arrive in any order and still produce correct output
+
+    @guidance
+        -- Both SegmentRegistry and TakeCollector buffer chunks by
+        -- sequence number and sort by key on completion. Out-of-order
+        -- arrival is a first-class concern because HTTP requests may
+        -- be reordered by load balancers or retries.
+}
+
+invariant TakeCompletionRequiresSealAndAllChunks {
+    for every chunked take:
+        take_complete is emitted only when sealed = true
+        AND all sequences 0..last_seq are present
+
+    @guidance
+        -- Both conditions must be met. Either event (seal or final chunk)
+        -- may arrive last. maybe_complete is called after both operations
+        -- to ensure completion regardless of arrival order.
+}
+
+invariant SingleSegmentBypassesAssembly {
+    for every single-segment transcription (seq = nil):
+        take_complete is emitted immediately without buffering
+
+    @guidance
+        -- Single-segment takes are a fast path: transcription result
+        -- is broadcast directly as take_complete without touching the
+        -- TakeCollector's takes map. This avoids unnecessary state
+        -- management for the common case.
+}
+
+invariant SequentialTTSSynthesis {
+    TTS.Warmer processes at most one synthesis task at a time
+
+    @guidance
+        -- The warmer's busy flag prevents concurrent synthesis tasks.
+        -- This is intentional: the TTS backend runs on a single GPU
+        -- and concurrent requests would not improve throughput (they'd
+        -- contend for the same GPU). Sequential processing also
+        -- simplifies queue draining and error handling.
+}
+
+invariant EagerWarmPreventsDoubleSynthesis {
+    for every audio-disposition segment:
+        mark_warming is called BEFORE enqueue,
+        ensuring any concurrent cache.get sees :warming (not :not_found)
+
+    @guidance
+        -- The mark_warming → enqueue ordering is load-bearing. If
+        -- enqueue were called first without marking, a racing cache.get
+        -- could trigger lazy synthesis before the warmer starts. The
+        -- marking creates a reservation that the polling path respects.
+}
+
+invariant CueFlushPreservesOrdering {
+    for every cue chunk received:
+        buffered text is flushed as an utterance segment BEFORE
+        the cue segment is emitted
+
+    @guidance
+        -- Stream ordering is preserved: text that appeared before the
+        -- cue in the LLM output stream appears before the cue in the
+        -- segment stream. This ensures positional markers (images,
+        -- code blocks) appear at the correct position in the rendered
+        -- output.
+}
+
+invariant ProsodyHotReload {
+    TTS prosody settings are loaded from config file on every synthesis call
+
+    @guidance
+        -- The ExoVoice backend reads tts.yaml on every call to
+        -- synthesize(). This is intentional: it allows live tuning of
+        -- voice and speed during a conversation without requiring a
+        -- process restart. The file read is cheap relative to the
+        -- synthesis HTTP call.
+}
+
+invariant TranscriptionCacheByContent {
+    Transcription cache is keyed by audio content hash, not by take_id or seq
+
+    @guidance
+        -- Two identical audio segments (same bytes, different take/seq)
+        -- hit the same cache entry. This is correct because transcription
+        -- is a pure function of audio content. The phash2 key is fast
+        -- but not cryptographically strong — collisions are theoretically
+        -- possible but astronomically unlikely for audio data.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Transcoder single-threaded bottleneck" {
+    -- The Transcoder GenServer processes segments sequentially within
+    -- its handle_info callback. For chunked takes with many segments,
+    -- transcription is serialized behind the GenServer mailbox.
+    -- Should transcription be dispatched to a Task.Supervisor for
+    -- parallel processing, with results collected asynchronously?
+}
+
+open question "TakeCollector failure recovery" {
+    -- If a single chunk in a multi-segment take fails transcription,
+    -- the take can never complete. The failed state is not surfaced
+    -- to the client — the take silently times out after 20 minutes.
+    -- Should there be an explicit failure event so the client can
+    -- retry or abort?
+}
+
+open question "SegmentRegistry vs TakeCollector dual tracking" {
+    -- Both SegmentRegistry (Transport) and TakeCollector (Media) track
+    -- chunk arrival for the same takes. SegmentRegistry tracks raw
+    -- audio chunks; TakeCollector tracks transcription results. The
+    -- SegmentRegistry also listens to transcription_complete events
+    -- to keep its chunk tracking in sync.
+    -- This dual tracking serves different purposes (HTTP response vs
+    -- inference dispatch) but introduces coupling. Could they be
+    -- unified, or is the domain separation worth the complexity?
+}
+
+open question "Output segmenter subscription model" {
+    -- The OutputSegmenter uses a subscribe_stream/1 call to register
+    -- for specific stream topics. Who calls subscribe_stream, and when?
+    -- This wasn't clearly visible in the codebase. If the segmenter
+    -- subscribes to :global instead, it would see all streams but need
+    -- to filter. If it subscribes per-stream, something must trigger
+    -- the subscription.
+}
+
+open question "TTS cache memory growth" {
+    -- Audio binaries are held in the TTS.Cache GenServer's process heap.
+    -- For long conversations with many audio segments, this could grow
+    -- significantly (MP3 at ~1KB/s of audio × many segments). The 5-min
+    -- cleanup delay helps but doesn't bound peak memory. Should entries
+    -- be evicted on read (consume-once), or is the current retain-until-
+    -- cleanup model needed for multi-reader scenarios?
+}
