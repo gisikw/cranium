@@ -1,0 +1,883 @@
+-- allium: 3
+
+-- Transport and Delivery
+--
+-- How cranium exposes inference to external clients: the HTTP API surface,
+-- Server-Sent Events streaming at three scopes (stream, conversation, global),
+-- the segment manifest for poll-based consumption, rendition negotiation
+-- (text and audio disposition), chunked audio input assembly, and the
+-- OpenAI-compatible translation proxy.
+--
+-- Scope: HTTP endpoints, SSE firehose, manifest lifecycle, rendition
+-- negotiation, chunked audio input (take lifecycle), OpenAI compatibility
+-- layer, drain behavior.
+-- Does NOT cover inference internals (agent loop, tool routing — see
+-- inference-pipeline.allium), epoch/pass lifecycle transitions (see
+-- conversation-lifecycle.allium), context assembly (see context-system.allium),
+-- or media processing (transcription, TTS synthesis, output segmentation).
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Pass, PassOutcome)
+--             inference-pipeline.allium (Agent, OutputConsumer)
+
+use conversation-lifecycle
+use inference-pipeline
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Epoch {
+    -- Managed by conversation-lifecycle spec.
+    -- Transport reads epoch state from Store for metadata endpoint.
+    status: active | inferring | cleared
+    turn_count: Integer
+    saturation: Float?
+    cc_session_id: String?
+}
+
+external entity Profile {
+    -- Resolved from profiles.yaml by Config module.
+    name: String
+    backend_module: Module
+    model: String
+    identity: String?
+    openai_system_mode: replace | prepend | append
+}
+
+external entity Store {
+    -- Persistence layer for epoch state.
+    -- Transport reads from Store for conversation metadata endpoint.
+}
+
+external entity OutputSegmenter {
+    -- Produces segment_ready events from raw inference chunks.
+    -- Managed by inference-pipeline spec (output segmentation).
+}
+
+external entity TTSCache {
+    -- Caches synthesized audio keyed by (stream_id, segment_index).
+    -- Returns audio bytes on demand or synthesizes lazily.
+    -- Managed by media pipeline spec.
+}
+
+external entity Landscape {
+    -- Room discovery. Returns available rooms with metadata.
+    -- Managed by context-system spec.
+}
+
+external entity Drain {
+    -- Server shutdown coordination.
+    -- When draining, submit endpoint rejects new passes.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    http_port: Integer = 4000
+    sse_keepalive_ms: Integer = 30000
+    take_ttl_ms: Integer = 86400000
+    openai_timeout_ms: Integer = 300000
+    openai_max_tokens_default: Integer = 8192
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value Disposition {
+    -- Client-declared list of rendition types it wants to consume.
+    -- Controls which URLs appear in manifest segments.
+    renditions: [RenditionType]
+}
+
+value RenditionType = text | audio
+
+value StreamId = String
+value PassId = String
+value TakeId = String
+value ConversationId = String
+
+value PassHeader {
+    pass_id: PassId
+    conversation_id: ConversationId
+    stream_id: StreamId
+    take_id: TakeId?
+    system: String?
+    origin: String?
+    model: String?
+    profile: String?
+    ephemeral: Boolean
+    disposition: [RenditionType]
+}
+
+value ManifestSegment {
+    index: Integer
+    type: utterance | cue
+    -- For utterance:
+    renditions: SegmentRenditions? when type = utterance
+    -- For cue:
+    cue_type: String? when type = cue
+    data: Any? when type = cue
+}
+
+value SegmentRenditions {
+    text: RenditionURL? when text in disposition
+    audio: RenditionURL? when audio in disposition
+}
+
+value RenditionURL {
+    url: String
+    mime: String
+}
+
+value SSEEvent {
+    event_type: String
+    data: Any
+}
+
+value ConversationMetadata {
+    conversation_id: ConversationId
+    epoch_id: String
+    status: String
+    turn_count: Integer
+    saturation: Float?
+    handoff_generating: Boolean
+    has_process: Boolean
+    cc_session_id: String?
+    updated_at: Timestamp?
+}
+
+value TakeState {
+    take_id: TakeId
+    stream_id: StreamId
+    conversation_id: ConversationId
+    disposition: [RenditionType]
+    origin: String?
+    chunks: Map<Integer, Binary>
+    last_seq: Integer?
+    status: open | sealed | complete
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Transport {
+    -- Supervisor for the transport layer.
+    -- Starts SegmentRegistry, Manifest, and HTTP server (Bandit).
+    -- Strategy: one_for_one (children independent).
+
+    children: [SegmentRegistry, Manifest, HTTPServer]
+    strategy: one_for_one
+}
+
+entity Manifest {
+    -- Tracks segment manifests for active streams.
+    -- A manifest is a growing playlist of heterogeneous content blocks
+    -- (utterances and cues) that clients poll and consume.
+    -- Ephemeral: lives only while stream is active plus short TTL.
+
+    streams: Map<StreamId, StreamManifest>
+
+    -- Subscribes to global events to receive segment_ready and pass_complete.
+}
+
+entity StreamManifest {
+    stream_id: StreamId
+    conversation_id: ConversationId
+    disposition: [RenditionType]
+    status: streaming | complete | cancelled
+    segments: [ManifestSegment]
+    metadata: Map?
+
+    transitions status {
+        streaming -> complete
+        streaming -> cancelled
+        terminal: complete, cancelled
+    }
+}
+
+entity SegmentRegistry {
+    -- Tracks open audio takes, buffers numbered chunks, computes
+    -- missing sequences on seal, assembles final content on completion.
+    -- Segment arrival tracking is a Transport concern — the "missing chunks"
+    -- response is protocol-level bookkeeping.
+
+    takes: Map<TakeId, TakeState>
+    ttl_ms: Integer
+
+    -- Subscribes to global events for transcription_complete.
+    -- Periodic cleanup removes expired takes.
+}
+
+entity SSEConnection {
+    -- A connected SSE client. Exists for the duration of the HTTP connection.
+    -- Three scopes determine which events it receives.
+
+    scope: stream | conversation | global
+    stream_id: StreamId? when scope = stream
+    conversation_id: ConversationId? when scope = conversation
+
+    -- stream scope: exits on stream_end
+    -- conversation/global scope: long-lived, survives across passes
+}
+
+------------------------------------------------------------
+-- Rules: Submit
+------------------------------------------------------------
+
+rule Submit {
+    -- Accept user input (text or audio), create a pass, return stream_id.
+    when: HTTPRequest(method: POST, path: "/v1/submit")
+
+    requires: not Drain.draining
+
+    @guidance
+        -- If draining, returns 503 immediately.
+        -- Commands (!clear, !cancel) are synchronous — no stream, no manifest.
+        -- Normal input (text or audio) dispatches async, returns 202 + stream_id.
+}
+
+rule SubmitCommand {
+    -- Synchronous commands bypass inference entirely.
+    when: HTTPRequest(method: POST, path: "/v1/submit", text: command)
+    requires: command in ["!clear", "!cancel"]
+
+    ensures: response.status = 200
+    ensures: response.body.command = command
+
+    @guidance
+        -- !clear clears the active epoch for the conversation.
+        -- !cancel sends cancel to the running agent.
+        -- No stream_id, no manifest, no inference pass created.
+}
+
+rule SubmitText {
+    -- Normal text submission creates a pass and returns immediately.
+    when: HTTPRequest(method: POST, path: "/v1/submit", text: text)
+    requires: text != "" and text not in ["!clear", "!cancel"]
+
+    let stream_id = new_stream_id()
+    let pass_id = new_pass_id()
+    let conversation_id = request.conversation_id or "default"
+    let disposition = parse_disposition(request.disposition) or ["text"]
+
+    ensures: Manifest.stream_initialized(stream_id, conversation_id, disposition)
+    ensures: PassHeader.broadcast(pass_id, conversation_id, stream_id, disposition)
+    ensures: TextInput.broadcast(pass_id, text)
+    ensures: response.status = 202
+    ensures: response.body.stream_id = stream_id
+
+    @guidance
+        -- Ensures per-conversation TurnAssembler exists before broadcasting.
+        -- Disposition defaults to ["text"] if not provided or unparseable.
+        -- conversation_id defaults to "default" if not provided.
+}
+
+rule SubmitAudio {
+    -- Audio file submission (single file, not chunked).
+    when: HTTPRequest(method: POST, path: "/v1/submit", audio: file)
+
+    let stream_id = new_stream_id()
+    let pass_id = new_pass_id()
+    let conversation_id = request.conversation_id or "default"
+
+    ensures: Manifest.stream_initialized(stream_id, conversation_id, disposition)
+    ensures: PassHeader.broadcast(pass_id, conversation_id, stream_id, take_id: pass_id)
+    ensures: Segment.broadcast(direction: inbound, audio: file.bytes, take_id: pass_id)
+    ensures: response.status = 202
+    ensures: response.body.stream_id = stream_id
+
+    @guidance
+        -- take_id and pass_id share the same value for single-file audio.
+        -- Audio is read into memory from the multipart upload.
+}
+
+rule SubmitDraining {
+    -- Reject submissions while server is shutting down.
+    when: HTTPRequest(method: POST, path: "/v1/submit")
+    requires: Drain.draining
+
+    ensures: response.status = 503
+    ensures: response.body.error = "server is shutting down"
+}
+
+rule SubmitMissingContent {
+    -- Reject submissions with neither text nor audio.
+    when: HTTPRequest(method: POST, path: "/v1/submit")
+    requires: no text and no audio
+
+    ensures: response.status = 400
+    ensures: response.body.error = "missing text or audio"
+}
+
+------------------------------------------------------------
+-- Rules: SSE Streaming
+------------------------------------------------------------
+
+rule StreamSSE {
+    -- Per-stream SSE connection. Delivers events for a single pass,
+    -- then exits on stream_end.
+    when: HTTPRequest(method: GET, path: "/v1/streams/:id/events")
+
+    ensures: response.content_type = "text/event-stream"
+    ensures: response.headers.cache_control = "no-cache"
+    ensures: response.headers.x_accel_buffering = "no"
+    ensures: SSEConnection.created(scope: stream, stream_id: id)
+
+    @guidance
+        -- Subscribes to {:stream_raw, id} topic BEFORE checking state.
+        -- If stream already complete: replays manifest as events then sends stream_end.
+        -- If stream cancelled: sends stream_end with reason "cancelled".
+        -- Otherwise: enters live event loop.
+        -- Loop exits on stream_end event (single-pass lifecycle).
+}
+
+rule ConversationSSE {
+    -- Conversation-level SSE. Long-lived, survives across multiple passes.
+    when: HTTPRequest(method: GET, path: "/v1/conversations/:id/events")
+
+    ensures: response.content_type = "text/event-stream"
+    ensures: SSEConnection.created(scope: conversation, conversation_id: id)
+
+    @guidance
+        -- Subscribes to {:conversation, id} topic.
+        -- Does NOT exit on stream_end — relays events from all passes
+        -- in the conversation.
+        -- Silent passes (e.g. orientation) are suppressed from pass_complete.
+}
+
+rule GlobalSSE {
+    -- Global firehose. Receives all events from all conversations.
+    when: HTTPRequest(method: GET, path: "/v1/events")
+
+    ensures: response.content_type = "text/event-stream"
+    ensures: SSEConnection.created(scope: global)
+
+    @guidance
+        -- Subscribes to :global topic.
+        -- Long-lived, never exits on stream_end.
+        -- Same event relay behavior as ConversationSSE but for all conversations.
+}
+
+rule SSEKeepalive {
+    -- Prevent proxy/LB timeouts by sending SSE comment periodically.
+    when: SSEConnection.idle_for(config.sse_keepalive_ms)
+
+    ensures: SSEConnection.sends(": keepalive\n\n")
+
+    @guidance
+        -- If sending fails (client disconnected), connection closes gracefully.
+}
+
+rule LateConnectReplay {
+    -- Client connects to stream SSE after stream already completed.
+    -- Replay manifest segments as events so client doesn't miss data.
+    when: SSEConnection.created(scope: stream, stream_id: id)
+    requires: Manifest.get(id).status = complete
+
+    ensures: for seg in Manifest.get(id).segments:
+               SSEConnection.sends(event_from_segment(seg))
+    ensures: SSEConnection.sends(stream_end)
+
+    @guidance
+        -- Utterance segments become "chunk" events.
+        -- Cue segments become "cue" events.
+        -- Subscription happens before state check to avoid race.
+}
+
+------------------------------------------------------------
+-- Rules: SSE Event Types
+------------------------------------------------------------
+
+rule BroadcastStreamEvent {
+    -- Events scoped to a specific stream broadcast to all three levels.
+    when: InternalEvent(stream_id, conversation_id, event)
+
+    ensures: Events.dispatch(:global, event)
+    ensures: Events.dispatch({:conversation, conversation_id}, event)
+    ensures: Events.dispatch({:stream_raw, stream_id}, event)
+}
+
+rule BroadcastConversationEvent {
+    -- Events scoped to a conversation broadcast to conversation + global.
+    when: InternalEvent(conversation_id, event)
+
+    ensures: Events.dispatch(:global, event)
+    ensures: Events.dispatch({:conversation, conversation_id}, event)
+}
+
+rule BroadcastGlobalEvent {
+    -- Events with no scope broadcast to global only.
+    when: InternalEvent(event)
+
+    ensures: Events.dispatch(:global, event)
+}
+
+-- SSE event types emitted to clients:
+--
+-- Stream events (from inference pipeline):
+--   stream_start    — {stream_id, conversation_id, harness, model, renditions}
+--   chunk           — {stream_id, content}
+--   cue             — {stream_id, cue_type: "marker", data}
+--   tool_use        — {stream_id, data}
+--   tool_result     — {stream_id, data}
+--   stream_end      — {stream_id}
+--
+-- Lifecycle events (from conversation-lifecycle):
+--   message_received  — {conversation_id, metadata}
+--   pass_complete     — {stream_id, conversation_id, metadata}
+--   epoch_started     — {conversation_id, metadata}
+--   epoch_cleared     — {conversation_id, metadata}
+--   handoff_complete  — {conversation_id, metadata}
+--
+-- Suppressed: pass_complete with silent: true (orientation passes)
+
+------------------------------------------------------------
+-- Rules: Manifest (Poll-Based Consumption)
+------------------------------------------------------------
+
+rule ManifestInit {
+    -- Initialize a manifest when a stream is created.
+    when: StreamCreated(stream_id, conversation_id, disposition)
+
+    ensures: StreamManifest.created(
+        stream_id: stream_id,
+        conversation_id: conversation_id,
+        disposition: disposition,
+        status: streaming,
+        segments: []
+    )
+}
+
+rule ManifestAddUtterance {
+    -- Append an utterance segment when OutputSegmenter produces one.
+    when: SegmentReady(stream_id, index, type: utterance, text: text)
+    requires: StreamManifest.exists(stream_id)
+
+    ensures: StreamManifest.segments appended with ManifestSegment(
+        index: index,
+        type: utterance,
+        renditions: SegmentRenditions(
+            text: {url: "/v1/streams/{stream_id}/segments/{index}/text", mime: "text/plain"},
+            audio: {url: "/v1/streams/{stream_id}/segments/{index}/audio", mime: "audio/mp3"}
+        )
+    )
+
+    @guidance
+        -- Both text and audio URLs are stored regardless of disposition.
+        -- Disposition filtering happens at JSON serialization time.
+}
+
+rule ManifestAddCue {
+    -- Append a cue segment (marker, tool_use, tool_result).
+    when: SegmentReady(stream_id, index, type: cue, cue_type: cue_type, data: data)
+    requires: StreamManifest.exists(stream_id)
+
+    ensures: StreamManifest.segments appended with ManifestSegment(
+        index: index,
+        type: cue,
+        cue_type: cue_type,
+        data: data
+    )
+}
+
+rule ManifestComplete {
+    -- Mark manifest complete when pass finishes successfully or with error.
+    when: PassComplete(stream_id, reason: reason)
+    requires: reason in [complete, error]
+    requires: StreamManifest.exists(stream_id)
+
+    ensures: StreamManifest.status = complete
+    ensures: StreamManifest.metadata updated with {saturation, turn_count} if available
+}
+
+rule ManifestCancel {
+    -- Mark manifest cancelled when pass is cancelled.
+    when: PassComplete(stream_id, reason: cancelled)
+    requires: StreamManifest.exists(stream_id)
+
+    ensures: StreamManifest.status = cancelled
+}
+
+rule ManifestPoll {
+    -- Client polls manifest for current state.
+    when: HTTPRequest(method: GET, path: "/v1/streams/:id/manifest")
+
+    ensures: if StreamManifest.exists(id):
+               response.status = 200
+               response.body = manifest_json(id)
+             else:
+               response.status = 404
+
+    @guidance
+        -- JSON serialization applies disposition filtering:
+        -- only rendition types in disposition get URLs in the response.
+        -- Clients consume by polling until status = "complete".
+}
+
+rule DispositionFiltering {
+    -- Manifest JSON only advertises URLs for renditions in the disposition.
+    when: ManifestSerialized(stream_id)
+
+    ensures: for seg in segments where seg.type = utterance:
+               seg.renditions only contains types in StreamManifest.disposition
+
+    @guidance
+        -- If disposition = ["text"], audio URLs are omitted from JSON.
+        -- If disposition = ["audio", "text"], both URLs appear.
+        -- Default disposition is ["text"].
+}
+
+------------------------------------------------------------
+-- Rules: Segment Content Retrieval
+------------------------------------------------------------
+
+rule GetSegmentText {
+    -- Serve text content for a specific segment.
+    when: HTTPRequest(method: GET, path: "/v1/streams/:id/segments/:n/text")
+
+    ensures: if segment_exists(id, n):
+               response.status = 200
+               response.content_type = "text/plain"
+               response.body = segment_text
+             else:
+               response.status = 404
+}
+
+rule GetSegmentAudio {
+    -- Serve audio content for a specific segment.
+    -- Audio may be synthesized on-demand if not in TTS cache.
+    when: HTTPRequest(method: GET, path: "/v1/streams/:id/segments/:n/audio")
+
+    ensures: if TTSCache.has(id, n):
+               response.status = 200
+               response.content_type = "audio/mpeg"
+               response.body = audio_bytes
+             else if TTSCache.synthesis_fails:
+               response.status = 502
+             else if not segment_exists:
+               response.status = 404
+
+    @guidance
+        -- TTSCache handles both eager (pre-warmed) and lazy (on-demand) synthesis.
+        -- Implementation detail of the media pipeline, not transport.
+}
+
+------------------------------------------------------------
+-- Rules: Chunked Audio Input
+------------------------------------------------------------
+
+rule InputStart {
+    -- Open a new chunked audio take.
+    when: HTTPRequest(method: POST, path: "/v1/input/start")
+
+    let take_id = new_take_id()
+    let stream_id = new_stream_id()
+    let conversation_id = request.conversation_id or "default"
+
+    ensures: TakeState.created(
+        take_id: take_id,
+        stream_id: stream_id,
+        conversation_id: conversation_id,
+        disposition: disposition,
+        status: open,
+        chunks: {}
+    )
+    ensures: Manifest.stream_initialized(stream_id, conversation_id, disposition)
+    ensures: PassHeader.broadcast(pass_id: take_id, stream_id: stream_id, take_id: take_id)
+    ensures: response.status = 200
+    ensures: response.body = {take_id, stream_id}
+
+    @guidance
+        -- PassHeader emitted so TurnAssembler can correlate chunked takes.
+        -- Ensures per-conversation TurnAssembler exists before broadcasting.
+}
+
+rule InputChunk {
+    -- Append a numbered audio chunk to an open take.
+    when: HTTPRequest(method: PUT, path: "/v1/input/:id/:seq")
+    requires: valid_integer(seq)
+    requires: request has chunk file
+
+    ensures: Segment.broadcast(direction: inbound, audio: bytes, take_id: id, seq: seq)
+    ensures: response.status = 202
+
+    @guidance
+        -- Chunks may arrive in any order. Sequence numbers are integers starting at 0.
+        -- SegmentRegistry buffers chunks and tracks completeness.
+}
+
+rule InputDone {
+    -- Seal a take and check completeness.
+    when: HTTPRequest(method: POST, path: "/v1/input/:id/done")
+    requires: request.last_seq is integer
+
+    ensures: TakeSeal.broadcast(id, last_seq)
+    ensures: if take_complete(id, last_seq):
+               response.status = 200
+               response.body.missing = []
+             else:
+               response.status = 200
+               response.body.missing = missing_sequence_numbers
+
+    @guidance
+        -- Expected sequences: 0..last_seq inclusive.
+        -- Missing = expected minus received.
+        -- Client can re-send missing chunks then POST done again.
+        -- Complete take triggers assembly: chunks sorted by seq, concatenated.
+}
+
+rule TakeCompleteness {
+    -- Check whether a sealed take has all expected chunks.
+    when: TakeState.sealed(take_id, last_seq)
+
+    let expected = 0..last_seq
+    let received = keys(TakeState.chunks)
+
+    ensures: if expected == received:
+               TakeState.status = complete
+               assembled = chunks sorted by seq, joined
+             else:
+               TakeState remains sealed (awaiting retransmission)
+
+    @guidance
+        -- Completeness is also checked on every put_chunk after seal.
+        -- So a take can complete from chunk arrival rather than requiring
+        -- a second /done call if the missing chunk arrives later.
+}
+
+rule TakeCleanup {
+    -- Remove expired takes periodically.
+    when: Periodic(interval: config.take_ttl_ms)
+
+    ensures: for take in takes where expired(take):
+               take removed from registry
+
+    @guidance
+        -- Expired = completed takes past TTL, or open/sealed takes past TTL.
+        -- Prevents unbounded memory growth from abandoned takes.
+}
+
+------------------------------------------------------------
+-- Rules: Conversation Metadata
+------------------------------------------------------------
+
+rule GetConversation {
+    -- Return metadata about a conversation's current state.
+    when: HTTPRequest(method: GET, path: "/v1/conversations/:id")
+
+    ensures: if epoch_exists(id):
+               response.status = 200
+               response.body = ConversationMetadata(
+                   conversation_id: id,
+                   epoch_id: epoch.id,
+                   status: epoch.status,
+                   turn_count: epoch.turn_count,
+                   saturation: epoch.saturation,
+                   handoff_generating: handoff_task_alive(id),
+                   has_process: conversation_process_alive(id),
+                   cc_session_id: epoch.cc_session_id,
+                   updated_at: epoch.updated_at
+               )
+             else:
+               response.status = 404
+
+    @guidance
+        -- Reads from Store (DB), NOT from the Epoch GenServer.
+        -- This avoids blocking on a potentially busy/stuck GenServer.
+        -- handoff_generating checks Registry for active handoff Task.
+        -- has_process checks if conversation supervisor is alive.
+}
+
+rule ClearEpoch {
+    -- Explicit clear via dedicated endpoint.
+    when: HTTPRequest(method: POST, path: "/v1/clear")
+
+    let conversation_id = request.conversation_id or "default"
+
+    ensures: Epoch.cleared(conversation_id, source: "api")
+    ensures: response.status = 200
+    ensures: response.body.status = "cleared"
+}
+
+------------------------------------------------------------
+-- Rules: Room Discovery
+------------------------------------------------------------
+
+rule ListRooms {
+    -- Return available rooms (filtered by exclusion list).
+    when: HTTPRequest(method: GET, path: "/v1/rooms")
+
+    ensures: response.status = 200
+    ensures: response.body = Landscape.list_rooms(exclude: excluded_rooms)
+
+    @guidance
+        -- excluded_rooms comes from application config :excluded_rooms.
+        -- Each room has {id, name, description}.
+}
+
+------------------------------------------------------------
+-- Rules: OpenAI Compatibility
+------------------------------------------------------------
+
+rule OpenAIChatCompletions {
+    -- OpenAI-compatible chat completions endpoint.
+    -- Thin translation proxy: resolves profile, applies system prompt policy,
+    -- dispatches to backend, translates response format.
+    when: HTTPRequest(method: POST, path: "/v1/chat/completions")
+
+    requires: profile_exists(request.model)
+
+    ensures: if request.stream:
+               response = OpenAI SSE format (stream)
+             else:
+               response = OpenAI JSON format (buffered)
+
+    @guidance
+        -- No epochs, no history persistence, no landscape injection, no turn
+        -- injection. All requests are ephemeral.
+        -- Tools are NOT exposed to OpenAI clients (tool_use events swallowed).
+        -- If backend wants tool_use, treated as end_turn.
+        -- 300s timeout on both streaming and buffered modes.
+        -- Client disconnect in streaming mode kills the backend process.
+}
+
+rule OpenAISystemPromptPolicy {
+    -- Profile determines how client system messages interact with identity.
+    when: OpenAIChatCompletions dispatched
+
+    ensures: if profile.openai_system_mode = replace:
+               system = profile.identity (client system messages discarded)
+             else if profile.openai_system_mode = prepend:
+               system = profile.identity + "\n\n" + client_system
+             else if profile.openai_system_mode = append:
+               system = client_system + "\n\n" + profile.identity
+
+    @guidance
+        -- Multiple client system messages are joined with "\n\n".
+        -- nil or empty identity/client system: the non-empty one wins.
+}
+
+rule OpenAIModels {
+    -- List available profiles as OpenAI models.
+    when: HTTPRequest(method: GET, path: "/v1/models")
+
+    ensures: response.status = 200
+    ensures: response.body.object = "list"
+    ensures: for profile in Config.list_profiles():
+               response.body.data contains {id: profile.name, object: "model", owned_by: "cranium"}
+}
+
+rule OpenAIProfileNotFound {
+    -- Unknown model name returns 404.
+    when: HTTPRequest(method: POST, path: "/v1/chat/completions")
+    requires: not profile_exists(request.model)
+
+    ensures: response.status = 404
+    ensures: response.body.error.message = "model '{model}' not found"
+}
+
+------------------------------------------------------------
+-- Rules: Catch-All
+------------------------------------------------------------
+
+rule NotFound {
+    -- Any unmatched route returns 404.
+    when: HTTPRequest(path: unmatched)
+
+    ensures: response.status = 404
+    ensures: response.body.error = "not found"
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ManifestDispositionHonored {
+    -- Manifest JSON never advertises rendition URLs that aren't in the
+    -- stream's disposition.
+    for stream in Manifest.streams:
+        for seg in stream.segments where seg.type = utterance:
+            keys(seg.renditions) subset_of stream.disposition
+}
+
+invariant SSEStreamScopeExitsOnEnd {
+    -- A stream-scoped SSE connection always terminates after stream_end.
+    -- It does not survive across passes.
+    for conn in SSEConnection where conn.scope = stream:
+        after stream_end(conn.stream_id) received:
+            conn is closed
+}
+
+invariant SSEMultiScopeSurvivesEnd {
+    -- Conversation and global SSE connections do NOT exit on stream_end.
+    for conn in SSEConnection where conn.scope in [conversation, global]:
+        after stream_end received:
+            conn remains open
+}
+
+invariant LateConnectNeverLosesData {
+    -- A client connecting to a completed stream receives all segments
+    -- via manifest replay, equivalent to having been connected live.
+    for conn in SSEConnection where conn.scope = stream:
+        if stream.status = complete at connection time:
+            conn receives all segments as events + stream_end
+}
+
+invariant DrainRejectsSubmit {
+    -- While draining, no new passes are accepted via submit.
+    when Drain.draining:
+        all POST /v1/submit requests receive 503
+}
+
+invariant SilentPassesSuppressed {
+    -- Silent passes (e.g. orientation) never appear in conversation/global SSE.
+    for pass where pass.silent = true:
+        pass_complete event not broadcast to SSE clients
+}
+
+invariant OpenAIEphemeral {
+    -- OpenAI-compatible endpoint never persists to Store.
+    -- No epochs, no history, no handoffs.
+    for request via /v1/chat/completions:
+        Store not written
+}
+
+invariant OpenAIToolsSwallowed {
+    -- Tool use events from the backend are never exposed to OpenAI clients.
+    for request via /v1/chat/completions:
+        response never contains tool_call data
+}
+
+invariant TakeChunksOrderPreserved {
+    -- When a take completes, chunks are assembled in sequence order (0..N),
+    -- regardless of arrival order.
+    for take where take.status = complete:
+        assembled = take.chunks sorted by key ascending, values concatenated
+}
+
+invariant SubscribeBeforeCheck {
+    -- Stream SSE subscribes to events BEFORE checking manifest state.
+    -- This closes the race window where events arrive between check and subscribe.
+    for conn in SSEConnection where conn.scope = stream:
+        subscribe(stream_id) happens-before Manifest.get(stream_id)
+}
+
+invariant KeepalivePreventTimeout {
+    -- All SSE connections emit a keepalive comment every 30s of silence.
+    -- This prevents intermediate proxies and load balancers from closing
+    -- the connection.
+    for conn in SSEConnection:
+        max idle time without sending = config.sse_keepalive_ms
+}
+
+invariant ConversationMetadataFromStore {
+    -- GET /v1/conversations/:id reads from Store (DB), never from the
+    -- Epoch GenServer. This prevents the HTTP handler from blocking on
+    -- a potentially busy or deadlocked process.
+    for request to /v1/conversations/:id:
+        epoch state read from Store, not GenServer
+}
