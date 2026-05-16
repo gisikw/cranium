@@ -53,6 +53,26 @@ defmodule Cranium.Plugins.GlossaryTest do
       # alice, bob, chestertons-fence — each indexed by term + aliases
       assert map_size(state.entries) > 3
       assert state.seen == %{}
+      assert state.mentions == %{}
+    end
+
+    test "subscribes to on_epoch_end when update_model configured" do
+      metadata = %{
+        @metadata
+        | plugin_config: %{
+            "path" => @glossary_path,
+            "update_model" => "gemma4:27b"
+          }
+      }
+
+      assert {:ok, hooks, state} = Glossary.init(metadata)
+      assert :before_context_build in hooks
+      assert :on_epoch_end in hooks
+      assert state.update_model == "gemma4:27b"
+    end
+
+    test "does not subscribe to on_epoch_end without update_model" do
+      assert {:ok, [:before_context_build], _state} = Glossary.init(@metadata)
     end
 
     test "returns :ignore when no path configured" do
@@ -225,6 +245,301 @@ defmodule Cranium.Plugins.GlossaryTest do
 
       # entries map identity preserved (no reload happened)
       assert state.entries === state3.entries
+    end
+  end
+
+  describe "mention tracking" do
+    setup do
+      {:ok, _, state} = Glossary.init(@metadata)
+      %{state: state}
+    end
+
+    test "tracks turn indices for all matching terms", %{state: state} do
+      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice reviewed it"}
+      {:ok, _, state} = Glossary.before_context_build(ctx, state)
+
+      assert state.mentions["alice"] == [1]
+    end
+
+    test "accumulates turn indices across multiple mentions", %{state: state} do
+      ctx1 = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice reviewed it"}
+      {:ok, _, state} = Glossary.before_context_build(ctx1, state)
+
+      ctx2 = %{conversation_id: "c", epoch_id: "e", turn_count: 5, message_text: "Alice approved it"}
+      {:ok, :skip, state} = Glossary.before_context_build(ctx2, state)
+
+      assert Enum.sort(state.mentions["alice"]) == [1, 5]
+    end
+
+    test "tracks already-seen terms without re-injecting", %{state: state} do
+      # First mention — injected
+      ctx1 = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Ask Alice"}
+      {:ok, [_injection], state} = Glossary.before_context_build(ctx1, state)
+
+      # Second mention — not injected but still tracked
+      ctx2 = %{conversation_id: "c", epoch_id: "e", turn_count: 3, message_text: "Alice said no"}
+      {:ok, :skip, state} = Glossary.before_context_build(ctx2, state)
+
+      assert Enum.sort(state.mentions["alice"]) == [1, 3]
+      # Only injected once
+      assert Map.has_key?(state.seen, "alice")
+    end
+
+    test "tracks multiple terms independently", %{state: state} do
+      ctx1 = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice and Bob met"}
+      {:ok, _, state} = Glossary.before_context_build(ctx1, state)
+
+      ctx2 = %{conversation_id: "c", epoch_id: "e", turn_count: 3, message_text: "Alice called Bob"}
+      {:ok, :skip, state} = Glossary.before_context_build(ctx2, state)
+
+      assert Enum.sort(state.mentions["alice"]) == [1, 3]
+      assert Enum.sort(state.mentions["bob"]) == [1, 3]
+    end
+  end
+
+  describe "on_epoch_end auto-update" do
+    @req_plug_name CraniumGlossaryAutoUpdateTest
+
+    setup do
+      dir = Path.join(System.tmp_dir!(), "glossary_update_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, "frank.md"), """
+      ---
+      aliases: []
+      summary: "Frank is a backend engineer"
+      ---
+
+      Frank joined in 2022.
+      """)
+
+      metadata = %{
+        @metadata
+        | plugin_config: %{
+            "path" => dir,
+            "update_model" => "test-model",
+            "ollama_endpoint" => "http://localhost:11434",
+            "req_opts" => [plug: {Req.Test, @req_plug_name}]
+          }
+      }
+
+      {:ok, _, state} = Glossary.init(metadata)
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      %{state: state, dir: dir}
+    end
+
+    test "updates glossary file when model proposes update", %{state: state, dir: dir} do
+      # Simulate mentions from conversation
+      state = %{state | mentions: %{"frank" => [1, 3]}}
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        payload = Jason.decode!(body)
+
+        # Verify the prompt contains current summary and model is set
+        assert payload["model"] == "test-model"
+        [%{"content" => prompt}] = payload["messages"]
+        assert prompt =~ "Frank is a backend engineer"
+        assert payload["format"] == "json"
+
+        response = %{
+          "message" => %{
+            "content" =>
+              Jason.encode!(%{
+                "update" => true,
+                "summary" => "Frank is now a staff engineer on the platform team",
+                "rationale" => "User corrected Frank's role"
+              })
+          }
+        }
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+      end)
+
+      messages = [
+        %{"role" => "user", "content" => "Frank got promoted"},
+        %{"role" => "assistant", "content" => "That's great!"},
+        %{"role" => "user", "content" => "Yeah he's a staff engineer now"},
+        %{"role" => "assistant", "content" => "Congrats to Frank!"},
+        %{"role" => "user", "content" => "On the platform team"}
+      ]
+
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+
+      # Verify the file was updated
+      updated = File.read!(Path.join(dir, "frank.md"))
+      assert updated =~ "Frank is now a staff engineer on the platform team"
+      assert updated =~ "<!-- updated"
+      assert updated =~ "User corrected Frank's role"
+      # Body preserved
+      assert updated =~ "Frank joined in 2022."
+    end
+
+    test "does not modify file when model says no update", %{state: state, dir: dir} do
+      state = %{state | mentions: %{"frank" => [1]}}
+
+      original = File.read!(Path.join(dir, "frank.md"))
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        response = %{
+          "message" => %{
+            "content" => Jason.encode!(%{"update" => false})
+          }
+        }
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+      end)
+
+      messages = [
+        %{"role" => "user", "content" => "Frank reviewed the PR"},
+        %{"role" => "assistant", "content" => "Got it"}
+      ]
+
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+
+      # File unchanged
+      assert File.read!(Path.join(dir, "frank.md")) == original
+    end
+
+    test "survives Ollama being unreachable", %{state: state} do
+      state = %{state | mentions: %{"frank" => [1]}}
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        conn
+        |> Plug.Conn.send_resp(503, "Service Unavailable")
+      end)
+
+      messages = [%{"role" => "user", "content" => "Frank is here"}]
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+
+      # Should not raise — errors are swallowed
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+    end
+
+    test "no-ops when update_model is nil", %{state: state} do
+      state = %{state | update_model: nil, mentions: %{"frank" => [1]}}
+
+      # No stub needed — if it tries to call Ollama, the test will fail
+      messages = [%{"role" => "user", "content" => "Frank is here"}]
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+    end
+
+    test "no-ops when no terms were mentioned", %{state: state} do
+      messages = [%{"role" => "user", "content" => "Hello"}]
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+    end
+
+    test "includes windowed conversation excerpts in prompt", %{state: state} do
+      # Mention at turn index 2 with default radius 3 → messages 0..4 (clamped)
+      state = %{state | mentions: %{"frank" => [2]}}
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        payload = Jason.decode!(body)
+        [%{"content" => prompt}] = payload["messages"]
+
+        # The prompt should include surrounding messages
+        assert prompt =~ "Before Frank stuff"
+        assert prompt =~ "Frank got promoted"
+        assert prompt =~ "After Frank stuff"
+
+        response = %{
+          "message" => %{"content" => Jason.encode!(%{"update" => false})}
+        }
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+      end)
+
+      messages = [
+        %{"role" => "user", "content" => "Before Frank stuff"},
+        %{"role" => "assistant", "content" => "Okay"},
+        %{"role" => "user", "content" => "Frank got promoted"},
+        %{"role" => "assistant", "content" => "Nice!"},
+        %{"role" => "user", "content" => "After Frank stuff"}
+      ]
+
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+    end
+
+    test "merges overlapping windows from close mentions", %{state: state} do
+      # Mentions at indices 1 and 3, radius 3 → ranges [0..4] and [0..6] → merged [0..6]
+      state = %{state | mentions: %{"frank" => [1, 3]}}
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        payload = Jason.decode!(body)
+        [%{"content" => prompt}] = payload["messages"]
+
+        # All messages should be in one merged window
+        assert prompt =~ "msg-0"
+        assert prompt =~ "msg-6"
+        # No duplicates — count occurrences of "msg-2"
+        assert length(Regex.scan(~r/msg-2/, prompt)) == 1
+
+        response = %{
+          "message" => %{"content" => Jason.encode!(%{"update" => false})}
+        }
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+      end)
+
+      messages =
+        for i <- 0..8 do
+          %{"role" => (if rem(i, 2) == 0, do: "user", else: "assistant"), "content" => "msg-#{i}"}
+        end
+
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+    end
+
+    test "atomic write preserves body content", %{state: state, dir: dir} do
+      state = %{state | mentions: %{"frank" => [0]}}
+
+      Req.Test.stub(@req_plug_name, fn conn ->
+        response = %{
+          "message" => %{
+            "content" =>
+              Jason.encode!(%{
+                "update" => true,
+                "summary" => "Frank is a principal engineer",
+                "rationale" => "Role updated"
+              })
+          }
+        }
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+      end)
+
+      messages = [%{"role" => "user", "content" => "Frank is now principal"}]
+      epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
+      assert :ok = Glossary.on_epoch_end(epoch_ctx, state)
+
+      updated = File.read!(Path.join(dir, "frank.md"))
+      # Summary updated
+      assert updated =~ "Frank is a principal engineer"
+      # Body preserved
+      assert updated =~ "Frank joined in 2022."
+      # No tmp file left behind
+      refute File.exists?(Path.join(dir, "frank.md.tmp"))
     end
   end
 end

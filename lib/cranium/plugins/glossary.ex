@@ -45,6 +45,7 @@ defmodule Cranium.Plugins.Glossary do
   require Logger
 
   @default_priority 15
+  @default_window_radius 3
 
   @impl true
   def init(metadata) do
@@ -64,15 +65,28 @@ defmodule Cranium.Plugins.Glossary do
         conversation_id: metadata.conversation_id
       )
 
+      update_model = config["update_model"]
+
+      hooks =
+        if update_model,
+          do: [:before_context_build, :on_epoch_end],
+          else: [:before_context_build]
+
       state = %{
         entries: entries,
         path: path,
         priority: config["priority"] || @default_priority,
         seen: %{},
-        file_mtimes: file_mtimes
+        mentions: %{},
+        file_mtimes: file_mtimes,
+        room_name: metadata.room_name,
+        update_model: update_model,
+        ollama_endpoint: config["ollama_endpoint"] || Cranium.Config.ollama_url(),
+        window_radius: config["window_radius"] || @default_window_radius,
+        req_opts: config["req_opts"] || []
       }
 
-      {:ok, [:before_context_build], state}
+      {:ok, hooks, state}
     end
   end
 
@@ -80,23 +94,35 @@ defmodule Cranium.Plugins.Glossary do
   def before_context_build(turn_context, state) do
     state = maybe_reload(state)
     text = turn_context.message_text
-    matches = scan(text, state.entries, state.seen)
+    turn = turn_context.turn_count
 
-    case matches do
+    # Find all matching terms (regardless of seen status)
+    all_matches = scan_all(text, state.entries)
+
+    # Track every mention for epoch-end windowing
+    mentions =
+      Enum.reduce(all_matches, state.mentions, fn entry, acc ->
+        Map.update(acc, entry.term, [turn], &[turn | &1])
+      end)
+
+    state = %{state | mentions: mentions}
+
+    # Filter to only injectable (first-mention or file-changed)
+    injectable = Enum.filter(all_matches, &(not already_seen?(&1, state.seen)))
+
+    case injectable do
       [] ->
         {:ok, :skip, state}
 
       _ ->
-        # Update seen-state
         now = DateTime.utc_now()
 
         seen =
-          Enum.reduce(matches, state.seen, fn entry, acc ->
+          Enum.reduce(injectable, state.seen, fn entry, acc ->
             Map.put(acc, entry.term, %{at: now, mtime: entry.mtime})
           end)
 
-        # Build injection content
-        content = format_injection(matches)
+        content = format_injection(injectable)
         injection = %{priority: state.priority, content: content}
 
         {:ok, [injection], %{state | seen: seen}}
@@ -241,12 +267,12 @@ defmodule Cranium.Plugins.Glossary do
 
   # --- Scanning ---
 
-  defp scan(text, entries, seen) do
+  defp scan_all(text, entries) do
     entries
     |> Map.values()
     |> Enum.uniq_by(& &1.term)
     |> Enum.filter(fn entry ->
-      Regex.match?(entry.pattern, text) and not already_seen?(entry, seen)
+      Regex.match?(entry.pattern, text)
     end)
   end
 
@@ -274,5 +300,200 @@ defmodule Cranium.Plugins.Glossary do
       end)
 
     "<glossary>\n#{entries}\n</glossary>"
+  end
+
+  # --- Auto-update (epoch end) ---
+
+  @impl true
+  def on_epoch_end(epoch_end_context, state) do
+    if state.update_model do
+      do_auto_update(epoch_end_context, state)
+    end
+
+    :ok
+  end
+
+  defp do_auto_update(epoch_end_context, state) do
+    messages = epoch_end_context.messages
+
+    for {term, turn_indices} <- state.mentions do
+      entry = Map.get(state.entries, term)
+
+      if entry do
+        excerpts = build_window(turn_indices, messages, state.window_radius)
+
+        case evaluate_update(term, entry, excerpts, state) do
+          {:update, proposed_summary, rationale} ->
+            case apply_update(term, proposed_summary, rationale, state) do
+              :ok ->
+                Logger.info("Glossary: updated \"#{term}\"",
+                  rationale: rationale,
+                  room: state.room_name
+                )
+
+              {:error, reason} ->
+                Logger.warning("Glossary: failed to write update for \"#{term}\"",
+                  error: inspect(reason)
+                )
+            end
+
+          :no_update ->
+            Logger.debug("Glossary: no update needed for \"#{term}\"")
+
+          {:error, reason} ->
+            Logger.warning("Glossary: evaluation failed for \"#{term}\"",
+              error: inspect(reason)
+            )
+        end
+      end
+    end
+  end
+
+  defp build_window(turn_indices, messages, radius) do
+    len = length(messages)
+
+    # Turn indices are stored in reverse (newest first), sort them
+    ranges =
+      turn_indices
+      |> Enum.sort()
+      |> Enum.map(fn idx ->
+        {max(0, idx - radius), min(len - 1, idx + radius)}
+      end)
+
+    # Merge overlapping ranges
+    merged = merge_ranges(ranges)
+
+    # Extract and format messages
+    merged
+    |> Enum.flat_map(fn {lo, hi} ->
+      Enum.slice(messages, lo..hi)
+    end)
+    |> Enum.map_join("\n", fn msg ->
+      role = msg[:role] || msg["role"] || "unknown"
+      content = msg[:content] || msg["content"] || ""
+      "#{role}: #{content}"
+    end)
+  end
+
+  defp merge_ranges([]), do: []
+  defp merge_ranges([single]), do: [single]
+
+  defp merge_ranges([{a_lo, a_hi}, {b_lo, b_hi} | rest]) when b_lo <= a_hi + 1 do
+    merge_ranges([{a_lo, max(a_hi, b_hi)} | rest])
+  end
+
+  defp merge_ranges([head | rest]) do
+    [head | merge_ranges(rest)]
+  end
+
+  defp evaluate_update(term, entry, excerpts, state) do
+    prompt = """
+    You are reviewing a glossary entry for potential updates.
+
+    Current entry for "#{term}":
+    #{entry.summary}
+
+    Conversation excerpts where "#{term}" was discussed:
+    #{excerpts}
+
+    The user's statements are ground truth. If the user corrects, \
+    updates, or provides new information about this term, propose \
+    an updated summary. If the conversation merely mentions the \
+    term without adding or correcting information, respond with \
+    no update.
+
+    Respond as JSON:
+    {"update": true, "summary": "...", "rationale": "..."} or
+    {"update": false}
+    """
+
+    body = %{
+      model: state.update_model,
+      messages: [%{role: "user", content: prompt}],
+      stream: false,
+      format: "json"
+    }
+
+    req_opts =
+      [json: body, receive_timeout: 60_000] ++ state.req_opts
+
+    case Req.post("#{state.ollama_endpoint}/api/chat", req_opts) do
+      {:ok, %{status: 200, body: resp}} ->
+        parse_update_response(resp)
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    e ->
+      {:error, {:raised, Exception.message(e)}}
+  end
+
+  defp parse_update_response(resp) when is_binary(resp) do
+    case Jason.decode(resp) do
+      {:ok, parsed} -> parse_update_response(parsed)
+      {:error, _} -> {:error, :invalid_json}
+    end
+  end
+
+  defp parse_update_response(%{"message" => %{"content" => content}}) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, parsed} -> parse_update_payload(parsed)
+      {:error, _} -> {:error, :invalid_json}
+    end
+  end
+
+  defp parse_update_response(%{} = payload) do
+    parse_update_payload(payload)
+  end
+
+  defp parse_update_response(_), do: {:error, :unexpected_response}
+
+  defp parse_update_payload(%{"update" => true, "summary" => summary, "rationale" => rationale})
+       when is_binary(summary) and is_binary(rationale) do
+    {:update, summary, rationale}
+  end
+
+  defp parse_update_payload(%{"update" => false}), do: :no_update
+  defp parse_update_payload(_), do: {:error, :malformed_payload}
+
+  defp apply_update(term, proposed_summary, rationale, state) do
+    file = Path.join(state.path, "#{term}.md")
+
+    case File.read(file) do
+      {:ok, content} ->
+        updated = replace_summary(content, proposed_summary)
+        date = Date.utc_today() |> Date.to_iso8601()
+        changelog = "\n<!-- updated #{date} from session #{state.room_name}: #{rationale} -->\n"
+        final = updated <> changelog
+
+        # Atomic write: temp file then rename
+        tmp = file <> ".tmp"
+
+        with :ok <- File.write(tmp, final),
+             :ok <- File.rename(tmp, file) do
+          :ok
+        else
+          {:error, reason} ->
+            File.rm(tmp)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replace_summary(content, new_summary) do
+    # Replace the summary line in YAML frontmatter, preserving quoting style
+    Regex.replace(
+      ~r/^(summary:\s*).*$/m,
+      content,
+      "\\1\"#{String.replace(new_summary, "\"", "\\\"")}\"",
+      global: false
+    )
   end
 end

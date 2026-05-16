@@ -1,0 +1,420 @@
+-- allium: 3
+
+-- Glossary Plugin
+--
+-- First-mention glossary injection and conversational auto-update.
+--
+-- The glossary plugin loads term definitions from markdown files with YAML
+-- frontmatter. During a session, it injects context on first mention of
+-- each term. At session end, it reviews conversation excerpts around
+-- mentioned terms and updates glossary files when the conversation
+-- contains corrective or new information.
+--
+-- Scope: Term loading, matching, injection, mention tracking, epoch-end
+-- auto-update via local LLM inference. Does NOT cover new entry creation
+-- or LRU eviction (see cv2-d062).
+--
+-- Depends on: plugin-system.allium (Plugin, HookPoint, TurnContext,
+--             EpochEndContext, Injection, DispatchBeforeContextBuild,
+--             DispatchOnEpochEnd)
+
+use plugin_system
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    path: String
+        -- Filesystem path to the glossary directory containing .md files.
+        -- Required. Plugin ignores the session if path is missing or
+        -- not a directory.
+
+    priority: Integer = 15
+        -- Injection priority for glossary content. Sits between
+        -- time-gap (10) and landscape (20) by default.
+
+    ollama_endpoint: String = "http://localhost:11434"
+        -- Ollama API endpoint for auto-update inference.
+
+    update_model: String
+        -- Model to use for auto-update inference (e.g., "gemma4:27b").
+        -- Required for auto-update. If not configured, auto-update
+        -- is disabled and the plugin only does injection.
+
+    window_radius: Integer = 3
+        -- Number of turns before and after each mention to include
+        -- in the context window for auto-update inference.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value GlossaryEntry {
+    term: String
+        -- Canonical term. Derived from the filename minus .md extension.
+    aliases: [String]
+        -- Additional match patterns from frontmatter.
+    summary: String
+        -- One-line summary from frontmatter.
+    body: String?
+        -- Optional extended content below the frontmatter.
+    mtime: Timestamp?
+        -- File modification time. Used for change detection.
+    pattern: Regex
+        -- Compiled regex matching term and all aliases,
+        -- case-insensitive with word boundaries.
+        -- Hyphens and spaces are interchangeable in matches.
+}
+
+value MentionRecord {
+    term: String
+    turn_indices: [Integer]
+        -- All turn positions in the conversation where this term
+        -- was mentioned. Used for windowing at epoch end.
+
+    @guidance
+        -- Tracked for every mention, not just first injection.
+        -- A term injected at turn 3 and mentioned again at turns
+        -- 7 and 12 has turn_indices [3, 7, 12]. The dedup logic
+        -- for injection is separate from mention tracking.
+}
+
+value UpdateProposal {
+    term: String
+    current_summary: String
+    proposed_summary: String
+    rationale: String
+
+    @guidance
+        -- Returned by the local model when it determines the
+        -- conversation contains corrective or new information
+        -- about a glossary term. The rationale is a one-line
+        -- explanation of what changed and why. Persisted in
+        -- the changelog for auditability.
+}
+
+value ConversationWindow {
+    term: String
+    excerpts: [String]
+
+    @guidance
+        -- A set of conversation excerpts around mentions of a term.
+        -- Each excerpt is window_radius turns before and after the
+        -- mention, formatted with role labels (user/assistant).
+        -- Overlapping windows are merged to avoid redundancy.
+}
+
+------------------------------------------------------------
+-- Entity
+------------------------------------------------------------
+
+entity GlossaryPlugin {
+    entries: Map<String, GlossaryEntry>
+        -- Indexed by canonical term and each alias.
+    path: String
+    priority: Integer
+    seen: Map<String, SeenRecord>
+    mentions: Map<String, MentionRecord>
+    file_mtimes: Map<String, Timestamp>
+
+    @guidance
+        -- Session-scoped state. `seen` gates injection (first mention
+        -- only, re-eligible on file change). `mentions` tracks all
+        -- occurrences for epoch-end windowing regardless of injection.
+}
+
+value SeenRecord {
+    at: Timestamp
+    mtime: Timestamp?
+
+    @guidance
+        -- Records when a term was first injected and the file's mtime
+        -- at that point. If the file's mtime changes mid-session,
+        -- the term becomes eligible for re-injection.
+}
+
+------------------------------------------------------------
+-- Rules: Initialization
+------------------------------------------------------------
+
+rule InitGlossary {
+    when: Plugin.init(metadata)
+
+    requires: metadata.plugin_config.path is present
+    requires: metadata.plugin_config.path is a directory
+
+    let entries, file_mtimes = load all .md files from path,
+        parse YAML frontmatter, extract term/aliases/summary/body,
+        build regex patterns, index by term and aliases
+
+    ensures: GlossaryPlugin.created(
+        entries: entries,
+        path: path,
+        priority: config.priority,
+        seen: empty,
+        mentions: empty,
+        file_mtimes: file_mtimes
+    )
+    ensures: plugin subscribes to [before_context_build, on_epoch_end]
+
+    @guidance
+        -- Returns :ignore if path is missing or not a directory.
+        -- Subscribes to both hooks: before_context_build for injection,
+        -- on_epoch_end for auto-update.
+}
+
+------------------------------------------------------------
+-- Rules: Injection (existing behavior)
+------------------------------------------------------------
+
+rule ReloadOnFileChange {
+    when: before_context_build is invoked
+
+    let current_mtimes = stat all .md files in path
+
+    requires: current_mtimes != stored file_mtimes
+
+    ensures: entries are reloaded from disk
+    ensures: file_mtimes updated to current
+    ensures: terms whose files changed become re-eligible for injection
+
+    @guidance
+        -- Checked on every turn. If no files changed, this is a
+        -- no-op (mtime map comparison). Reload is full — all files
+        -- are re-parsed. This is acceptable because glossary
+        -- directories are small (tens to low hundreds of files).
+}
+
+rule InjectOnFirstMention {
+    when: before_context_build(turn_context)
+
+    let text = turn_context.message_text
+    let matching = entries where pattern matches text
+    let injectable = matching where not already_seen
+        or seen but file mtime has changed since seen
+
+    -- Always track the mention, regardless of injection
+    ensures: mentions updated with turn_context.turn_count
+        for all matching terms (injectable or not)
+
+    -- Inject only for first-mention terms
+    ensures: injection with formatted glossary content
+        when injectable is non-empty
+    ensures: seen updated with current timestamp and mtime
+        for all injectable terms
+    ensures: :skip returned when injectable is empty
+
+    @guidance
+        -- Injection format:
+        --   <glossary>
+        --   - **term**: summary
+        --     optional body
+        --   </glossary>
+        --
+        -- Multiple terms matched on the same turn are combined
+        -- into a single injection, sorted alphabetically.
+        --
+        -- Mention tracking is unconditional — even terms that
+        -- were already injected get their turn index recorded
+        -- in the mentions map. This is critical for epoch-end
+        -- windowing: corrections often occur on later mentions,
+        -- not on the injection turn.
+}
+
+------------------------------------------------------------
+-- Rules: Auto-Update (epoch end)
+------------------------------------------------------------
+
+rule BuildConversationWindows {
+    when: on_epoch_end(epoch_end_context)
+
+    requires: update_model is configured
+
+    let mentioned_terms = keys of mentions map
+    let messages = epoch_end_context.messages
+
+    for term in mentioned_terms:
+        let indices = mentions[term].turn_indices
+        let windows = for idx in indices:
+            messages[idx - window_radius .. idx + window_radius]
+        let merged = merge overlapping windows
+        let formatted = format with role labels (user/assistant)
+
+    ensures: ConversationWindow created for each mentioned term
+
+    @guidance
+        -- Window radius is configurable (default 3). A mention at
+        -- turn 10 with radius 3 produces turns 7-13. If two mentions
+        -- are at turns 10 and 12, windows [7-13] and [9-15] merge
+        -- into [7-15].
+        --
+        -- Turn indices that fall outside message bounds are clamped
+        -- (no negative indices, no past-end indices).
+}
+
+rule EvaluateTermUpdate {
+    when: ConversationWindow created for term
+
+    let entry = glossary entry for term
+    let window = ConversationWindow for term
+
+    -- Dispatch to local LLM via Ollama
+    let prompt = """
+        You are reviewing a glossary entry for potential updates.
+
+        Current entry for "{term}":
+        {entry.summary}
+
+        Conversation excerpts where "{term}" was discussed:
+        {window.excerpts}
+
+        The user's statements are ground truth. If the user corrects,
+        updates, or provides new information about this term, propose
+        an updated summary. If the conversation merely mentions the
+        term without adding or correcting information, respond with
+        null.
+
+        Respond as JSON:
+        {"update": true, "summary": "...", "rationale": "..."} or
+        {"update": false}
+    """
+
+    let response = invoke ollama with update_model, prompt,
+        format: json
+
+    ensures: UpdateProposal created when response.update = true
+    ensures: no action when response.update = false
+
+    @guidance
+        -- The prompt explicitly frames no-update as the default.
+        -- This is critical to prevent model drift — the model will
+        -- want to rewrite entries that don't need rewriting.
+        --
+        -- The model sees only the windowed excerpts, not the full
+        -- conversation. This is intentional: it avoids needle-in-
+        -- haystack failures on long conversations and keeps the
+        -- context small enough for reliable local model inference.
+        --
+        -- Structured JSON output is enforced via Ollama's format
+        -- parameter.
+}
+
+rule ApplyUpdate {
+    when: UpdateProposal created for term
+
+    let file = path / "{term}.md"
+    let entry = glossary entry for term
+
+    ensures: file's YAML frontmatter summary is replaced
+        with proposed_summary
+    ensures: file's body content is preserved unchanged
+    ensures: changelog line appended to file:
+        "<!-- updated {date} from session {room}: {rationale} -->"
+
+    @guidance
+        -- Only the summary field in frontmatter is updated. Aliases,
+        -- body content, and any other frontmatter fields are preserved.
+        --
+        -- The changelog is an HTML comment appended to the end of the
+        -- file, so it doesn't render in normal markdown views but is
+        -- visible in the raw file for auditability.
+        --
+        -- File writes are atomic (write to temp, rename) to prevent
+        -- corruption if the process is interrupted.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant MentionTrackingUnconditional {
+    for turn in Turns:
+        when a glossary term matches the user's message,
+        the term's turn index is recorded in mentions
+        regardless of whether injection occurred
+
+    @guidance
+        -- This is the key invariant that makes auto-update work.
+        -- Without tracking non-injected mentions, the windowing
+        -- at epoch end would miss conversational corrections that
+        -- happen after the first injection.
+}
+
+invariant UpdateRequiresCorrection {
+    for proposal in UpdateProposals:
+        the conversation excerpts contain explicit corrective
+        or new information from the user about the term
+
+    @guidance
+        -- The model must not rewrite entries based on:
+        -- - Mere mentions without new information
+        -- - Assistant's statements (only user is authoritative)
+        -- - Inferred or speculative information
+        -- - Stylistic preferences
+        --
+        -- This invariant is enforced via prompt engineering, not
+        -- programmatic validation. The prompt explicitly frames
+        -- no-update as the default case.
+}
+
+invariant AutoUpdateNonBlocking {
+    for epochs in Epochs:
+        auto-update failures do not prevent epoch clearing
+
+    @guidance
+        -- If Ollama is unreachable, a model call times out, or a
+        -- file write fails, the error is logged and the next term
+        -- is processed. Epoch clearing and handoff generation
+        -- proceed regardless.
+}
+
+invariant FileWriteAtomic {
+    for updates in ApplyUpdate:
+        glossary file writes are atomic (write-then-rename)
+
+    @guidance
+        -- Prevents partial writes from corrupting glossary files.
+        -- The temp file is written in the same directory to ensure
+        -- same-filesystem rename.
+}
+
+invariant BodyPreserved {
+    for updates in ApplyUpdate:
+        the body content below the YAML frontmatter is never
+        modified by auto-update
+
+    @guidance
+        -- Auto-update only touches the summary field in frontmatter.
+        -- Extended body content is user-authored context that the
+        -- plugin must not alter.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Update model selection" {
+    -- Which local model is best for this task? Gemma 4 27B and
+    -- QWen 3.6 are candidates. The task is judgment-heavy
+    -- (did the user correct this?) with light generation (rewrite
+    -- one sentence). May need experimentation to find the right
+    -- balance of accuracy and speed.
+}
+
+open question "Alias updates" {
+    -- Should auto-update also be able to add or modify aliases?
+    -- Example: user refers to "Bri" for Brian Coleman, and the
+    -- model proposes adding "bri" as an alias. Currently out of
+    -- scope — only summary is updated.
+}
+
+open question "Conflict with manual edits" {
+    -- If a user manually edits a glossary file between sessions,
+    -- and the auto-update proposes a change based on stale context,
+    -- the auto-update could overwrite the manual edit. The changelog
+    -- provides auditability but not prevention. Possible mitigation:
+    -- compare mtime before writing and skip if the file changed
+    -- since session start.
+}
