@@ -319,7 +319,8 @@ defmodule Cranium.Plugins.GlossaryTest do
             "path" => dir,
             "update_model" => "test-model",
             "ollama_endpoint" => "http://localhost:11434",
-            "req_opts" => [plug: {Req.Test, @req_plug_name}]
+            "req_opts" => [plug: {Req.Test, @req_plug_name}],
+            "async" => false
           }
       }
 

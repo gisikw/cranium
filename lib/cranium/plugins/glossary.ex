@@ -83,7 +83,8 @@ defmodule Cranium.Plugins.Glossary do
         update_model: update_model,
         ollama_endpoint: config["ollama_endpoint"] || Cranium.Config.ollama_url(),
         window_radius: config["window_radius"] || @default_window_radius,
-        req_opts: config["req_opts"] || []
+        req_opts: config["req_opts"] || [],
+        async: Map.get(config, "async", true)
       }
 
       {:ok, hooks, state}
@@ -306,8 +307,13 @@ defmodule Cranium.Plugins.Glossary do
 
   @impl true
   def on_epoch_end(epoch_end_context, state) do
-    if state.update_model do
-      do_auto_update(epoch_end_context, state)
+    if state.update_model && map_size(state.mentions) > 0 do
+      if state.async do
+        # Fire-and-forget: don't block the GenServer (invariant: AutoUpdateNonBlocking)
+        Task.start(fn -> do_auto_update(epoch_end_context, state) end)
+      else
+        do_auto_update(epoch_end_context, state)
+      end
     end
 
     :ok
