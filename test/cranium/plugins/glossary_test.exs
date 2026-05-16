@@ -49,7 +49,9 @@ defmodule Cranium.Plugins.GlossaryTest do
 
   describe "init/1" do
     test "loads glossary from configured path" do
-      assert {:ok, [:before_context_build], state} = Glossary.init(@metadata)
+      assert {:ok, hooks, state} = Glossary.init(@metadata)
+      assert :before_context_build in hooks
+      assert :after_pass_complete in hooks
       # alice, bob, chestertons-fence — each indexed by term + aliases
       assert map_size(state.entries) > 3
       assert state.seen == %{}
@@ -67,12 +69,16 @@ defmodule Cranium.Plugins.GlossaryTest do
 
       assert {:ok, hooks, state} = Glossary.init(metadata)
       assert :before_context_build in hooks
+      assert :after_pass_complete in hooks
       assert :on_epoch_end in hooks
       assert state.update_model == "gemma4:27b"
     end
 
     test "does not subscribe to on_epoch_end without update_model" do
-      assert {:ok, [:before_context_build], _state} = Glossary.init(@metadata)
+      assert {:ok, hooks, _state} = Glossary.init(@metadata)
+      assert :before_context_build in hooks
+      assert :after_pass_complete in hooks
+      refute :on_epoch_end in hooks
     end
 
     test "returns :ignore when no path configured" do
@@ -294,6 +300,53 @@ defmodule Cranium.Plugins.GlossaryTest do
 
       assert Enum.sort(state.mentions["alice"]) == [1, 3]
       assert Enum.sort(state.mentions["bob"]) == [1, 3]
+    end
+  end
+
+  describe "after_pass_complete (assistant mention tracking)" do
+    setup do
+      {:ok, _, state} = Glossary.init(@metadata)
+      %{state: state}
+    end
+
+    test "tracks mentions in assistant output", %{state: state} do
+      ctx = %{conversation_id: "c", epoch_id: "e", output: "Alice is a great engineer", turn_count: 2}
+      {:ok, state} = Glossary.after_pass_complete(ctx, state)
+
+      assert state.mentions["alice"] == [2]
+    end
+
+    test "accumulates with existing user-side mentions", %{state: state} do
+      # User mentions Alice on turn 1
+      user_ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Tell me about Alice"}
+      {:ok, _, state} = Glossary.before_context_build(user_ctx, state)
+      assert state.mentions["alice"] == [1]
+
+      # Assistant mentions Alice in response (same turn)
+      pass_ctx = %{conversation_id: "c", epoch_id: "e", output: "Alice is a senior engineer on the platform team.", turn_count: 1}
+      {:ok, state} = Glossary.after_pass_complete(pass_ctx, state)
+
+      assert Enum.sort(state.mentions["alice"]) == [1, 1]
+    end
+
+    test "catches assistant-only mentions not in user message", %{state: state} do
+      # User doesn't mention Bob
+      user_ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 3, message_text: "Who's on the team?"}
+      {:ok, :skip, state} = Glossary.before_context_build(user_ctx, state)
+      assert state.mentions == %{}
+
+      # But assistant names Bob in the response
+      pass_ctx = %{conversation_id: "c", epoch_id: "e", output: "Bob is the product manager for this team.", turn_count: 4}
+      {:ok, state} = Glossary.after_pass_complete(pass_ctx, state)
+
+      assert state.mentions["bob"] == [4]
+    end
+
+    test "skips when no terms match in assistant output", %{state: state} do
+      ctx = %{conversation_id: "c", epoch_id: "e", output: "Sure, I'll help with that.", turn_count: 1}
+      {:ok, state} = Glossary.after_pass_complete(ctx, state)
+
+      assert state.mentions == %{}
     end
   end
 

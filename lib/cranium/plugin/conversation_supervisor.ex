@@ -109,6 +109,30 @@ defmodule Cranium.Plugin.ConversationSupervisor do
   end
 
   @doc """
+  Dispatch after_pass_complete to all subscribed plugins for a conversation.
+
+  State-updating hook — each plugin can update its internal state based on
+  the assistant's output (e.g., tracking mentions of glossary terms in
+  responses). Returns :ok; plugin crashes and timeouts are swallowed.
+  """
+  @spec dispatch_after_pass_complete(String.t(), Cranium.Plugin.pass_complete_context()) :: :ok
+  def dispatch_after_pass_complete(conversation_id, context) do
+    case Registry.lookup(@registry, {conversation_id, :plugins}) do
+      [{sup_pid, _}] ->
+        children = DynamicSupervisor.which_children(sup_pid)
+
+        for {_, pid, :worker, _} when is_pid(pid) <- children do
+          Cranium.Plugin.Server.call_hook(pid, :after_pass_complete, context)
+        end
+
+        :ok
+
+      [] ->
+        :ok
+    end
+  end
+
+  @doc """
   Dispatch on_epoch_end to all subscribed plugins for a conversation.
 
   Fire-and-forget — no injections returned. Each plugin receives the

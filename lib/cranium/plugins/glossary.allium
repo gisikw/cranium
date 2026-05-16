@@ -15,7 +15,8 @@
 -- or LRU eviction (see cv2-d062).
 --
 -- Depends on: plugin-system.allium (Plugin, HookPoint, TurnContext,
---             EpochEndContext, Injection, DispatchBeforeContextBuild,
+--             PassCompleteContext, EpochEndContext, Injection,
+--             DispatchBeforeContextBuild, DispatchAfterPassComplete,
 --             DispatchOnEpochEnd)
 
 use plugin_system
@@ -157,12 +158,16 @@ rule InitGlossary {
         mentions: empty,
         file_mtimes: file_mtimes
     )
-    ensures: plugin subscribes to [before_context_build, on_epoch_end]
+    ensures: plugin subscribes to [before_context_build, after_pass_complete]
+        when update_model is not configured
+    ensures: plugin subscribes to [before_context_build, after_pass_complete, on_epoch_end]
+        when update_model is configured
 
     @guidance
         -- Returns :ignore if path is missing or not a directory.
-        -- Subscribes to both hooks: before_context_build for injection,
-        -- on_epoch_end for auto-update.
+        -- Always subscribes to before_context_build (injection) and
+        -- after_pass_complete (assistant mention tracking). Subscribes
+        -- to on_epoch_end only when update_model is configured.
 }
 
 ------------------------------------------------------------
@@ -221,6 +226,29 @@ rule InjectOnFirstMention {
         -- in the mentions map. This is critical for epoch-end
         -- windowing: corrections often occur on later mentions,
         -- not on the injection turn.
+}
+
+rule TrackAssistantMentions {
+    when: after_pass_complete(pass_complete_context)
+
+    let output = pass_complete_context.output
+    let matching = entries where pattern matches output
+
+    ensures: mentions updated with pass_complete_context.turn_count
+        for all matching terms
+
+    @guidance
+        -- Scans the assistant's output for glossary term mentions
+        -- and records them in the mentions map. This closes a gap
+        -- where the assistant surfaces stale data (e.g., "Brighton
+        -- is five months old") and the user corrects it with a
+        -- pronoun ("he's seven months now"). Without assistant
+        -- mention tracking, the correction wouldn't be windowed
+        -- for epoch-end auto-update because "Brighton" only appears
+        -- in the assistant's output, not the user's reply.
+        --
+        -- Does NOT trigger injection — injection is user-turn only.
+        -- This hook is purely for mention bookkeeping.
 }
 
 ------------------------------------------------------------
@@ -331,7 +359,8 @@ rule ApplyUpdate {
 
 invariant MentionTrackingUnconditional {
     for turn in Turns:
-        when a glossary term matches the user's message,
+        when a glossary term matches the user's message
+        or the assistant's response,
         the term's turn index is recorded in mentions
         regardless of whether injection occurred
 
@@ -340,6 +369,10 @@ invariant MentionTrackingUnconditional {
         -- Without tracking non-injected mentions, the windowing
         -- at epoch end would miss conversational corrections that
         -- happen after the first injection.
+        --
+        -- Assistant responses are tracked via after_pass_complete,
+        -- ensuring that corrections to stale assistant output are
+        -- captured even when the user's reply uses pronouns.
 }
 
 invariant UpdateRequiresCorrection {

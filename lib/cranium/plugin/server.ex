@@ -112,6 +112,7 @@ defmodule Cranium.Plugin.Server do
   defp safe_callback(module, callback, args) do
     case apply(module, callback, args) do
       {:ok, result, new_state} -> {:ok, result, new_state}
+      {:ok, new_state} -> {:ok, :ok, new_state}
       :ok -> {:ok, :ok}
       other -> {:error, {:unexpected_return, other}}
     end

@@ -59,6 +59,16 @@ defmodule Cranium.Effects.PassReactor do
         profile: payload[:profile],
         interrupted_context: nil
       })
+
+      # Notify plugins of assistant output (e.g., glossary mention tracking)
+      if payload.output != "" do
+        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(cid, %{
+          conversation_id: cid,
+          epoch_id: payload.epoch_id,
+          output: payload.output,
+          turn_count: payload.turn_count
+        })
+      end
     end
 
     signal_pass_done(cid, stream_id)

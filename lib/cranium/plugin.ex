@@ -62,6 +62,13 @@ defmodule Cranium.Plugin do
           message_text: String.t()
         }
 
+  @type pass_complete_context :: %{
+          conversation_id: String.t(),
+          epoch_id: String.t(),
+          output: String.t(),
+          turn_count: non_neg_integer()
+        }
+
   @type epoch_end_context :: %{
           conversation_id: String.t(),
           epoch_id: String.t(),
@@ -76,7 +83,10 @@ defmodule Cranium.Plugin do
   @callback before_context_build(turn_context(), state :: term()) ::
               {:ok, :skip | [injection()], new_state :: term()}
 
+  @callback after_pass_complete(pass_complete_context(), state :: term()) ::
+              {:ok, new_state :: term()}
+
   @callback on_epoch_end(epoch_end_context(), state :: term()) :: :ok
 
-  @optional_callbacks [before_context_build: 2, on_epoch_end: 2]
+  @optional_callbacks [before_context_build: 2, after_pass_complete: 2, on_epoch_end: 2]
 end

@@ -7,6 +7,10 @@ defmodule Cranium.Plugins.Glossary do
   of known terms. Injects context snippets only on first mention per session,
   avoiding context bloat from repeated injections.
 
+  Also tracks mentions in assistant responses via `after_pass_complete`, so
+  corrections to stale glossary data surface in the epoch-end update window
+  even when the user's reply doesn't repeat the entity name.
+
   ## Configuration
 
   In profiles.yaml:
@@ -69,8 +73,8 @@ defmodule Cranium.Plugins.Glossary do
 
       hooks =
         if update_model,
-          do: [:before_context_build, :on_epoch_end],
-          else: [:before_context_build]
+          do: [:before_context_build, :after_pass_complete, :on_epoch_end],
+          else: [:before_context_build, :after_pass_complete]
 
       state = %{
         entries: entries,
@@ -128,6 +132,18 @@ defmodule Cranium.Plugins.Glossary do
 
         {:ok, [injection], %{state | seen: seen}}
     end
+  end
+
+  @impl true
+  def after_pass_complete(context, state) do
+    matches = scan_all(context.output, state.entries)
+
+    mentions =
+      Enum.reduce(matches, state.mentions, fn entry, acc ->
+        Map.update(acc, entry.term, [context.turn_count], &[context.turn_count | &1])
+      end)
+
+    {:ok, %{state | mentions: mentions}}
   end
 
   # --- Reload on file change ---

@@ -98,6 +98,21 @@ value EpochEndContext {
         -- Messages are ordered chronologically (oldest first).
 }
 
+value PassCompleteContext {
+    conversation_id: String
+    epoch_id: String
+    output: String
+    turn_count: Integer
+
+    @guidance
+        -- Passed to after_pass_complete callbacks after inference.
+        -- Contains the assistant's output text and the turn count
+        -- (already incremented from the user's turn). Plugins use
+        -- this for observation/bookkeeping (e.g., tracking which
+        -- glossary terms the assistant mentioned so corrections
+        -- in subsequent user messages are captured by windowing).
+}
+
 value Injection {
     priority: Integer
     content: String
@@ -159,8 +174,10 @@ enum HookPoint {
         --   contribute content to the turn's system-reminder prefix.
         --
         -- after_pass_complete: Fires after inference completes and the
-        --   response is persisted. Observation-only for now.
-        --   Not yet specified.
+        --   assistant response is persisted. Receives the output text
+        --   and turn count. Plugins can update their state (e.g.,
+        --   tracking entity mentions in assistant responses). Returns
+        --   {:ok, new_state}.
         --
         -- on_epoch_start: Fires when a new epoch is created. Distinct
         --   from plugin init — init fires on process start (which may
@@ -273,6 +290,44 @@ rule DispatchBeforeContextBuild {
         -- builtin injections (time-gap, landscape, saturation,
         -- interrupted-context) and sorted by priority. The result
         -- is the final injection prefix for the turn.
+}
+
+rule DispatchAfterPassComplete {
+    when: Pass.completed(conversation_id, epoch_id, output, turn_count)
+        and output is non-empty
+        and pass is not ephemeral
+
+    let plugins = active Plugins
+        where after_pass_complete in subscribed_hooks
+        and session_metadata.conversation_id = conversation_id
+
+    let pass_complete_context = PassCompleteContext(
+        conversation_id,
+        epoch_id,
+        output,
+        turn_count
+    )
+
+    for p in plugins:
+        let {:ok, new_state} = invoke p.after_pass_complete(pass_complete_context)
+        -- Plugin state is updated with the new state.
+
+    ensures: plugin state is updated before the next turn's before_context_build
+    ensures: turn pipeline proceeds normally when a plugin crashes during invocation
+
+    @guidance
+        -- Fires from PassReactor after the assistant message is persisted
+        -- to the Store. This ordering is intentional: the message is already
+        -- in history when the hook fires, so plugins can rely on the Store
+        -- being consistent.
+        --
+        -- Primary use case: glossary plugin scanning assistant output for
+        -- entity mentions, so corrections to stale data in subsequent user
+        -- messages are captured by the epoch-end windowing even when the
+        -- user's reply uses pronouns instead of entity names.
+        --
+        -- Unlike before_context_build, this hook does NOT produce injections.
+        -- It is state-updating only.
 }
 
 rule DispatchOnEpochEnd {
