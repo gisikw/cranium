@@ -46,7 +46,7 @@ defmodule Cranium.Plugin.Server do
   Returns `{:ok, result}` on success, `{:error, reason}` on failure.
   The caller should treat errors as `:skip`.
   """
-  @spec call_hook(pid(), Cranium.Plugin.hook(), term(), timeout()) ::
+  @spec call_hook(pid(), Cranium.Plugin.hook(), term(), timeout() | nil) ::
           {:ok, term()} | {:error, term()}
   def call_hook(pid, hook, context, timeout \\ nil) do
     timeout = timeout || default_timeout(hook)
