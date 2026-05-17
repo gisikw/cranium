@@ -4,8 +4,8 @@ defmodule Cranium.Backend.LLM.CCMcpServerTest do
   alias Cranium.Backend.LLM.CCMcpServer
 
   describe "marker_tools/0" do
-    test "returns the four marker and meta-tool names" do
-      assert CCMcpServer.marker_tools() == ~w(show show_code play_audio clear_context)
+    test "returns the marker and meta-tool names" do
+      assert CCMcpServer.marker_tools() == ~w(show show_code play_audio switch_room clear_context)
     end
   end
 
@@ -80,11 +80,12 @@ defmodule Cranium.Backend.LLM.CCMcpServerTest do
       {:ok, list_resp} = Jason.decode(Enum.at(lines, 1))
       assert list_resp["id"] == 2
       tools = list_resp["result"]["tools"]
-      assert length(tools) == 4
+      assert length(tools) == 5
       tool_names = Enum.map(tools, & &1["name"])
       assert "show" in tool_names
       assert "show_code" in tool_names
       assert "play_audio" in tool_names
+      assert "switch_room" in tool_names
       assert "clear_context" in tool_names
 
       {:ok, call_resp} = Jason.decode(Enum.at(lines, 2))

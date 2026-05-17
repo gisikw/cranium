@@ -28,5 +28,14 @@ defmodule Cranium.Inference.Agent.MarkerEmitterTest do
       assert response == ~s({"success": true})
       assert marker.marker == :play_audio
     end
+
+    test "returns fake success and marker for :switch_room" do
+      {response, marker} = MarkerEmitter.handle(:switch_room, %{"room_id" => "fort-nix"})
+
+      assert response == ~s({"success": true})
+      assert marker.type == :marker
+      assert marker.marker == :switch_room
+      assert marker.payload == %{"room_id" => "fort-nix"}
+    end
   end
 end

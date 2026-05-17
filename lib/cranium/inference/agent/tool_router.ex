@@ -20,7 +20,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
   whether approval is needed.
   """
 
-  @marker_tools ~w(show show_code play_audio)
+  @marker_tools ~w(show show_code play_audio switch_room)
 
   @type route_result ::
           {:marker, atom(), map()}

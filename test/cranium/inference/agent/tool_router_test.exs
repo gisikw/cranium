@@ -28,6 +28,11 @@ defmodule Cranium.Inference.Agent.ToolRouterTest do
       assert {:marker, :show, %{"text" => "hello"}} = result
     end
 
+    test "routes switch_room as a marker tool" do
+      result = ToolRouter.route(%{name: "switch_room", input: %{"room_id" => "hearth"}})
+      assert {:marker, :switch_room, %{"room_id" => "hearth"}} = result
+    end
+
     test "returns {:unknown, name} for unregistered tools" do
       assert {:unknown, "nonexistent"} = ToolRouter.route(%{name: "nonexistent", input: %{}})
     end

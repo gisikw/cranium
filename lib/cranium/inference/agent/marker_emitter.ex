@@ -20,6 +20,7 @@ defmodule Cranium.Inference.Agent.MarkerEmitter do
       %{type: :marker, marker: :show, payload: %{url: "image.png"}}
       %{type: :marker, marker: :show_code, payload: %{language: "elixir", code: "..."}}
       %{type: :marker, marker: :play_audio, payload: %{url: "clip.mp3"}}
+      %{type: :marker, marker: :switch_room, payload: %{room_id: "fort-nix"}}
 
   Transports decide how to render these (inline image, code block,
   audio player, etc).

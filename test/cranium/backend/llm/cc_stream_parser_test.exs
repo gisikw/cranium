@@ -79,6 +79,27 @@ defmodule Cranium.Backend.LLM.CCStreamParserTest do
                CCStreamParser.parse_line(line)
     end
 
+    test "extracts MCP switch_room marker tool call" do
+      line =
+        Jason.encode!(%{
+          type: "assistant",
+          message: %{
+            content: [
+              %{
+                type: "tool_use",
+                id: "tool_sr",
+                name: "mcp__cranium-markers__switch_room",
+                input: %{room_id: "fort-nix"}
+              }
+            ]
+          }
+        })
+
+      assert {:ok,
+              [{:llm_tool_use, %{id: "tool_sr", name: "switch_room", input: %{"room_id" => "fort-nix"}}}]} =
+               CCStreamParser.parse_line(line)
+    end
+
     test "emits cc_tool_use for native CC tool calls" do
       line =
         Jason.encode!(%{

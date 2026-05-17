@@ -181,6 +181,6 @@ defmodule Cranium.Backend.LLM.CCStreamParser do
   @doc false
   @spec default_marker_tools() :: %{String.t() => true}
   def default_marker_tools do
-    Map.new(~w(show show_code play_audio clear_context), &{&1, true})
+    Map.new(~w(show show_code play_audio switch_room clear_context), &{&1, true})
   end
 end
