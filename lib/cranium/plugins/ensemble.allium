@@ -1,0 +1,515 @@
+-- allium: 3
+
+-- Ensemble Plugin
+--
+-- Dynamic multi-profile routing with pluggable confidence evaluation.
+--
+-- The ensemble plugin manages a set of candidate profiles, each paired
+-- with an evaluator — an Elixir module that scores the candidate's
+-- fitness for the current pass based on arbitrary metadata (turn count,
+-- saturation, message content, backend health, etc.). Per turn, the
+-- plugin collects confidence scores from all candidates, normalizes
+-- them into a probability distribution, and samples to select which
+-- profile handles inference.
+--
+-- This enables cost optimization (shift to local models as context
+-- grows), resilience (skip unavailable backends), and quality blending
+-- (interleave capable and fast models within a conversation) — all
+-- without the user knowing which model is active on any given turn.
+--
+-- Scope: Candidate evaluation, weighted selection, profile swapping
+-- via after_resolve_profile hook, selection history tracking. Does NOT
+-- cover evaluator implementations (those are separate modules) or
+-- conversation-level quality assessment.
+--
+-- Depends on: plugin-system.allium (Plugin, HookPoint,
+--             ResolvedProfileContext, DispatchAfterResolveProfile)
+
+use plugin_system
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    temperature: Float = 1.0
+        -- Controls selection sharpness. Applied as an exponent to
+        -- confidence scores before normalization.
+        -- temperature < 1.0: sharpens (winner-take-all tendency)
+        -- temperature = 1.0: linear proportional to confidence
+        -- temperature > 1.0: flattens (more uniform distribution)
+
+    candidates: [CandidateDeclaration]
+        -- At least two candidates required. The profile that would
+        -- normally be used (the conversation's default) should be
+        -- included as a candidate — it is not implicitly present.
+
+    seed: Integer?
+        -- Optional RNG seed for deterministic selection. When set,
+        -- the same turn_count and confidence scores always produce
+        -- the same selection. Useful for testing and replay.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value CandidateDeclaration {
+    profile: String
+        -- Profile name as declared in profiles.yaml. The ensemble
+        -- plugin resolves this to a full profile at evaluation time.
+
+    evaluator: Atom
+        -- Elixir module implementing the Evaluator behaviour.
+        -- Invoked per turn to compute a confidence score.
+
+    evaluator_config: Map?
+        -- Optional configuration passed to the evaluator's
+        -- confidence/2 callback. Shape is evaluator-defined.
+
+    @guidance
+        -- Candidates are declared in the plugin config, not inline
+        -- in the profile. This means the same ensemble config can
+        -- reference any profile — including profiles with different
+        -- backends, models, identities, and tool configurations.
+        --
+        -- The profile's full identity document becomes the system
+        -- prompt when that candidate is selected. This is not
+        -- "steering" — it's a complete profile swap. Different
+        -- candidates may have radically different personas,
+        -- tool access, and behavioral characteristics.
+}
+
+value EvaluationMetadata {
+    conversation_id: String
+    epoch_id: String
+    turn_count: Integer
+    message_text: String
+    saturation: Float
+    current_profile: String
+    current_backend: BackendType
+    current_model: String
+
+    @guidance
+        -- Metadata passed to evaluators. Contains everything the
+        -- evaluator might need to make a routing decision. The
+        -- "current" fields reflect the resolved profile context
+        -- as it stands — either the default profile or a prior
+        -- plugin's override in the composable chain.
+        --
+        -- Future extensions may include: tool presence in the
+        -- message, recent error rates per backend, time of day,
+        -- cost budget remaining, etc. The map is intentionally
+        -- extensible — evaluators should tolerate missing keys.
+}
+
+value ScoredCandidate {
+    profile: String
+    confidence: Float
+    weight: Float
+
+    @guidance
+        -- Intermediate result after evaluation and normalization.
+        -- confidence is the raw evaluator output (0.0-1.0).
+        -- weight is the normalized probability after temperature
+        -- scaling: weight_i = confidence_i^(1/T) / sum.
+        --
+        -- A confidence of 0.0 produces a weight of 0.0 regardless
+        -- of temperature. This preserves the "ineligible" semantic.
+}
+
+value SelectionRecord {
+    turn_count: Integer
+    selected_profile: String
+    scores: [ScoredCandidate]
+
+    @guidance
+        -- Recorded per turn for observability. Allows post-hoc
+        -- analysis of routing decisions (which model answered
+        -- which turns, what the alternatives scored).
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Evaluator {
+    -- Elixir module implementing the evaluator behaviour.
+    -- Pure computation: receives metadata and config, returns
+    -- a confidence score. No GenServer, no state, no side effects.
+    --
+    -- @callback confidence(EvaluationMetadata, config :: Map) :: Float
+    --
+    -- Returns 0.0-1.0 where:
+    --   0.0 = ineligible (will never be selected)
+    --   1.0 = fully confident (maximum weight in selection)
+    --
+    -- Evaluators should be fast — they run synchronously in the
+    -- turn assembly path. Expensive checks (health pings, model
+    -- availability) should be cached or sampled, not computed
+    -- per turn.
+}
+
+external entity Config {
+    -- Cranium.Config — resolves profile names to full profile
+    -- metadata. The ensemble plugin calls resolve_profile/1
+    -- internally when swapping to an alternate candidate.
+}
+
+------------------------------------------------------------
+-- Entity
+------------------------------------------------------------
+
+entity EnsemblePlugin {
+    candidates: [CandidateDeclaration]
+    temperature: Float
+    rng_state: any
+    history: [SelectionRecord]
+
+    @guidance
+        -- Session-scoped state. The RNG state is seeded from
+        -- config.seed (deterministic) or :os.timestamp (random).
+        -- History accumulates selection records for the epoch.
+        --
+        -- The history is not used for selection logic — it's
+        -- purely observational. Evaluators that need historical
+        -- context (e.g., "don't pick the same model three times
+        -- in a row") should maintain that state internally or
+        -- receive it via the metadata map in a future extension.
+}
+
+------------------------------------------------------------
+-- Rules: Initialization
+------------------------------------------------------------
+
+rule InitEnsemble {
+    when: Plugin.init(metadata)
+
+    requires: metadata.plugin_config.candidates is present
+    requires: metadata.plugin_config.candidates has at least two entries
+    requires: all candidate profiles exist in Config
+
+    for candidate in candidates:
+        requires: candidate.evaluator is a loaded module
+            implementing the Evaluator behaviour
+
+    let rng_state = if config.seed:
+        seed_rng(config.seed)
+    else:
+        seed_rng(:os.timestamp)
+
+    ensures: EnsemblePlugin.created(
+        candidates: config.candidates,
+        temperature: config.temperature,
+        rng_state: rng_state,
+        history: empty
+    )
+    ensures: plugin subscribes to [after_resolve_profile, after_pass_complete]
+
+    @guidance
+        -- Returns :ignore if candidates list is missing, has fewer
+        -- than two entries, or references nonexistent profiles.
+        -- Validates evaluator modules at init time to fail fast
+        -- rather than on first turn.
+        --
+        -- Subscribes to after_resolve_profile (routing) and
+        -- after_pass_complete (selection history recording).
+        -- Does not subscribe to before_context_build — any
+        -- per-model context differences are expressed through
+        -- the profile's identity document, not injections.
+}
+
+------------------------------------------------------------
+-- Rules: Selection
+------------------------------------------------------------
+
+rule EvaluateCandidates {
+    when: after_resolve_profile(resolved_context)
+
+    let metadata = EvaluationMetadata(
+        conversation_id: resolved_context.conversation_id,
+        epoch_id: resolved_context.epoch_id,
+        turn_count: resolved_context.turn_count,
+        message_text: from turn assembler context,
+        saturation: from current epoch state,
+        current_profile: resolved_context.profile_name,
+        current_backend: resolved_context.backend,
+        current_model: resolved_context.model
+    )
+
+    for candidate in candidates:
+        let score = invoke candidate.evaluator.confidence(
+            metadata, candidate.evaluator_config
+        )
+        let clamped = clamp(score, 0.0, 1.0)
+
+    ensures: a confidence score is collected for each candidate
+
+    @guidance
+        -- Evaluators are invoked sequentially in candidate list
+        -- order. Each is independent — evaluator A does not see
+        -- evaluator B's score.
+        --
+        -- Scores outside [0.0, 1.0] are clamped with a warning.
+        -- Evaluator crashes produce a score of 0.0 (ineligible)
+        -- for that candidate, with the error logged. This ensures
+        -- a single broken evaluator doesn't prevent routing.
+}
+
+rule SelectCandidate {
+    when: all candidates have been evaluated
+
+    let scored = for each (candidate, confidence) pair:
+        let scaled = confidence ^ (1.0 / temperature)
+        ScoredCandidate(
+            profile: candidate.profile,
+            confidence: confidence,
+            weight: scaled
+        )
+
+    -- Filter out ineligible candidates
+    let eligible = scored where weight > 0.0
+
+    requires: eligible is non-empty
+
+    -- Normalize weights to probability distribution
+    let total = sum(eligible, e => e.weight)
+    let normalized = for e in eligible:
+        e with weight: e.weight / total
+
+    -- Weighted random selection
+    let selected = weighted_sample(normalized, rng_state)
+
+    ensures: selected candidate is chosen with probability
+        proportional to its normalized weight
+    ensures: rng_state is advanced
+
+    @guidance
+        -- If ALL candidates score 0.0 (all ineligible), this is
+        -- a hard failure. The plugin should log an error and return
+        -- the resolved context unchanged — falling through to
+        -- the default profile. This is a degenerate case that
+        -- indicates misconfigured evaluators, not a normal
+        -- routing outcome.
+        --
+        -- Temperature scaling happens before normalization:
+        --   weight = confidence ^ (1/T)
+        -- At T=1: weights are proportional to confidence (linear).
+        -- At T<1: higher confidence gets disproportionately more
+        --   weight (approaches winner-take-all at T→0).
+        -- At T>1: distribution flattens (approaches uniform at T→∞).
+        --
+        -- confidence=0.0 always produces weight=0.0 regardless of
+        -- temperature, preserving the ineligible semantic.
+}
+
+rule SwapProfile {
+    when: candidate selected and selected.profile != resolved_context.profile_name
+
+    let alternate = Config.resolve_profile(selected.profile)
+
+    ensures: resolved_context is returned with:
+        profile_name: selected.profile,
+        backend: alternate.backend,
+        backend_module: alternate.backend_module,
+        model: alternate.model,
+        identity: alternate.identity,
+        thinking: alternate.thinking,
+        context_window: alternate.context_window,
+        saturation_warn: alternate.saturation_warn,
+        saturation_critical: alternate.saturation_critical
+
+    @guidance
+        -- Full profile swap. The selected profile's identity
+        -- document becomes the system prompt for this pass.
+        -- This is not steering — the alternate may have a
+        -- completely different persona, tool access, and
+        -- behavioral characteristics.
+        --
+        -- If the selected profile matches the already-resolved
+        -- profile, no swap is needed — the context is returned
+        -- unchanged. This is the common case on early turns
+        -- where the primary profile's evaluator dominates.
+        --
+        -- The swap copies inference fields ONLY: backend,
+        -- backend_module, model, identity, thinking, context_window,
+        -- saturation_warn, saturation_critical. The alternate
+        -- profile's plugins list is explicitly ignored — see
+        -- ProfileSwapInferenceOnly invariant. No plugin init,
+        -- no plugin merge, no plugin override. The conversation's
+        -- original plugin set is the only plugin set.
+}
+
+------------------------------------------------------------
+-- Rules: Observability
+------------------------------------------------------------
+
+rule RecordSelection {
+    when: after_pass_complete(pass_complete_context)
+
+    ensures: SelectionRecord appended to history with:
+        turn_count: pass_complete_context.turn_count,
+        selected_profile: the profile used for this pass,
+        scores: all ScoredCandidates from evaluation
+
+    @guidance
+        -- Selection history is maintained in plugin state for
+        -- the duration of the epoch. On epoch end, it could be
+        -- persisted or logged — but that's a future extension.
+        --
+        -- The selected_profile is also surfaced in the pass
+        -- event's metadata map (e.g., meta.ensemble_profile)
+        -- for firehose consumers. This metadata attachment
+        -- happens in the after_resolve_profile return, not
+        -- in this rule.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ZeroMeansIneligible {
+    for s in ScoredCandidates:
+        when s.confidence = 0.0,
+        s.weight = 0.0 regardless of temperature
+
+    @guidance
+        -- A confidence of 0.0 is the evaluator's signal that
+        -- this candidate cannot handle the current turn. The
+        -- selection algorithm must respect this unconditionally.
+        -- This is what distinguishes the normalization from
+        -- softmax — softmax gives every option non-zero weight.
+}
+
+invariant SelectionNonBlocking {
+    for t in Turns:
+        ensemble evaluation and selection do not prevent
+        the turn from proceeding to inference
+
+    @guidance
+        -- If all evaluators crash, if all candidates are
+        -- ineligible, if profile resolution fails — the plugin
+        -- returns the resolved context unchanged. The default
+        -- profile handles the turn. Ensemble failures are
+        -- logged but never fatal to inference.
+}
+
+invariant ProfileSwapInferenceOnly {
+    for swaps in SwapProfile:
+        the profile swap affects inference routing only,
+        not plugin lifecycle
+
+    @guidance
+        -- When the ensemble selects an alternate profile, the
+        -- backend, model, identity, and inference parameters
+        -- change for that pass. But the plugins running for the
+        -- conversation remain unchanged — they were started from
+        -- the original profile's plugin list and are scoped to
+        -- the conversation, not the per-turn routing decision.
+        --
+        -- Critically: alternate candidate profiles' own plugin
+        -- lists are completely ignored. If profile exo-local
+        -- declares plugins: [Glossary, ToolGuardrails], those
+        -- plugins are NOT started, NOT merged, NOT consulted
+        -- when exo-local is selected. The only plugins that run
+        -- are those declared on the conversation's original
+        -- profile. This is a hard boundary, not a soft default.
+        --
+        -- Rationale: per-turn plugin lifecycle management would
+        -- require init/teardown thrashing, state loss on swap,
+        -- race conditions with in-flight hooks, and conflict
+        -- resolution when two profiles' plugins overlap or
+        -- contradict. The complexity is not justified. If a
+        -- specific model needs behavioral guardrails, the
+        -- ensemble plugin itself should enforce them — it knows
+        -- which candidate is active and can act accordingly via
+        -- its own hook subscriptions.
+}
+
+invariant HistorySharedAcrossProfiles {
+    for e in Epochs with ensemble active:
+        all turns share the same conversation history in
+        cranium's Store, regardless of which profile was
+        selected for each turn
+
+    @guidance
+        -- Conversation history is owned by cranium's Store,
+        -- not by individual backends. When profile B handles
+        -- turn 7 and profile A handles turn 8, profile A sees
+        -- turn 7's exchange in its message history. The history
+        -- is the shared continuity across profile switches.
+        --
+        -- This works naturally for stateless backends (Anthropic
+        -- API, Ollama) which receive the full message array each
+        -- turn. Backends with session state (Claude Code) are
+        -- not well-suited for ensemble use — the session would
+        -- have gaps for turns handled by other backends.
+}
+
+invariant DeterministicWithSeed {
+    for e in EnsemblePlugins where seed is set:
+        given identical confidence scores and turn sequence,
+        the same seed produces the same selection sequence
+
+    @guidance
+        -- When config.seed is set, the RNG is deterministic.
+        -- This enables reproducible routing for testing and
+        -- debugging. In production, seed should be nil for
+        -- true randomness.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Evaluator metadata extensibility" {
+    -- EvaluationMetadata is currently a fixed set of fields.
+    -- As evaluators grow more sophisticated, they may need
+    -- additional context: recent error rates per backend,
+    -- message complexity scores, tool-call presence, time
+    -- of day, cost budget remaining. Should the metadata be
+    -- an open map (extensible but untyped) or a versioned
+    -- struct (typed but rigid)?
+}
+
+open question "Selection history as evaluator input" {
+    -- Currently evaluators are stateless — they receive only
+    -- the current turn's metadata. Some routing strategies
+    -- need history: "don't pick the same model three times
+    -- in a row" or "ensure at least one Opus turn every N
+    -- turns." Should the ensemble plugin pass selection
+    -- history to evaluators via the metadata map, or should
+    -- evaluators that need history maintain their own state
+    -- as GenServers?
+}
+
+open question "System prompt caching with profile swaps" {
+    -- SystemPrompt.contribute caches the system prompt per
+    -- conversation for the epoch. With ensemble routing,
+    -- identity varies per turn. The cache needs to either
+    -- be keyed by identity content/hash, bypassed when
+    -- ensemble is active, or redesigned. The right approach
+    -- depends on how expensive system prompt assembly is
+    -- relative to cache invalidation overhead.
+}
+
+open question "Observability surface" {
+    -- Selection records are in plugin state, and the selected
+    -- profile can go in the pass event's metadata map. But
+    -- there's no dashboard or query interface yet. For the
+    -- ensemble to be trustworthy, operators need visibility
+    -- into: which model answered which turns, confidence
+    -- distributions over time, cost per profile. What's the
+    -- right observability surface — structured logs, a Store
+    -- table, an API endpoint?
+}
+
+open question "Graceful degradation ordering" {
+    -- When a candidate's backend is down, its evaluator
+    -- returns 0.0. But what if the *ensemble plugin itself*
+    -- fails to initialize (bad config, missing profiles)?
+    -- Currently the plugin returns :ignore and the default
+    -- profile handles everything. Should there be a way to
+    -- signal "ensemble is broken, fall back gracefully"
+    -- beyond just logging?
+}

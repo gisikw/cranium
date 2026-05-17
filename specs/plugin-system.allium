@@ -8,9 +8,9 @@
 -- and optionally inject content into the context pipeline.
 --
 -- Scope: Plugin registration, lifecycle, hook dispatch, injection contract,
--- hot code reload. Does NOT cover the implementation of specific plugins
--- (gloss, agenda, etc.) — those are separate specs. Does NOT cover
--- inference internals, transport, or media pipeline.
+-- profile routing, hot code reload. Does NOT cover the implementation of
+-- specific plugins (glossary, ensemble, etc.) — those are separate specs.
+-- Does NOT cover inference internals, transport, or media pipeline.
 --
 -- Depends on: conversation-lifecycle.allium (Epoch, Pass, Message)
 --             context-system.allium (AssembleTurn, injection pipeline)
@@ -136,6 +136,33 @@ value Injection {
         -- Ties in priority are resolved in arbitrary order.
 }
 
+value ResolvedProfileContext {
+    conversation_id: String
+    epoch_id: String
+    turn_count: Integer
+    profile_name: String
+    backend: BackendType
+    backend_module: Atom
+    model: String
+    identity: String?
+    thinking: Boolean?
+    context_window: Integer?
+    saturation_warn: Float?
+    saturation_critical: Float?
+
+    @guidance
+        -- Passed to after_resolve_profile callbacks. Contains the
+        -- fully resolved profile metadata that would be used for
+        -- this pass's inference. Plugins may return a modified copy
+        -- to override routing — typically by resolving a different
+        -- profile and substituting its fields.
+        --
+        -- conversation_id, epoch_id, and turn_count are contextual
+        -- inputs — modifying them has no effect. The mutable fields
+        -- are: profile_name, backend, backend_module, model, identity,
+        -- thinking, context_window, saturation_warn, saturation_critical.
+}
+
 ------------------------------------------------------------
 -- Entities
 ------------------------------------------------------------
@@ -163,12 +190,24 @@ entity Plugin {
 -- specified; the others are declared as future extension points.
 
 enum HookPoint {
+    after_resolve_profile
     before_context_build
     after_pass_complete
     on_epoch_start
     on_epoch_end
 
     @guidance
+        -- Listed in lifecycle order:
+        --
+        -- after_resolve_profile: Fires after profile resolution in
+        --   TurnAssembler, before system prompt assembly. Receives
+        --   ResolvedProfileContext, returns a (potentially modified)
+        --   ResolvedProfileContext. This is the plugin's opportunity
+        --   to override routing — swapping backend, model, identity,
+        --   or the entire profile for this pass. Composable: when
+        --   multiple plugins subscribe, each receives the output of
+        --   the previous, in plugin declaration order.
+        --
         -- before_context_build: Fires after history assembly, before
         --   the injection pipeline runs. The plugin's opportunity to
         --   contribute content to the turn's system-reminder prefix.
@@ -251,6 +290,63 @@ rule StopPlugins {
 ------------------------------------------------------------
 -- Rules: Hook Dispatch
 ------------------------------------------------------------
+
+rule DispatchAfterResolveProfile {
+    when: ProfileResolved(conversation_id, epoch_id, turn_count, resolved)
+
+    let plugins = active Plugins
+        where after_resolve_profile in subscribed_hooks
+        and session_metadata.conversation_id = conversation_id
+        ordered by declaration order in profile.plugins
+
+    let context = ResolvedProfileContext(
+        conversation_id,
+        epoch_id,
+        turn_count,
+        profile_name: resolved.profile_name,
+        backend: resolved.backend,
+        backend_module: resolved.backend_module,
+        model: resolved.model,
+        identity: resolved.identity,
+        thinking: resolved.thinking,
+        context_window: resolved.context_window,
+        saturation_warn: resolved.saturation_warn,
+        saturation_critical: resolved.saturation_critical
+    )
+
+    -- Sequential, composable dispatch: each plugin transforms the context
+    for p in plugins:
+        let context = invoke p.after_resolve_profile(context)
+        -- context is returned as {:ok, ResolvedProfileContext, new_state}
+
+    ensures: final context is used for system prompt assembly and inference
+    ensures: turn proceeds with original resolved profile when all plugins
+        return the context unchanged
+    ensures: turn proceeds normally when a plugin crashes during invocation
+        (context reverts to last successful output, or original if first)
+
+    @guidance
+        -- Unlike other hooks, after_resolve_profile is composable:
+        -- plugins are invoked sequentially in declaration order, and
+        -- each receives the output of the previous plugin. This allows
+        -- independent concerns (ensemble routing, failover, A/B testing)
+        -- to layer without coordination.
+        --
+        -- Declaration order is the order plugins appear in the profile's
+        -- plugins list in profiles.yaml. This is deterministic and
+        -- controllable by the operator.
+        --
+        -- Fires in TurnAssembler after resolve_profile() but before
+        -- SystemPrompt.contribute(). This timing means the identity
+        -- override takes effect for system prompt assembly — a plugin
+        -- that swaps the profile gets the alternate's full identity
+        -- document, not just steering injections.
+        --
+        -- If a plugin crashes during invocation, the context reverts
+        -- to the last successful output (or the original resolved
+        -- profile if the first plugin crashes). Subsequent plugins
+        -- in the chain still run against the recovered context.
+}
 
 rule DispatchBeforeContextBuild {
     when: AssembleTurn(conversation_id, epoch_id, turn_count, message_text)
@@ -413,14 +509,21 @@ invariant PluginCrashNonFatal {
 
 invariant PluginIsolation {
     for p1, p2 in Plugins where p1 != p2:
-        p1 cannot observe p2's state or injections
+        p1 cannot observe p2's internal state
 
     @guidance
-        -- Plugins are independent GenServers. They do not share state
-        -- and they do not see each other's hook results. Each plugin
-        -- receives the same TurnContext from cranium and produces its
-        -- own injections independently. Ordering between plugins at
-        -- the same priority is arbitrary and must not be relied upon.
+        -- Plugins are independent GenServers. They do not share state.
+        -- For additive hooks (before_context_build, on_epoch_end),
+        -- each plugin receives the same context from cranium and
+        -- produces results independently. Ordering is arbitrary.
+        --
+        -- Exception: after_resolve_profile is intentionally composable.
+        -- Each plugin receives the transformed output of the previous
+        -- plugin. This is a deliberate design choice — routing transforms
+        -- are naturally layerable (ensemble, failover, A/B testing).
+        -- Plugins still cannot observe each other's internal state;
+        -- they only see the shared ResolvedProfileContext as it flows
+        -- through the chain.
 }
 
 invariant InjectionOrderDeterministic {
@@ -464,12 +567,16 @@ invariant HotReloadStatePreservation {
 -- Open Questions
 ------------------------------------------------------------
 
-open question "Plugin ordering within a hook" {
-    -- Currently plugins at the same hook point are invoked in
-    -- arbitrary order. If a use case arises where plugin A must
-    -- run before plugin B (e.g., A's injection informs B's
-    -- decision), we may need an explicit ordering mechanism.
-    -- For now, arbitrary order with isolated invocation is sufficient.
+open question "Plugin ordering within additive hooks" {
+    -- For additive hooks (before_context_build, on_epoch_end),
+    -- plugins are invoked in arbitrary order. If a use case arises
+    -- where plugin A's injection must inform plugin B's decision,
+    -- we may need an explicit ordering mechanism.
+    --
+    -- For composable hooks (after_resolve_profile), ordering is
+    -- already defined: declaration order in the profile's plugins
+    -- list. This works because the operator controls the list and
+    -- can reason about the transform chain.
 }
 
 open question "Plugin-to-plugin communication" {
