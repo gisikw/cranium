@@ -263,15 +263,8 @@ defmodule Cranium.Inference.TurnAssembler do
     projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
     working_dir = Cranium.Context.Router.resolve_working_dir(header.conversation_id, projects_dir)
 
-    # 5. System prompt — profile identity, with header.system as direct override
-    system_prompt =
-      Cranium.Inference.SystemPrompt.contribute(
-        header.conversation_id,
-        is_fresh: is_fresh,
-        identity: identity
-      )
-
-    # 5b. Ensure plugins are running (idempotent — no-ops if already started)
+    # 4b. Ensure plugins are running (idempotent — no-ops if already started)
+    #     Must happen before after_resolve_profile dispatch.
     Cranium.Plugin.ConversationSupervisor.start_plugins(
       header.conversation_id,
       %{
@@ -282,6 +275,49 @@ defmodule Cranium.Inference.TurnAssembler do
         plugin_config: nil
       }
     )
+
+    # 4c. Dispatch after_resolve_profile hook — composable profile override
+    resolved_profile_context = %{
+      conversation_id: header.conversation_id,
+      epoch_id: epoch_id,
+      turn_count: turn_count,
+      profile_name: profile_name,
+      backend: profile.backend,
+      backend_module: backend_module,
+      model: resolved_model,
+      identity: identity,
+      thinking: thinking,
+      context_window: saturation_config[:context_window],
+      saturation_warn: saturation_config[:saturation_warn],
+      saturation_critical: saturation_config[:saturation_critical]
+    }
+
+    resolved =
+      Cranium.Plugin.ConversationSupervisor.dispatch_after_resolve_profile(
+        header.conversation_id,
+        resolved_profile_context
+      )
+
+    # Apply any overrides from the hook
+    backend_module = resolved.backend_module
+    resolved_model = resolved.model
+    identity = resolved.identity
+    profile_name = resolved.profile_name
+    thinking = resolved.thinking
+
+    saturation_config = %{
+      context_window: resolved.context_window,
+      saturation_warn: resolved.saturation_warn,
+      saturation_critical: resolved.saturation_critical
+    }
+
+    # 5. System prompt — uses (possibly overridden) identity
+    system_prompt =
+      Cranium.Inference.SystemPrompt.contribute(
+        header.conversation_id,
+        is_fresh: is_fresh,
+        identity: identity
+      )
 
     # 5c. Dispatch before_context_build hook to plugins
     turn_context = %{

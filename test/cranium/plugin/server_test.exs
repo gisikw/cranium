@@ -101,6 +101,55 @@ defmodule Cranium.Plugin.ServerTest do
     end
   end
 
+  describe "after_resolve_profile hook" do
+    @profile_context %{
+      conversation_id: "test-conv",
+      epoch_id: "test-epoch",
+      turn_count: 3,
+      profile_name: "exo",
+      backend: :anthropic,
+      backend_module: Cranium.Backend.LLM.Anthropic,
+      model: "claude-opus-4-6",
+      identity: "I am exo",
+      thinking: nil,
+      context_window: 200_000,
+      saturation_warn: nil,
+      saturation_critical: nil
+    }
+
+    test "returns modified context from swapper plugin" do
+      metadata = %{@metadata | plugin_config: %{model: "gemma4-cranium", backend: :ollama, backend_module: Cranium.Backend.LLM.Ollama}}
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfileSwapper, session_metadata: metadata)
+
+      assert {:ok, result} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
+      assert result.model == "gemma4-cranium"
+      assert result.backend == :ollama
+      assert result.backend_module == Cranium.Backend.LLM.Ollama
+      # Unmodified fields preserved
+      assert result.conversation_id == "test-conv"
+      assert result.identity == "I am exo"
+    end
+
+    test "returns context unchanged from passthrough plugin" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfilePassthrough, session_metadata: @metadata)
+
+      assert {:ok, result} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
+      assert result == @profile_context
+    end
+
+    test "handles crash gracefully" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfileCrasher, session_metadata: @metadata)
+
+      assert {:error, {:raised, %RuntimeError{}}} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
+      assert Process.alive?(pid)
+    end
+
+    test "returns :skip for plugins not subscribed to after_resolve_profile" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      assert {:ok, :skip} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
+    end
+  end
+
   describe "info/1" do
     test "returns module and hooks" do
       {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)

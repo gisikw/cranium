@@ -45,7 +45,12 @@ defmodule Cranium.Plugin do
   - 40: interrupted-context
   """
 
-  @type hook :: :before_context_build | :after_pass_complete | :on_epoch_start | :on_epoch_end
+  @type hook ::
+          :after_resolve_profile
+          | :before_context_build
+          | :after_pass_complete
+          | :on_epoch_start
+          | :on_epoch_end
 
   @type session_metadata :: %{
           conversation_id: String.t(),
@@ -53,6 +58,21 @@ defmodule Cranium.Plugin do
           room_name: String.t(),
           profile: Cranium.Config.Profile.t(),
           plugin_config: map() | nil
+        }
+
+  @type resolved_profile_context :: %{
+          conversation_id: String.t(),
+          epoch_id: String.t(),
+          turn_count: non_neg_integer(),
+          profile_name: String.t(),
+          backend: atom(),
+          backend_module: module(),
+          model: String.t() | nil,
+          identity: String.t() | nil,
+          thinking: boolean() | nil,
+          context_window: pos_integer() | nil,
+          saturation_warn: number() | nil,
+          saturation_critical: number() | nil
         }
 
   @type turn_context :: %{
@@ -80,6 +100,9 @@ defmodule Cranium.Plugin do
   @callback init(session_metadata()) ::
               {:ok, [hook()], state :: term()} | :ignore
 
+  @callback after_resolve_profile(resolved_profile_context(), state :: term()) ::
+              {:ok, resolved_profile_context(), new_state :: term()}
+
   @callback before_context_build(turn_context(), state :: term()) ::
               {:ok, :skip | [injection()], new_state :: term()}
 
@@ -88,5 +111,10 @@ defmodule Cranium.Plugin do
 
   @callback on_epoch_end(epoch_end_context(), state :: term()) :: :ok
 
-  @optional_callbacks [before_context_build: 2, after_pass_complete: 2, on_epoch_end: 2]
+  @optional_callbacks [
+    after_resolve_profile: 2,
+    before_context_build: 2,
+    after_pass_complete: 2,
+    on_epoch_end: 2
+  ]
 end

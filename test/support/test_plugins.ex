@@ -109,3 +109,50 @@ defmodule Cranium.TestPlugins.MultiInjector do
     {:ok, injections, state}
   end
 end
+
+defmodule Cranium.TestPlugins.ProfileSwapper do
+  @moduledoc "Test plugin that overrides model and backend in after_resolve_profile."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(metadata) do
+    overrides = metadata.plugin_config || %{}
+    {:ok, [:after_resolve_profile], %{overrides: overrides}}
+  end
+
+  @impl true
+  def after_resolve_profile(context, state) do
+    new_context = Map.merge(context, state.overrides)
+    {:ok, new_context, state}
+  end
+end
+
+defmodule Cranium.TestPlugins.ProfilePassthrough do
+  @moduledoc "Test plugin that subscribes to after_resolve_profile but returns context unchanged."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(_metadata) do
+    {:ok, [:after_resolve_profile], %{call_count: 0}}
+  end
+
+  @impl true
+  def after_resolve_profile(context, state) do
+    {:ok, context, %{state | call_count: state.call_count + 1}}
+  end
+end
+
+defmodule Cranium.TestPlugins.ProfileCrasher do
+  @moduledoc "Test plugin that raises in after_resolve_profile."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(_metadata) do
+    {:ok, [:after_resolve_profile], %{}}
+  end
+
+  @impl true
+  def after_resolve_profile(_context, _state) do
+    raise "intentional profile crash"
+  end
+end

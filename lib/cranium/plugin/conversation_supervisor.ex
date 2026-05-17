@@ -78,6 +78,37 @@ defmodule Cranium.Plugin.ConversationSupervisor do
   end
 
   @doc """
+  Dispatch after_resolve_profile to all subscribed plugins for a conversation.
+
+  Composable: each plugin receives the output of the previous plugin in
+  declaration order. If a plugin crashes or times out, the context reverts
+  to the last successful output. Returns the final resolved profile context.
+  """
+  @spec dispatch_after_resolve_profile(String.t(), Cranium.Plugin.resolved_profile_context()) ::
+          Cranium.Plugin.resolved_profile_context()
+  def dispatch_after_resolve_profile(conversation_id, context) do
+    case Registry.lookup(@registry, {conversation_id, :plugins}) do
+      [{sup_pid, _}] ->
+        children = DynamicSupervisor.which_children(sup_pid)
+
+        Enum.reduce(children, context, fn
+          {_, pid, :worker, _}, acc when is_pid(pid) ->
+            case Cranium.Plugin.Server.call_hook(pid, :after_resolve_profile, acc) do
+              {:ok, %{} = new_context} -> new_context
+              {:ok, :skip} -> acc
+              {:error, _} -> acc
+            end
+
+          _, acc ->
+            acc
+        end)
+
+      [] ->
+        context
+    end
+  end
+
+  @doc """
   Dispatch a hook to all active plugins for a conversation.
 
   Returns a flat list of injections from all plugins that responded.

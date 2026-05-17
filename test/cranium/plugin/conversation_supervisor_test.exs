@@ -161,6 +161,158 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
     end
   end
 
+  @profile_context %{
+    conversation_id: "placeholder",
+    epoch_id: "test-epoch",
+    turn_count: 3,
+    profile_name: "exo",
+    backend: :anthropic,
+    backend_module: Cranium.Backend.LLM.Anthropic,
+    model: "claude-opus-4-6",
+    identity: "I am exo",
+    thinking: nil,
+    context_window: 200_000,
+    saturation_warn: nil,
+    saturation_critical: nil
+  }
+
+  describe "dispatch_after_resolve_profile/2" do
+    test "swaps model when plugin overrides", %{conversation_id: cid} do
+      profile = %Cranium.Config.Profile{
+        name: "test",
+        backend: :mock,
+        model: "test-model",
+        plugins: [
+          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium", backend: :ollama}}
+        ]
+      }
+
+      metadata = %{
+        conversation_id: cid,
+        epoch_id: "test-epoch",
+        room_name: cid,
+        profile: profile,
+        plugin_config: nil
+      }
+
+      ConversationSupervisor.start_plugins(cid, metadata)
+
+      context = %{@profile_context | conversation_id: cid}
+      result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
+
+      assert result.model == "gemma4-cranium"
+      assert result.backend == :ollama
+      # Unmodified fields preserved
+      assert result.identity == "I am exo"
+      assert result.profile_name == "exo"
+    end
+
+    test "returns context unchanged when passthrough plugin", %{conversation_id: cid} do
+      profile = %Cranium.Config.Profile{
+        name: "test",
+        backend: :mock,
+        model: "test-model",
+        plugins: [
+          %{module: Cranium.TestPlugins.ProfilePassthrough, config: nil}
+        ]
+      }
+
+      metadata = %{
+        conversation_id: cid,
+        epoch_id: "test-epoch",
+        room_name: cid,
+        profile: profile,
+        plugin_config: nil
+      }
+
+      ConversationSupervisor.start_plugins(cid, metadata)
+
+      context = %{@profile_context | conversation_id: cid}
+      result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
+
+      assert result == context
+    end
+
+    test "composes multiple plugins sequentially", %{conversation_id: cid} do
+      profile = %Cranium.Config.Profile{
+        name: "test",
+        backend: :mock,
+        model: "test-model",
+        plugins: [
+          # First swapper changes model
+          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium"}},
+          # Second swapper changes identity
+          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{identity: "I am local"}}
+        ]
+      }
+
+      metadata = %{
+        conversation_id: cid,
+        epoch_id: "test-epoch",
+        room_name: cid,
+        profile: profile,
+        plugin_config: nil
+      }
+
+      ConversationSupervisor.start_plugins(cid, metadata)
+
+      context = %{@profile_context | conversation_id: cid}
+      result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
+
+      # Both transforms applied
+      assert result.model == "gemma4-cranium"
+      assert result.identity == "I am local"
+    end
+
+    test "crash reverts to last successful context", %{conversation_id: cid} do
+      profile = %Cranium.Config.Profile{
+        name: "test",
+        backend: :mock,
+        model: "test-model",
+        plugins: [
+          # First swapper succeeds
+          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium"}},
+          # Crasher fails — context should revert to first swapper's output
+          %{module: Cranium.TestPlugins.ProfileCrasher, config: nil}
+        ]
+      }
+
+      metadata = %{
+        conversation_id: cid,
+        epoch_id: "test-epoch",
+        room_name: cid,
+        profile: profile,
+        plugin_config: nil
+      }
+
+      ConversationSupervisor.start_plugins(cid, metadata)
+
+      context = %{@profile_context | conversation_id: cid}
+      result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
+
+      # First swapper's change is preserved
+      assert result.model == "gemma4-cranium"
+      # Original identity preserved (crasher didn't get to change it)
+      assert result.identity == "I am exo"
+    end
+
+    test "returns original context when no plugins subscribed", %{conversation_id: cid, metadata: meta} do
+      # Echo and Skipper don't subscribe to after_resolve_profile
+      ConversationSupervisor.start_plugins(cid, meta)
+
+      context = %{@profile_context | conversation_id: cid}
+      result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
+
+      assert result == context
+    end
+
+    test "returns context when no supervisor exists" do
+      fake_cid = "no-sup-#{System.unique_integer([:positive])}"
+      context = %{@profile_context | conversation_id: fake_cid}
+      assert context == ConversationSupervisor.dispatch_after_resolve_profile(fake_cid, context)
+    end
+  end
+
   describe "dispatch_epoch_end/2" do
     test "dispatches to subscribed plugins", %{conversation_id: cid} do
       profile = %Cranium.Config.Profile{
