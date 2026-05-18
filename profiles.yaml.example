@@ -23,6 +23,21 @@ profiles:
     model: gemma4-cranium
     identity: /path/to/identity.md
 
+  exo-ensemble:
+    backend: claudecode
+    model: claude-opus-4-6
+    identity: /path/to/identity.md
+    plugins:
+      - module: Cranium.Plugins.Ensemble
+        config:
+          candidates:
+            - profile: exo
+              evaluator: Cranium.Plugins.Ensemble.Evaluators.Always
+            - profile: exo-local
+              evaluator: Cranium.Plugins.Ensemble.Evaluators.TurnGated
+              evaluator_config:
+                threshold: 5
+
   code:
     backend: ollama
     model: gemma4-cranium
