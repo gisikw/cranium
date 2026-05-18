@@ -94,6 +94,17 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "room_default_profile/1" do
+    test "returns profile for configured room" do
+      assert Config.room_default_profile("personal-chat") == "test-with-identity"
+      assert Config.room_default_profile("cranium") == "test-cc"
+    end
+
+    test "returns nil for unconfigured room" do
+      assert Config.room_default_profile("unknown-room") == nil
+    end
+  end
+
   describe "read_identity/1" do
     test "reads and caches identity file" do
       path = Path.join(File.cwd!(), "test/fixtures/test-identity.txt")

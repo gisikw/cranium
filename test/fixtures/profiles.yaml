@@ -40,3 +40,7 @@ profiles:
           threshold: 3
 
 ollama_url: http://localhost:11434
+
+room_defaults:
+  personal-chat: test-with-identity
+  cranium: test-cc

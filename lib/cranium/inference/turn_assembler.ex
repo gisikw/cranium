@@ -498,8 +498,8 @@ defmodule Cranium.Inference.TurnAssembler do
     do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
   end
 
-  defp resolve_profile(%PassHeader{profile: profile_name, model: model_override, system: system_override}) do
-    profile_name = profile_name || Cranium.Config.default_profile_name()
+  defp resolve_profile(%PassHeader{profile: profile_name, conversation_id: conversation_id, model: model_override, system: system_override}) do
+    profile_name = profile_name || Cranium.Config.room_default_profile(conversation_id) || Cranium.Config.default_profile_name()
 
     resolved =
       case Cranium.Config.resolve_profile(profile_name) do

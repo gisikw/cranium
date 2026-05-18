@@ -107,6 +107,15 @@ defmodule Cranium.Config do
     |> Enum.sort()
   end
 
+  @doc "Look up the default profile name for a room. Returns nil if no room default is set."
+  @spec room_default_profile(String.t()) :: String.t() | nil
+  def room_default_profile(room_name) do
+    case :ets.lookup(@table, {:room_default, room_name}) do
+      [{_, profile_name}] -> profile_name
+      [] -> nil
+    end
+  end
+
   @doc "Ollama API base URL from config."
   @spec ollama_url() :: String.t()
   def ollama_url do
@@ -253,6 +262,19 @@ defmodule Cranium.Config do
 
     unless Map.has_key?(profiles, default_name) do
       raise "Cranium.Config: default profile '#{default_name}' not found in profiles"
+    end
+
+    # Room defaults
+    room_defaults = yaml["room_defaults"]
+
+    if is_map(room_defaults) do
+      for {room, profile_name} <- room_defaults do
+        unless Map.has_key?(profiles, profile_name) do
+          Logger.warning("Config: room_defaults '#{room}' references unknown profile '#{profile_name}', ignoring")
+        end
+
+        :ets.insert(@table, {{:room_default, room}, profile_name})
+      end
     end
 
     # Ollama URL

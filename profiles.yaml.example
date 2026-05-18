@@ -42,3 +42,9 @@ profiles:
     backend: ollama
     model: gemma4-cranium
     # no identity — bare coding assistant
+
+# Room-level profile defaults. If the client doesn't specify a profile,
+# cranium checks here before falling back to the global default.
+# room_defaults:
+#   personal-chat: exo-ensemble
+#   exo-local: exo-local
