@@ -1,0 +1,838 @@
+-- allium: 3
+
+-- Agenda Plugin
+--
+-- Structured meeting agendas that track completion without burdening the
+-- primary agent. The agent activates an agenda via tool call, receives the
+-- meeting body, and converses naturally. A cheap sidecar model periodically
+-- evaluates recent turns against the agenda's completion criteria. The
+-- plugin injects progress reminders every N turns so the agent stays
+-- oriented without doing its own bookkeeping.
+--
+-- Scope: Agenda definition format, instantiation (static and dynamic),
+-- tool surface, sidecar evaluation loop, state persistence across epochs,
+-- auto-close semantics. Does NOT cover the sidecar model's evaluation
+-- prompt engineering or the init script implementations — those are
+-- operational concerns.
+--
+-- Depends on: plugin-system.allium (Plugin, hooks, tool dispatch)
+--             inference-pipeline.allium (ToolRouter, ToolResult, Agent)
+--             conversation-lifecycle.allium (Epoch, Pass, Message)
+
+use plugin_system
+use inference_pipeline
+use conversation_lifecycle
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    agendas_path: String
+        -- Filesystem path to the directory containing agenda definition
+        -- JSON files. Scanned at plugin init to build the available set.
+
+    sidecar_profile: String
+        -- Profile name for the sidecar evaluator. Determines model and
+        -- backend only — the evaluation prompt is owned by the plugin.
+
+    eval_interval: Integer = 5
+        -- Evaluate completion every N turns. Also controls the injection
+        -- cadence: reminders are injected on the turn following a sidecar
+        -- evaluation.
+
+    eval_prompt: String?
+        -- Optional override for the sidecar evaluation prompt template.
+        -- When nil, the plugin uses a built-in default. Template
+        -- variables: %{criteria} (remaining items), %{lookback} (recent
+        -- turns as text). The sidecar returns a JSON list of indices
+        -- corresponding to completed criteria.
+
+    state_path: String
+        -- Filesystem path for persistent agenda state. One JSON file per
+        -- room: {state_path}/{room_name}.json. Written on every state
+        -- change, read on epoch start for rehydration.
+
+    injection_priority: Integer = 25
+        -- Priority for agenda injections in the injection pipeline.
+        -- Between landscape (20) and saturation (30) by default.
+
+    init_timeout_seconds: Integer = 30
+        -- Timeout for init script execution when activating a dynamic
+        -- agenda. Init scripts that exceed this are killed and the
+        -- activation fails.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value AgendaDefinition {
+    name: String
+    description: String
+    body: String?
+    criteria: [CriterionSection]?
+    init: String?
+
+    @guidance
+        -- A JSON file in the agendas_path directory.
+        --
+        -- Static agendas carry body and criteria inline:
+        --   {
+        --     "name": "weekly-sync",
+        --     "description": "Weekly team sync agenda",
+        --     "body": "Review action items from last week...",
+        --     "criteria": [...]
+        --   }
+        --
+        -- Dynamic agendas specify an init script path instead:
+        --   {
+        --     "name": "project-debrief",
+        --     "description": "Debrief a project. Invoke with {\"project\": \"<name>\"}",
+        --     "init": "scripts/project-debrief-init.sh"
+        --   }
+        --
+        -- body/criteria and init are mutually exclusive. A definition
+        -- with both is invalid and rejected at load time.
+        --
+        -- Init paths are relative to the agendas_path directory.
+        -- The description is shown to the agent as part of the
+        -- activate_agenda tool schema.
+}
+
+value CriterionSection {
+    topic: String
+    prose: String
+    conditions: [String]
+    children: [CriterionSection]?
+
+    @guidance
+        -- A section of the agenda with contextual prose and one or more
+        -- completable conditions. Sections can nest (children) for
+        -- hierarchical agendas.
+        --
+        -- JSON format (flat):
+        --   {
+        --     "topic": "Financial Review",
+        --     "prose": "Q3 forecast has been volatile. Margin projections need scrutiny.",
+        --     "conditions": [
+        --       "User ack'd financial forecast",
+        --       "CFO signoff confirmed"
+        --     ]
+        --   }
+        --
+        -- JSON format (nested):
+        --   {
+        --     "topic": "Quarterly Review",
+        --     "prose": "Cover all three divisions.",
+        --     "conditions": [],
+        --     "children": [
+        --       { "topic": "Engineering", "prose": "...", "conditions": ["..."] },
+        --       { "topic": "Sales", "prose": "...", "conditions": ["..."] }
+        --     ]
+        --   }
+        --
+        -- The prose gives the agent (and sidecar) contextual information
+        -- about the section's purpose. When the agent's context has drifted,
+        -- it can consult the prose to re-orient on a topic without needing
+        -- context from already-completed sections.
+        --
+        -- Completion is tracked at the condition level, not the section
+        -- level. A section is implicitly complete when all its conditions
+        -- (and all its children's conditions) are complete or skipped.
+}
+
+value InitOutput {
+    body: String
+    criteria: [CriterionSection]
+
+    @guidance
+        -- The JSON output contract for init scripts. The script receives
+        -- activation params as environment variables and outputs this
+        -- structure on stdout.
+        --
+        -- Example init script output:
+        --   {
+        --     "body": "Review the following 4 tickets...",
+        --     "criteria": [
+        --       {
+        --         "topic": "Ticket ACME-123",
+        --         "prose": "High-priority renewal, expires June 1",
+        --         "conditions": ["User assigned priority", "Owner confirmed"]
+        --       }
+        --     ]
+        --   }
+        --
+        -- The plugin validates this output against the CriterionSection
+        -- schema. Malformed output fails the activation and returns an
+        -- error to the agent via the tool result.
+}
+
+value ConditionState {
+    index: Integer
+    criterion: String
+    section_topic: String
+    status: pending | complete | skipped
+
+    @guidance
+        -- The flattened state of a single completable condition.
+        -- index is assigned by the plugin when the agenda is
+        -- instantiated — a depth-first traversal of all CriterionSections
+        -- assigns sequential indices. These indices are what the sidecar
+        -- returns ("conditions 2 and 5 were completed").
+        --
+        -- Status semantics:
+        --   pending: active, sidecar evaluates, gates auto-close
+        --   complete: satisfied (by sidecar detection or agent override)
+        --   skipped: agent explicitly voided via agenda_skip. Does NOT
+        --     gate auto-close, but sidecar still evaluates — if the
+        --     conversation incidentally satisfies a skipped condition,
+        --     the sidecar can promote it to complete.
+}
+
+value AgendaState {
+    active: Boolean
+    definition_name: String?
+    body: String?
+    sections: [CriterionSection]?
+    conditions: [ConditionState]?
+    activated_at_turn: Integer?
+    last_eval_turn: Integer?
+    last_eval_timestamp: Timestamp?
+    pending_eval_result: [Integer]?
+
+    @guidance
+        -- The plugin's internal state for the active agenda. Persisted
+        -- to disk on every state change for cross-epoch rehydration.
+        --
+        -- When no agenda is active: { "active": false }
+        -- When active: all fields populated.
+        --
+        -- last_eval_turn gates sidecar dispatch cadence (N turns since
+        -- last eval). last_eval_timestamp gates the lookback window
+        -- (all messages since this time). Both are set on successful
+        -- sidecar completion, not on dispatch. A failed eval advances
+        -- neither — the next eval retries with the full window.
+        --
+        -- pending_eval_result holds the indices of conditions marked
+        -- complete by the most recent sidecar evaluation. Set by
+        -- after_pass_complete (async sidecar), consumed by the next
+        -- before_context_build. Nil when no evaluation is pending.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity AgendaPlugin {
+    agenda_state: AgendaState
+    definitions: [AgendaDefinition]
+    eval_in_flight: Boolean
+
+    @guidance
+        -- The Agenda plugin GenServer. Loaded with all available agenda
+        -- definitions at init. Maintains the active agenda state and
+        -- coordinates sidecar evaluation.
+        --
+        -- eval_in_flight tracks whether an async sidecar evaluation is
+        -- running. Prevents overlapping evaluations if turns arrive
+        -- faster than the sidecar can process.
+}
+
+------------------------------------------------------------
+-- Rules: Plugin Lifecycle
+------------------------------------------------------------
+
+rule AgendaInit {
+    when: Plugin.init(session_metadata)
+
+    let definitions = load and validate all JSON files in config.agendas_path
+
+    ensures: Plugin.created with
+        subscribed_hooks: [on_epoch_start, before_context_build,
+                           after_pass_complete, on_epoch_end]
+        tool_definitions: [
+            activate_agenda_tool(definitions),
+            end_agenda_tool(),
+            agenda_status_tool(),
+            agenda_skip_tool()
+        ]
+        state: AgendaState(active: false) with definitions
+
+    ensures: :ignore when config.agendas_path does not exist
+    ensures: :ignore when no valid definitions are found
+
+    @guidance
+        -- The plugin scans agendas_path for *.json files, validates
+        -- each against the AgendaDefinition schema, and builds the
+        -- available set. Invalid files are logged and skipped.
+        --
+        -- Tool definitions are built from the available set:
+        -- activate_agenda's schema includes the available agenda names
+        -- and their descriptions so the agent can browse them.
+        --
+        -- State is initially inactive. If persistent state exists
+        -- (checked in on_epoch_start), it will be rehydrated there.
+}
+
+rule AgendaEpochStart {
+    when: on_epoch_start(epoch_start_context)
+
+    let persisted = read {config.state_path}/{room_name}.json
+
+    -- Rehydrate if there's an active agenda from a prior epoch
+    ensures: agenda_state = persisted.agenda_state
+        when persisted exists and persisted.active = true
+    ensures: agenda_state = AgendaState(active: false)
+        when persisted does not exist or persisted.active = false
+
+    @guidance
+        -- Cross-epoch persistence. When the user clears context mid-agenda,
+        -- the plugin dies with the epoch, is restarted, and rehydrates
+        -- here. The active agenda continues seamlessly — the first turn's
+        -- before_context_build will inject a "you're mid-agenda" reminder
+        -- with full state.
+}
+
+rule AgendaEpochEnd {
+    when: on_epoch_end(epoch_end_context)
+
+    ensures: agenda_state persisted to {config.state_path}/{room_name}.json
+
+    @guidance
+        -- Persist state before the plugin terminates. This is a safety
+        -- net — state is also written on every state change (activation,
+        -- completion, skip, sidecar result). The epoch-end write ensures
+        -- no state is lost if a write was missed during normal operation.
+}
+
+------------------------------------------------------------
+-- Rules: Tool Calls
+------------------------------------------------------------
+
+rule ActivateAgenda {
+    when: handle_tool_call(context) where tool_name = "activate_agenda"
+
+    requires: agenda_state.active = false
+        -- Only one agenda at a time
+
+    let definition = definitions.find(name: context.input.name)
+
+    requires: definition exists
+
+    -- Static agenda: use inline body and criteria
+    let body = definition.body when definition.init is nil
+    let criteria = definition.criteria when definition.init is nil
+
+    -- Dynamic agenda: run init script
+    let init_output = execute(definition.init, params: context.input.params)
+        when definition.init is not nil
+    let body = init_output.body when definition.init is not nil
+    let criteria = init_output.criteria when definition.init is not nil
+
+    -- Flatten criteria tree into indexed conditions
+    let conditions = flatten_conditions(criteria)
+
+    ensures: agenda_state = AgendaState(
+        active: true,
+        definition_name: definition.name,
+        body: body,
+        sections: criteria,
+        conditions: conditions,
+        activated_at_turn: context.turn_count,
+        last_eval_turn: context.turn_count,
+        pending_eval_result: nil
+    )
+
+    ensures: state persisted to disk
+    ensures: ToolResult with body + formatted criteria as content
+
+    -- Error cases
+    ensures: ToolResult(is_error: true, "Agenda already active: {name}")
+        when agenda_state.active = true
+    ensures: ToolResult(is_error: true, "Unknown agenda: {name}")
+        when definition does not exist
+    ensures: ToolResult(is_error: true, "Init script failed: {reason}")
+        when init script fails or times out or produces invalid output
+
+    @guidance
+        -- Activation is the only point where init scripts run. The script
+        -- receives activation params as environment variables (each key
+        -- in context.input.params becomes an env var, uppercased). Stdout
+        -- is parsed as JSON (InitOutput). Stderr is logged.
+        --
+        -- The tool result contains the full body and criteria so the agent
+        -- has everything it needs to begin the meeting. This is the agent's
+        -- first and primary look at the agenda content.
+        --
+        -- The activate_agenda tool schema lists available agendas in its
+        -- description, along with each agenda's description, so the agent
+        -- can make an informed choice:
+        --   "Activate a meeting agenda. Available agendas:
+        --    - weekly-sync: Weekly team sync agenda
+        --    - project-debrief: Debrief a project. Invoke with {\"project\": \"<name>\"}"
+}
+
+rule EndAgenda {
+    when: handle_tool_call(context) where tool_name = "end_agenda"
+
+    requires: agenda_state.active = true
+
+    let summary = format_completion_summary(agenda_state.conditions)
+
+    ensures: agenda_state = AgendaState(active: false)
+    ensures: state persisted to disk
+    ensures: ToolResult with summary (completed/skipped/remaining counts)
+
+    ensures: ToolResult(is_error: true, "No active agenda")
+        when agenda_state.active = false
+
+    @guidance
+        -- Explicit close-out regardless of completion state. The agent
+        -- may end an agenda early if the meeting is wrapping up or the
+        -- remaining items are being deferred.
+        --
+        -- The summary in the tool result gives the agent a final snapshot:
+        -- "Agenda 'weekly-sync' ended. 12/15 conditions completed,
+        --  2 skipped, 1 remaining: [User confirmed Q4 budget]"
+}
+
+rule AgendaStatus {
+    when: handle_tool_call(context) where tool_name = "agenda_status"
+
+    requires: agenda_state.active = true
+
+    ensures: ToolResult with formatted state:
+        sections with prose, conditions with status indicators
+
+    ensures: ToolResult(is_error: true, "No active agenda")
+        when agenda_state.active = false
+
+    @guidance
+        -- On-demand query. Returns the full agenda state with prose
+        -- and per-condition status (pending/complete/skipped). The agent
+        -- uses this to re-orient itself outside the N-turn injection
+        -- cycle. Should be rare — the periodic injections handle most
+        -- orientation needs.
+}
+
+rule AgendaSkip {
+    when: handle_tool_call(context) where tool_name = "agenda_skip"
+
+    requires: agenda_state.active = true
+
+    let condition = conditions.find(index: context.input.condition_index)
+        or conditions.find(criterion: context.input.condition_text)
+
+    requires: condition exists
+    requires: condition.status = pending
+        -- Can only skip pending items (not already complete)
+
+    ensures: condition.status = skipped
+    ensures: state persisted to disk
+    ensures: ToolResult confirming skip: "Skipped: {condition.criterion}"
+
+    ensures: auto-close check (see AutoCloseAgenda rule)
+
+    @guidance
+        -- Allows the agent to void a criterion by mutual consensus
+        -- with the user. Semantically distinct from completion: "we're
+        -- not doing this" vs "we did this."
+        --
+        -- Skipped conditions are still evaluated by the sidecar. If
+        -- the conversation incidentally satisfies a skipped condition,
+        -- the sidecar promotes it to complete. This handles: "We said
+        -- we'd skip the Halliday discussion but Kev just answered
+        -- the question anyway."
+        --
+        -- The tool accepts either a condition index (integer) or
+        -- condition text (string match). Index is more reliable;
+        -- text match is a convenience for the agent.
+}
+
+------------------------------------------------------------
+-- Rules: Sidecar Evaluation
+------------------------------------------------------------
+
+rule FireSidecarEvaluation {
+    when: after_pass_complete(pass_complete_context)
+        and agenda_state.active = true
+        and (turn_count - last_eval_turn) >= config.eval_interval
+        and eval_in_flight = false
+
+    let remaining = conditions where status in [pending, skipped]
+
+    -- Nothing to evaluate if all conditions are complete
+    requires: remaining is not empty
+
+    -- Collect lookback window: all turns since last evaluation
+    let lookback_turns = messages from Store for conversation_id
+        where inserted_at > last_eval_timestamp
+    -- Dynamic window: if the sidecar was slow and 7 turns happened,
+    -- the next eval gets all 7, not just the last eval_interval.
+
+    -- Format sidecar prompt
+    let prompt = format_eval_prompt(
+        config.eval_prompt or default_eval_prompt,
+        criteria: remaining,
+        lookback: lookback_turns
+    )
+
+    -- Fire async sidecar inference
+    ensures: eval_in_flight = true
+    ensures: async Task spawned:
+        call sidecar_profile backend with prompt
+        on success: update pending_eval_result with completed indices,
+                    set eval_in_flight = false,
+                    set last_eval_turn = turn_count
+        on failure: log warning, set eval_in_flight = false
+
+    @guidance
+        -- The sidecar fires when eval_interval turns have elapsed since
+        -- the last evaluation, not on a fixed cadence from activation.
+        -- It is async (fire-and-forget from the turn's perspective) —
+        -- the current turn proceeds without waiting. The result is
+        -- consumed on the next turn's before_context_build.
+        --
+        -- The lookback window is dynamic: all conversation turns since
+        -- the last evaluation, not a fixed count. This ensures no
+        -- turns are missed if the sidecar is slow or if turns arrive
+        -- faster than eval_interval. The sidecar sees:
+        --   1. The remaining criteria (pending + skipped, with status)
+        --   2. All conversation turns since the last evaluation
+        -- And returns: a JSON list of indices that were satisfied.
+        --
+        -- eval_in_flight prevents overlapping evaluations. If turns
+        -- keep arriving while a sidecar eval is running, no new eval
+        -- fires until the current one completes (success or failure).
+        -- A failed eval resets eval_in_flight, allowing retry on the
+        -- next eligible turn. last_eval_turn is only advanced on
+        -- success — a failed eval does not shrink the next lookback.
+        --
+        -- The sidecar profile determines model and backend only. The
+        -- evaluation prompt is plugin-owned (built-in default or
+        -- config override). This keeps profiles clean — they don't
+        -- contain plugin-specific evaluation logic.
+}
+
+rule ConsumeSidecarResult {
+    when: before_context_build(turn_context)
+        and agenda_state.active = true
+        and pending_eval_result is not nil
+
+    -- Apply completions
+    for index in pending_eval_result:
+        let condition = conditions[index]
+        ensures: condition.status = complete
+
+    ensures: pending_eval_result = nil
+    ensures: state persisted to disk
+
+    ensures: auto-close check (see AutoCloseAgenda rule)
+
+    @guidance
+        -- Sidecar results are consumed at the start of the next turn
+        -- that fires before_context_build. The results are applied to
+        -- the condition state before the injection is built, so the
+        -- reminder injection reflects the updated state.
+        --
+        -- If the sidecar marked a skipped condition as complete, it is
+        -- promoted — skipped conditions are not immune to completion.
+}
+
+------------------------------------------------------------
+-- Rules: Context Injection
+------------------------------------------------------------
+
+rule InjectAgendaReminder {
+    when: before_context_build(turn_context)
+        and agenda_state.active = true
+
+    -- First turn after activation: full state injection
+    let is_first_turn = turn_count = activated_at_turn + 1
+        or predecessor_epoch_rehydration
+
+    -- Sidecar result just arrived: inject updated state
+    let has_fresh_result = pending_eval_result is not nil
+
+    -- Inject on first turn or when sidecar results are consumed
+    requires: is_first_turn or has_fresh_result
+
+    let pending_conditions = conditions where status = pending
+    let skipped_conditions = conditions where status = skipped
+    let completed_conditions = conditions where status = complete
+
+    ensures: Injection(
+        priority: config.injection_priority,
+        content: formatted agenda reminder with:
+            definition name,
+            completion progress (X/Y completed, Z skipped),
+            remaining sections with prose and pending conditions,
+            skipped conditions listed separately
+    )
+
+    @guidance
+        -- The injection keeps the agent oriented without it having to
+        -- track the bookkeeping itself. The format is a system-reminder:
+        --
+        -- <system-reminder>
+        -- You are currently in agenda "weekly-sync".
+        -- Progress: 8/12 completed, 1 skipped, 3 remaining.
+        --
+        -- Remaining:
+        -- ## Financial Review
+        -- Q3 forecast has been volatile. Margin projections need scrutiny.
+        -- - [ ] User ack'd financial forecast
+        -- - [ ] CFO signoff confirmed
+        --
+        -- ## Halliday Account (skipped — sidecar may still complete)
+        -- Open question on renewal terms.
+        -- - [~] User answered question on Halliday renewal terms
+        -- </system-reminder>
+        --
+        -- On epoch-boundary rehydration (first turn of new epoch with
+        -- persisted active agenda), the injection includes a note:
+        -- "FYI: You're mid-agenda. Here's where you stand."
+        --
+        -- Reminders are event-driven, not periodic. They fire when:
+        --   1. First turn after activation (full state)
+        --   2. Epoch rehydration (full state with FYI note)
+        --   3. Sidecar result consumed (updated state after eval)
+        -- This means if the sidecar is slow, the agent gets no reminder
+        -- until results arrive. If it's fast, reminders track sidecar
+        -- cadence naturally. The agent can always call agenda_status
+        -- for an on-demand snapshot between reminders.
+        --
+        -- Completed sections are omitted from the reminder to save
+        -- context. The agent can call agenda_status for the full picture.
+}
+
+rule InjectAgendaCompletion {
+    when: before_context_build(turn_context)
+        and agenda just auto-closed (see AutoCloseAgenda)
+
+    ensures: Injection(
+        priority: config.injection_priority,
+        content: "<system-reminder>Agenda '{name}' is complete.
+            All criteria have been met. Summary: {completion_summary}
+            </system-reminder>"
+    )
+
+    @guidance
+        -- Informational notification. The agenda has already been
+        -- deactivated by AutoCloseAgenda. The agent may already know
+        -- (it was present for the conversations that completed the
+        -- criteria), so this is an FYI rather than a directive.
+}
+
+------------------------------------------------------------
+-- Rules: Auto-Close
+------------------------------------------------------------
+
+rule AutoCloseAgenda {
+    when: condition state changes (sidecar completion or agent skip)
+        and agenda_state.active = true
+
+    let pending = conditions where status = pending
+
+    requires: pending is empty
+        -- All conditions are either complete or skipped
+
+    ensures: agenda_state.active = false
+    ensures: state persisted to disk
+
+    @guidance
+        -- Auto-close fires when no pending conditions remain. This can
+        -- happen via sidecar marking the last pending condition complete,
+        -- or via the agent skipping the last pending condition.
+        --
+        -- The auto-close is deferred to the next before_context_build
+        -- for injection (InjectAgendaCompletion). The agent doesn't need
+        -- to call end_agenda — the plugin handles it.
+        --
+        -- Note: a fully-skipped agenda (all conditions skipped, none
+        -- completed) still auto-closes. This is intentional — if the
+        -- agent skips everything, the meeting is over.
+}
+
+------------------------------------------------------------
+-- Rules: State Persistence
+------------------------------------------------------------
+
+rule PersistAgendaState {
+    when: agenda_state changes
+
+    ensures: AgendaState written as JSON to
+        {config.state_path}/{room_name}.json
+
+    @guidance
+        -- State is persisted on every mutation: activation, sidecar
+        -- result application, skip, end, auto-close. This ensures
+        -- cross-epoch rehydration always has fresh state.
+        --
+        -- The file is written atomically (write to temp, rename) to
+        -- prevent corruption on crash. The JSON format is human-readable
+        -- for debugging.
+        --
+        -- When the agenda deactivates (end or auto-close), the persisted
+        -- state is { "active": false }. The plugin does not retain
+        -- history of past agendas — that's an observability concern
+        -- outside this spec.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneAgendaAtATime {
+    for c in Conversations:
+        at most one agenda is active at any time
+
+    @guidance
+        -- Enforced by ActivateAgenda requiring agenda_state.active = false.
+        -- The agent receives an error tool result if it tries to activate
+        -- while one is already running. The agent must call end_agenda or
+        -- wait for auto-close before activating another.
+}
+
+invariant SidecarNonBlocking {
+    Sidecar evaluation does not block the turn that fires it.
+    Only the consuming turn (before_context_build on a reminder turn)
+    may block briefly waiting for a pending result.
+
+    @guidance
+        -- The async sidecar fires on after_pass_complete and returns
+        -- via GenServer state update. The consuming before_context_build
+        -- checks for pending_eval_result synchronously — if present,
+        -- it applies the result. If the sidecar hasn't completed yet,
+        -- the turn proceeds without the result (it'll be consumed on
+        -- the next eligible turn).
+        --
+        -- This means the consuming turn does NOT block waiting for the
+        -- sidecar. It checks "is there a result?" — yes: apply, no: skip.
+        -- No blocking, no polling. The result will be there next time.
+}
+
+invariant InitScriptSandboxed {
+    Init scripts execute with bounded resources:
+    timeout (config.init_timeout_seconds), no network access
+    unless explicitly configured
+
+    @guidance
+        -- Init scripts run as child processes with a timeout. They
+        -- receive params as env vars and write to stdout. Stderr is
+        -- logged. The plugin kills the process on timeout.
+        --
+        -- Network access policy is a deployment concern — the spec
+        -- requires a timeout but does not mandate sandboxing beyond
+        -- that. Operators who want network-restricted init scripts
+        -- should use the same bubblewrap pattern as muse tools.
+}
+
+invariant SkippedStillEvaluated {
+    for c in ConditionStates where c.status = skipped:
+        the sidecar includes c in its evaluation set
+
+    @guidance
+        -- Skipped conditions are deprioritized, not removed. The
+        -- sidecar sees them annotated as "[skipped]" and can promote
+        -- them to complete if the conversation incidentally satisfies
+        -- them. This prevents losing credit for work that happens
+        -- to address a skipped item.
+}
+
+invariant AgendaSurvivesEpochClear {
+    for a in AgendaStates where a.active = true:
+        when epoch clears, the agenda state is persisted and
+        rehydrated in the successor epoch
+
+    @guidance
+        -- The plugin persists state on epoch end and rehydrates on
+        -- epoch start. The agent sees a "you're mid-agenda" injection
+        -- on the first turn of the new epoch. This is the first plugin
+        -- to use cross-epoch state persistence.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface AgendaToolSurface {
+    facing agent: PrimaryAgent
+
+    provides: activate_agenda(name, params?) when no agenda active
+    provides: end_agenda() when agenda active
+    provides: agenda_status() when agenda active
+    provides: agenda_skip(condition_index | condition_text) when agenda active
+
+    @guidance
+        -- Four tools exposed to the agent. The activate_agenda tool's
+        -- description lists available agendas with their descriptions,
+        -- functioning as the "briefing" — the agent knows what's
+        -- available by reading the tool schema.
+        --
+        -- Tools return errors for invalid states (e.g., end_agenda when
+        -- no agenda is active) rather than being dynamically added/removed.
+        -- This keeps the tool set static per the plugin system contract.
+}
+
+surface AgendaInjections {
+    facing agent: PrimaryAgent
+
+    exposes: agenda reminder (on sidecar result consumption)
+    exposes: activation/rehydration state disclosure
+    exposes: auto-close completion notice
+
+    @guidance
+        -- Three injection types, all via before_context_build at
+        -- config.injection_priority (default 25). The agent receives
+        -- these as system-reminder XML in the turn prefix.
+        --
+        -- Reminders are event-driven: they fire when sidecar results
+        -- arrive, not on a fixed periodic cadence. The sidecar fires
+        -- every eval_interval turns, so reminders naturally track that
+        -- rhythm — but if the sidecar is slow, reminders wait rather
+        -- than injecting stale state. The rehydration notice handles
+        -- epoch clear continuity. The completion notice is informational
+        -- (the agenda is already deactivated).
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Sidecar prompt engineering" {
+    -- The built-in evaluation prompt needs careful design. The sidecar
+    -- model is cheap (small, fast) and may not handle nuanced completion
+    -- detection well. The prompt should be concrete:
+    --   "Given these criteria and recent conversation, which criteria
+    --    were satisfied? Return a JSON array of indices."
+    -- But "satisfied" is fuzzy — does a partial discussion count? Does
+    -- the user need to explicitly confirm? This is a tuning concern
+    -- that'll require iteration with real agendas.
+}
+
+open question "Agenda history and observability" {
+    -- The current spec doesn't retain history of completed agendas.
+    -- Should there be a log of past agenda sessions (when activated,
+    -- what completed, how long it took)? This could be useful for
+    -- patterns like "we always skip the same 3 items in the weekly sync."
+    -- Deferred until the base functionality is proven.
+}
+
+open question "Conditional criteria" {
+    -- Some criteria might only apply conditionally (e.g., "Review
+    -- financials — only if Q3 report is available"). The current spec
+    -- treats all criteria as unconditional. Conditional criteria could
+    -- be handled by the init script (don't include criteria that don't
+    -- apply) or by a richer CriterionSection schema. Deferred.
+}
+
+open question "Agent-initiated completion" {
+    -- The agent can skip conditions but cannot mark them complete.
+    -- Should there be an agenda_complete(condition) tool for cases where
+    -- the agent knows a condition was met but the sidecar hasn't run yet?
+    -- This would reduce latency for obvious completions but adds another
+    -- tool to the surface. Currently relying on the sidecar + N-turn
+    -- cadence. Revisit if the delay feels sluggish in practice.
+}
