@@ -39,6 +39,11 @@ defmodule Cranium.Media.OutputSegmenterTest do
 
     send(segmenter, {:stream_end, stream_id})
 
+    # Drain: synchronize with OutputSegmenter so stream_end (and all
+    # segment_ready emissions) are processed before pass_complete.
+    # This mirrors what Harness does in production.
+    :ok = GenServer.call(segmenter, {:drain_stream, stream_id})
+
     # Simulate pass_complete (normally from Harness) — drives manifest status
     Cranium.Events.broadcast(stream_id, "conv1",
       {:pass_complete, "conv1", stream_id, %{reason: :complete, output: "", ephemeral: true}})
@@ -322,6 +327,39 @@ defmodule Cranium.Media.OutputSegmenterTest do
 
       send(segmenter, {:stream_end, sid})
       Process.sleep(50)
+    end
+  end
+
+  describe "drain_stream barrier" do
+    test "segments are in manifest before pass_complete when drain_stream is used" do
+      sid = "drain-barrier-#{System.unique_integer([:positive])}"
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
+
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["text"])
+      send(segmenter, {:stream_start, sid, %{disposition: ["text"], mode: :text}})
+
+      # All text buffered — no paragraph breaks, no segments emitted during streaming
+      send(segmenter, {:chunk, sid, "Short reply with no paragraph break."})
+      send(segmenter, {:stream_end, sid})
+
+      # Drain ensures stream_end (and its segment flush) is processed
+      :ok = GenServer.call(segmenter, {:drain_stream, sid})
+
+      # At this point, segment_ready has been delivered to Manifest.
+      # pass_complete has NOT been sent yet.
+      {:ok, manifest} = Manifest.get(sid)
+      assert manifest["status"] == "streaming"
+      assert length(manifest["segments"]) == 1, "segment should exist before pass_complete"
+
+      # Now complete — manifest transitions with all segments already present
+      Cranium.Events.broadcast(sid, "conv1",
+        {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}})
+
+      Process.sleep(20)
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert manifest["status"] == "complete"
+      assert length(manifest["segments"]) == 1
     end
   end
 

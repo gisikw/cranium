@@ -68,6 +68,14 @@ defmodule Cranium.Media.OutputSegmenter do
     {:reply, :ok, state}
   end
 
+  # Synchronization barrier: guarantees that stream_end (and its segment_ready
+  # emissions) have been processed before the caller continues. Called by
+  # Harness before emitting pass_complete so the Manifest has all segments
+  # before transitioning to "complete".
+  def handle_call({:drain_stream, _stream_id}, _from, state) do
+    {:reply, :ok, state}
+  end
+
   @impl GenServer
   def handle_info({:stream_start, stream_id, metadata}, state) do
     Logger.debug("Stream started",

@@ -125,6 +125,16 @@ defmodule Cranium.Inference.Harness do
     # Stop the Agent process (single-use)
     GenServer.stop(agent_pid, :normal, 5_000)
 
+    # Drain OutputSegmenter before emitting pass_complete. This ensures
+    # stream_end has been processed and all segment_ready events have been
+    # delivered to the Manifest — otherwise pass_complete can arrive first,
+    # causing the manifest to transition to "complete" before final segments
+    # are appended. Hearth polls the manifest and exits on "complete", so
+    # any segments arriving after that are silently lost (never played).
+    unless silent do
+      GenServer.call(Cranium.Media.OutputSegmenter, {:drain_stream, stream_id})
+    end
+
     # Emit pass events and handle bridge calls.
     # Store mutations + pass_done are handled by Persistence.Effects.
     handle_inference_result(result, turn, state)
