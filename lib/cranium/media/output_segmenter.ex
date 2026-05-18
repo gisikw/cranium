@@ -26,6 +26,14 @@ defmodule Cranium.Media.OutputSegmenter do
   SCTE markers from the Agent pass through without modification. They're
   positional cues for the transport — "show this image here," "display this
   code block here." The transport decides how to render them.
+
+  ## Idle Flush
+
+  For audio streams, a 1-second idle timer flushes any buffered text that
+  hasn't met the word threshold. This prevents dead air during tool execution
+  gaps — e.g. "Give me a minute." sitting unsynthesized while a Read tool
+  runs for 10 seconds. The timer resets on every text chunk and is cancelled
+  on stream_end or cue chunks (which flush explicitly).
   """
 
   use GenServer
@@ -76,7 +84,8 @@ defmodule Cranium.Media.OutputSegmenter do
         segment_index: 0,
         disposition: disposition,
         first_emit_at: nil,
-        words_emitted: 0
+        words_emitted: 0,
+        flush_ref: nil
       })
 
     mode = Map.get(metadata, :mode, state.mode)
@@ -96,6 +105,10 @@ defmodule Cranium.Media.OutputSegmenter do
             relaxed_chunk(stream, stream_id)
           end
 
+        # Schedule idle flush for audio streams with buffered text.
+        # Catches tool execution gaps where no more chunks arrive for seconds.
+        stream = schedule_idle_flush(stream, stream_id)
+
         {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
 
       :error ->
@@ -107,6 +120,9 @@ defmodule Cranium.Media.OutputSegmenter do
   def handle_info({:chunk, stream_id, {cue_type, data}}, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
+        # Cancel idle timer — explicit flush supersedes it
+        stream = cancel_idle_flush(stream)
+
         # Flush any buffered text before the cue so segment ordering matches stream order
         stream = flush_text_buffer(stream, stream_id)
 
@@ -127,6 +143,7 @@ defmodule Cranium.Media.OutputSegmenter do
   def handle_info({:stream_end, stream_id}, state) do
     case Map.fetch(state.streams, stream_id) do
       {:ok, stream} ->
+        stream = cancel_idle_flush(stream)
         remaining = String.trim(stream.text)
 
         if remaining != "" do
@@ -134,6 +151,31 @@ defmodule Cranium.Media.OutputSegmenter do
         end
 
         {:noreply, %{state | streams: Map.delete(state.streams, stream_id)}}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  @impl GenServer
+  def handle_info({:idle_flush, stream_id}, state) do
+    case Map.fetch(state.streams, stream_id) do
+      {:ok, stream} ->
+        stream = %{stream | flush_ref: nil}
+
+        remaining = String.trim(stream.text)
+
+        if remaining != "" do
+          Logger.debug(
+            "Idle flush: stream=#{stream_id} words=#{word_count(remaining)}",
+            stage: :output_segmenter
+          )
+
+          stream = flush_text_buffer(stream, stream_id)
+          {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
+        else
+          {:noreply, %{state | streams: Map.put(state.streams, stream_id, stream)}}
+        end
 
       :error ->
         {:noreply, state}
@@ -161,6 +203,36 @@ defmodule Cranium.Media.OutputSegmenter do
     else
       stream
     end
+  end
+
+  # Idle flush: dispatch buffered text after 1s of no new chunks.
+  # Prevents dead air during tool execution or model thinking pauses.
+  @idle_flush_ms 1_000
+
+  # Schedule an idle flush timer for audio streams with buffered text.
+  # Resets any existing timer. No-ops for text-only streams or empty buffers.
+  defp schedule_idle_flush(stream, stream_id) do
+    if "audio" in stream.disposition and String.trim(stream.text) != "" do
+      stream = cancel_idle_flush(stream)
+      ref = Process.send_after(self(), {:idle_flush, stream_id}, @idle_flush_ms)
+      %{stream | flush_ref: ref}
+    else
+      stream
+    end
+  end
+
+  defp cancel_idle_flush(%{flush_ref: nil} = stream), do: stream
+
+  defp cancel_idle_flush(%{flush_ref: ref} = stream) do
+    Process.cancel_timer(ref)
+    # Drain any already-delivered timer message
+    receive do
+      {:idle_flush, _} -> :ok
+    after
+      0 -> :ok
+    end
+
+    %{stream | flush_ref: nil}
   end
 
   @first_batch_words 30

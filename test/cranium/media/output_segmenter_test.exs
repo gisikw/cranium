@@ -212,6 +212,119 @@ defmodule Cranium.Media.OutputSegmenterTest do
     end
   end
 
+  describe "idle flush" do
+    test "audio stream flushes buffered text after idle timeout" do
+      sid = "idle-flush-#{System.unique_integer([:positive])}"
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
+
+      # Stub TTS — we just care about segmentation timing
+      Cranium.Backend.TTS.Mock
+      |> stub(:synthesize, fn _text, [] -> {:ok, <<0>>} end)
+
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["audio", "text"])
+      send(segmenter, {:stream_start, sid, %{disposition: ["audio", "text"], mode: :text}})
+
+      # Send text below word threshold (no paragraph break, no sentence split)
+      send(segmenter, {:chunk, sid, "Give me a minute."})
+      Process.sleep(50)
+
+      # Before idle timeout: no segments yet
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 0
+
+      # Wait for idle flush (1s + buffer)
+      Process.sleep(1100)
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 1
+      {:ok, text} = Manifest.get_segment_text(sid, 0)
+      assert text =~ "Give me a minute"
+
+      # Clean up
+      send(segmenter, {:stream_end, sid})
+      Process.sleep(50)
+    end
+
+    test "text-only streams do not idle-flush" do
+      sid = "no-idle-#{System.unique_integer([:positive])}"
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
+
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["text"])
+      send(segmenter, {:stream_start, sid, %{disposition: ["text"], mode: :text}})
+      send(segmenter, {:chunk, sid, "Give me a minute."})
+
+      # Wait past idle timeout
+      Process.sleep(1200)
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 0
+
+      send(segmenter, {:stream_end, sid})
+      Process.sleep(50)
+    end
+
+    test "new text chunk resets idle timer" do
+      sid = "reset-timer-#{System.unique_integer([:positive])}"
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
+
+      Cranium.Backend.TTS.Mock
+      |> stub(:synthesize, fn _text, [] -> {:ok, <<0>>} end)
+
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["audio", "text"])
+      send(segmenter, {:stream_start, sid, %{disposition: ["audio", "text"], mode: :text}})
+
+      # First chunk
+      send(segmenter, {:chunk, sid, "Give me "})
+      Process.sleep(700)
+
+      # Second chunk before 1s timeout — should reset timer
+      send(segmenter, {:chunk, sid, "a minute."})
+      Process.sleep(700)
+
+      # 1.4s total, but only 0.7s since last chunk — no flush yet
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 0
+
+      # Wait for remaining idle timeout
+      Process.sleep(500)
+
+      {:ok, manifest} = Manifest.get(sid)
+      assert length(manifest["segments"]) == 1
+
+      send(segmenter, {:stream_end, sid})
+      Process.sleep(50)
+    end
+
+    test "tool_use cue cancels idle timer and flushes immediately" do
+      sid = "cue-cancel-#{System.unique_integer([:positive])}"
+      segmenter = Process.whereis(Cranium.Media.OutputSegmenter)
+
+      Cranium.Backend.TTS.Mock
+      |> stub(:synthesize, fn _text, [] -> {:ok, <<0>>} end)
+
+      :ok = Manifest.init_stream(sid, "conv1", disposition: ["audio", "text"])
+      send(segmenter, {:stream_start, sid, %{disposition: ["audio", "text"], mode: :text}})
+
+      send(segmenter, {:chunk, sid, "Give me a minute."})
+      Process.sleep(50)
+
+      # Tool call arrives — should flush immediately, not wait for idle timer
+      tool_data = %{id: "t1", name: "Read", input: %{"file_path" => "/foo"}}
+      send(segmenter, {:chunk, sid, {:tool_use, tool_data}})
+      Process.sleep(50)
+
+      {:ok, manifest} = Manifest.get(sid)
+      segments = manifest["segments"]
+      # utterance (flushed text) + cue (tool_use)
+      assert length(segments) == 2
+      assert Enum.at(segments, 0)["type"] == "utterance"
+      assert Enum.at(segments, 1)["type"] == "cue"
+
+      send(segmenter, {:stream_end, sid})
+      Process.sleep(50)
+    end
+  end
+
   describe "disposition-driven TTS warming" do
     test "audio disposition eagerly warms TTS cache for each segment" do
       sid = "incr-tts-#{System.unique_integer([:positive])}"
