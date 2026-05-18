@@ -116,6 +116,9 @@ defmodule Cranium.Inference.Agent do
   def handle_call({:infer, context}, _from, state) do
     stream_id = context[:stream_id] || Cranium.Stage.new_stream_id()
 
+    # Silent flag suppresses raw stream events from the firehose (see emit/3).
+    if context[:silent], do: Process.put(:emit_silent, true)
+
     messages = context[:messages] || []
     system = context[:system]
 
@@ -151,7 +154,7 @@ defmodule Cranium.Inference.Agent do
         tools_disabled and state.llm_backend.manages_tool_loop?() -> ""
         tools_disabled -> []
         state.llm_backend.manages_tool_loop?() -> []
-        true -> Cranium.Inference.Agent.ToolRouter.tool_definitions()
+        true -> Cranium.Inference.Agent.ToolRouter.tool_definitions(state.conversation_id)
       end
 
     disposition = Map.get(context, :disposition, ["text"])
@@ -310,7 +313,7 @@ defmodule Cranium.Inference.Agent do
       {:llm_tool_use, tool_call} ->
         if state.llm_backend.manages_tool_loop?() do
           # CC path: marker and meta-tool calls come through, handle inline
-          case Cranium.Inference.Agent.ToolRouter.route(tool_call) do
+          case Cranium.Inference.Agent.ToolRouter.route(tool_call, state.conversation_id) do
             {:marker, marker_type, input} ->
               {_result, marker} = Cranium.Inference.Agent.MarkerEmitter.handle(marker_type, input)
               emit(stream_id, state.conversation_id, {:chunk, stream_id, {:marker, marker}})
@@ -431,7 +434,10 @@ defmodule Cranium.Inference.Agent do
     Logger.info("Executing #{length(tool_calls)} tool call(s)")
 
     # Check for clear_context tool — it triggers early exit
-    clear_call = Enum.find(tool_calls, fn tc -> match?({:clear, _}, ToolRouter.route(tc)) end)
+    clear_call =
+      Enum.find(tool_calls, fn tc ->
+        match?({:clear, _}, ToolRouter.route(tc, state.conversation_id))
+      end)
 
     if clear_call do
       # Execute all non-clear tools first, then handle clear
@@ -442,7 +448,7 @@ defmodule Cranium.Inference.Agent do
       end)
 
       # Clear context and exit pass
-      {:clear, continuation} = ToolRouter.route(clear_call)
+      {:clear, continuation} = ToolRouter.route(clear_call, state.conversation_id)
 
       Logger.info("Executing clear_context tool",
         conversation_id: state.conversation_id,
@@ -493,7 +499,7 @@ defmodule Cranium.Inference.Agent do
   defp execute_single_tool(tool_call, stream_id, conversation_id, opts) do
     alias Cranium.Inference.Agent.{ToolRouter, ToolExecutor, MarkerEmitter}
 
-    case ToolRouter.route(tool_call) do
+    case ToolRouter.route(tool_call, conversation_id) do
       {:marker, marker_type, input} ->
         {result_text, marker} = MarkerEmitter.handle(marker_type, input)
         emit(stream_id, conversation_id, {:chunk, stream_id, {:marker, marker}})
@@ -508,6 +514,33 @@ defmodule Cranium.Inference.Agent do
         result =
           case Cranium.Muse.exec(name, input, working_dir) do
             {:ok, text} -> ToolExecutor.truncate_result(text)
+            {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+          end
+
+        emit_tool_result(stream_id, conversation_id, tool_call.id, result)
+        result
+
+      {:plugin, plugin_pid, input} ->
+        emit_tool_use(stream_id, conversation_id, tool_call, tool_call.name, input)
+
+        epoch_id = Keyword.get(opts, :epoch_id)
+        turn_count = Keyword.get(opts, :turn_count, 0)
+
+        tool_call_context = %{
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          turn_count: turn_count,
+          tool_call_id: tool_call.id,
+          tool_name: tool_call.name,
+          input: input
+        }
+
+        result =
+          case Cranium.Plugin.ConversationSupervisor.dispatch_tool_call(
+                 plugin_pid,
+                 tool_call_context
+               ) do
+            {:ok, content} -> ToolExecutor.truncate_result(content)
             {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
           end
 
@@ -567,7 +600,13 @@ defmodule Cranium.Inference.Agent do
   # --- Private ---
 
   defp emit(stream_id, conversation_id, event) do
-    Cranium.Events.broadcast(stream_id, conversation_id, event)
+    # Silent passes (e.g. orientation) suppress raw stream events from the
+    # firehose. pass_complete is still broadcast by Harness (not Agent), so
+    # PassReactor backpressure continues to work. The flag is set per-process
+    # in handle_call({:infer, ...}) via Process.put.
+    unless Process.get(:emit_silent) do
+      Cranium.Events.broadcast(stream_id, conversation_id, event)
+    end
   end
 
   defp backend_module do
