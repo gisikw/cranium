@@ -156,3 +156,86 @@ defmodule Cranium.TestPlugins.ProfileCrasher do
     raise "intentional profile crash"
   end
 end
+
+defmodule Cranium.TestPlugins.ToolProvider do
+  @moduledoc "Test plugin that declares tools and handles tool calls."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(_metadata) do
+    tools = [
+      %{
+        name: "greet",
+        description: "Generate a greeting",
+        input_schema: %{
+          type: "object",
+          properties: %{name: %{type: "string"}},
+          required: ["name"]
+        }
+      },
+      %{
+        name: "farewell",
+        description: "Say goodbye",
+        input_schema: %{type: "object", properties: %{}}
+      }
+    ]
+
+    {:ok, [:before_context_build], tools, %{calls: []}}
+  end
+
+  @impl true
+  def before_context_build(_turn_context, state) do
+    {:ok, :skip, state}
+  end
+
+  @impl true
+  def handle_tool_call(%{tool_name: "greet", input: input}, state) do
+    name = Map.get(input, "name", "world")
+    state = %{state | calls: [{:greet, name} | state.calls]}
+    {:ok, ~s({"greeting": "Hello, #{name}!"}), state}
+  end
+
+  def handle_tool_call(%{tool_name: "farewell"}, state) do
+    state = %{state | calls: [{:farewell} | state.calls]}
+    {:ok, ~s({"farewell": "Goodbye!"}), state}
+  end
+
+  def handle_tool_call(%{tool_name: name}, state) do
+    {:error, "unknown tool: #{name}", state}
+  end
+end
+
+defmodule Cranium.TestPlugins.ToolCrasher do
+  @moduledoc "Test plugin whose handle_tool_call raises."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(_metadata) do
+    tools = [
+      %{name: "boom", description: "Always crashes", input_schema: %{type: "object"}}
+    ]
+
+    {:ok, [], tools, %{}}
+  end
+
+  @impl true
+  def handle_tool_call(_context, _state) do
+    raise "intentional tool crash"
+  end
+end
+
+defmodule Cranium.TestPlugins.EpochStartTracker do
+  @moduledoc "Test plugin that tracks on_epoch_start calls via the test process."
+  @behaviour Cranium.Plugin
+
+  @impl true
+  def init(metadata) do
+    {:ok, [:on_epoch_start], %{test_pid: metadata.plugin_config["test_pid"]}}
+  end
+
+  @impl true
+  def on_epoch_start(context, state) do
+    send(state.test_pid, {:epoch_start_called, context})
+    {:ok, state}
+  end
+end

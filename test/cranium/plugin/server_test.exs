@@ -151,9 +151,156 @@ defmodule Cranium.Plugin.ServerTest do
   end
 
   describe "info/1" do
-    test "returns module and hooks" do
+    test "returns module, hooks, and empty tool_definitions" do
       {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
-      assert {:ok, %{module: Cranium.TestPlugins.Echo, hooks: [:before_context_build]}} = Server.info(pid)
+
+      assert {:ok,
+              %{module: Cranium.TestPlugins.Echo, hooks: [:before_context_build], tool_definitions: []}} =
+               Server.info(pid)
+    end
+
+    test "returns tool_definitions when plugin declares tools" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      assert {:ok, %{tool_definitions: tools}} = Server.info(pid)
+      assert length(tools) == 2
+      assert Enum.any?(tools, &(&1.name == "greet"))
+      assert Enum.any?(tools, &(&1.name == "farewell"))
+    end
+  end
+
+  describe "tool_definitions/1" do
+    test "returns tool definitions from plugin" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      defs = Server.tool_definitions(pid)
+      assert length(defs) == 2
+      names = Enum.map(defs, & &1.name)
+      assert "greet" in names
+      assert "farewell" in names
+    end
+
+    test "returns empty list for plugin without tools" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      assert [] = Server.tool_definitions(pid)
+    end
+  end
+
+  describe "call_tool/2" do
+    test "dispatches tool call to plugin handle_tool_call" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
+      tool_call_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        turn_count: 1,
+        tool_call_id: "call-1",
+        tool_name: "greet",
+        input: %{"name" => "Kevin"}
+      }
+
+      assert {:ok, result} = Server.call_tool(pid, tool_call_context)
+      assert result =~ "Hello, Kevin!"
+    end
+
+    test "returns error from plugin" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
+      tool_call_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        turn_count: 1,
+        tool_call_id: "call-2",
+        tool_name: "nonexistent",
+        input: %{}
+      }
+
+      assert {:error, "unknown tool: nonexistent"} = Server.call_tool(pid, tool_call_context)
+    end
+
+    test "handles crash in handle_tool_call gracefully" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolCrasher, session_metadata: @metadata)
+
+      tool_call_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "test-epoch",
+        turn_count: 1,
+        tool_call_id: "call-3",
+        tool_name: "boom",
+        input: %{}
+      }
+
+      assert {:error, "intentional tool crash"} = Server.call_tool(pid, tool_call_context)
+      assert Process.alive?(pid)
+    end
+
+    test "maintains state across tool calls" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
+      for name <- ["Alice", "Bob"] do
+        ctx = %{
+          conversation_id: "test-conv",
+          epoch_id: "test-epoch",
+          turn_count: 1,
+          tool_call_id: "call-#{name}",
+          tool_name: "greet",
+          input: %{"name" => name}
+        }
+
+        assert {:ok, _} = Server.call_tool(pid, ctx)
+      end
+
+      assert {:ok, result} =
+               Server.call_tool(pid, %{
+                 conversation_id: "test-conv",
+                 epoch_id: "test-epoch",
+                 turn_count: 1,
+                 tool_call_id: "call-3",
+                 tool_name: "farewell",
+                 input: %{}
+               })
+
+      assert result =~ "Goodbye!"
+    end
+  end
+
+  describe "on_epoch_start hook" do
+    test "dispatches epoch_start to subscribed plugin" do
+      metadata = %{@metadata | plugin_config: %{"test_pid" => self()}}
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochStartTracker, session_metadata: metadata)
+
+      epoch_start_context = %{
+        conversation_id: "test-conv",
+        epoch_id: "new-epoch",
+        predecessor_epoch_id: "old-epoch",
+        room_name: "test-room"
+      }
+
+      assert {:ok, :ok} = Server.call_hook(pid, :on_epoch_start, epoch_start_context)
+      assert_receive {:epoch_start_called, ^epoch_start_context}
+    end
+
+    test "returns :skip for plugins not subscribed to on_epoch_start" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
+      assert {:ok, :skip} =
+               Server.call_hook(pid, :on_epoch_start, %{
+                 conversation_id: "test-conv",
+                 epoch_id: "new-epoch",
+                 predecessor_epoch_id: nil,
+                 room_name: "test-room"
+               })
+    end
+  end
+
+  describe "init with tool definitions" do
+    test "stores tool definitions from 4-tuple init return" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      assert {:ok, %{tool_definitions: tools}} = Server.info(pid)
+      assert length(tools) == 2
+    end
+
+    test "stores empty tool definitions from 3-tuple init return" do
+      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      assert {:ok, %{tool_definitions: []}} = Server.info(pid)
     end
   end
 end

@@ -78,6 +78,72 @@ defmodule Cranium.Plugin.ConversationSupervisor do
   end
 
   @doc """
+  Collect tool definitions from all active plugins for a conversation.
+
+  Returns a list of `{tool_name, plugin_pid, tool_definition}` tuples.
+  Used by ToolRouter to merge plugin tools with builtins and to route
+  tool calls back to the owning plugin.
+  """
+  @spec plugin_tools(String.t()) :: [{String.t(), pid(), Cranium.Plugin.tool_definition()}]
+  def plugin_tools(conversation_id) do
+    case Registry.lookup(@registry, {conversation_id, :plugins}) do
+      [{sup_pid, _}] ->
+        children = DynamicSupervisor.which_children(sup_pid)
+
+        Enum.flat_map(children, fn
+          {_, pid, :worker, _} when is_pid(pid) ->
+            case Cranium.Plugin.Server.tool_definitions(pid) do
+              defs when is_list(defs) and defs != [] ->
+                Enum.map(defs, fn def -> {def.name, pid, def} end)
+
+              _ ->
+                []
+            end
+
+          _ ->
+            []
+        end)
+
+      [] ->
+        []
+    end
+  end
+
+  @doc """
+  Dispatch a tool call to the plugin that owns it.
+
+  Returns `{:ok, content}` or `{:error, reason}`.
+  """
+  @spec dispatch_tool_call(pid(), Cranium.Plugin.tool_call_context()) ::
+          {:ok, String.t()} | {:error, term()}
+  def dispatch_tool_call(plugin_pid, tool_call_context) do
+    Cranium.Plugin.Server.call_tool(plugin_pid, tool_call_context)
+  end
+
+  @doc """
+  Dispatch on_epoch_start to all subscribed plugins for a conversation.
+
+  Called when a new epoch is created (including successor epochs after clear).
+  Plugins use this to rehydrate persistent cross-epoch state.
+  """
+  @spec dispatch_epoch_start(String.t(), Cranium.Plugin.epoch_start_context()) :: :ok
+  def dispatch_epoch_start(conversation_id, context) do
+    case Registry.lookup(@registry, {conversation_id, :plugins}) do
+      [{sup_pid, _}] ->
+        children = DynamicSupervisor.which_children(sup_pid)
+
+        for {_, pid, :worker, _} when is_pid(pid) <- children do
+          Cranium.Plugin.Server.call_hook(pid, :on_epoch_start, context)
+        end
+
+        :ok
+
+      [] ->
+        :ok
+    end
+  end
+
+  @doc """
   Dispatch after_resolve_profile to all subscribed plugins for a conversation.
 
   Composable: each plugin receives the output of the previous plugin in

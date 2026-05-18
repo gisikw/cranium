@@ -133,6 +133,17 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:get_or_create_epoch, conversation_id})
   end
 
+  @doc """
+  Get the most recently cleared epoch ID for a conversation.
+
+  Returns nil if no cleared epochs exist (first epoch ever).
+  Used by on_epoch_start to give plugins predecessor context.
+  """
+  @spec get_predecessor_epoch_id(String.t()) :: String.t() | nil
+  def get_predecessor_epoch_id(conversation_id) do
+    GenServer.call(__MODULE__, {:get_predecessor_epoch_id, conversation_id})
+  end
+
   # Message timestamp queries
 
   @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
@@ -378,6 +389,19 @@ defmodule Cranium.Store do
          profile: epoch.profile,
          last_invoked_at: last_invoked_at
        }}
+
+    {:reply, result, state}
+  end
+
+  defp do_handle_call({:get_predecessor_epoch_id, conversation_id}, _from, state) do
+    result =
+      from(e in Epoch,
+        where: e.conversation_id == ^conversation_id and e.status == "cleared",
+        order_by: [desc: e.updated_at],
+        limit: 1,
+        select: e.id
+      )
+      |> Repo.one()
 
     {:reply, result, state}
   end

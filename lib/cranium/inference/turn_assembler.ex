@@ -276,6 +276,22 @@ defmodule Cranium.Inference.TurnAssembler do
       }
     )
 
+    # 4b-ii. Dispatch on_epoch_start on fresh epochs — plugins rehydrate
+    #        persistent cross-epoch state here (e.g., active agendas).
+    if is_fresh do
+      predecessor_epoch_id = Cranium.Store.get_predecessor_epoch_id(header.conversation_id)
+
+      Cranium.Plugin.ConversationSupervisor.dispatch_epoch_start(
+        header.conversation_id,
+        %{
+          conversation_id: header.conversation_id,
+          epoch_id: epoch_id,
+          predecessor_epoch_id: predecessor_epoch_id,
+          room_name: header.conversation_id
+        }
+      )
+    end
+
     # 4c. Dispatch after_resolve_profile hook — composable profile override
     resolved_profile_context = %{
       conversation_id: header.conversation_id,

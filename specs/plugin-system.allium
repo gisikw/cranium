@@ -113,6 +113,59 @@ value PassCompleteContext {
         -- in subsequent user messages are captured by windowing).
 }
 
+value EpochStartContext {
+    conversation_id: String
+    epoch_id: String
+    predecessor_epoch_id: String?
+    room_name: String
+
+    @guidance
+        -- Passed to on_epoch_start callbacks when a new epoch begins.
+        -- predecessor_epoch_id is nil for the very first epoch in a
+        -- conversation (no prior context). When non-nil, the plugin
+        -- can use it to look up persistent state from a prior epoch.
+        --
+        -- This hook is distinct from plugin init: init fires on process
+        -- start (including crash recovery), on_epoch_start fires once
+        -- per epoch transition. A plugin that persists state across
+        -- epochs rehydrates here, not in init.
+}
+
+value ToolDefinition {
+    name: String
+    description: String
+    input_schema: Map
+
+    @guidance
+        -- An Anthropic-format tool definition declared by a plugin.
+        -- Merged into the tool set sent to API/Ollama backends alongside
+        -- builtin tools (clear_context, muse tools). For CC backends,
+        -- these are registered as MCP tools.
+        --
+        -- The name must not collide with any builtin tool name. The
+        -- input_schema follows JSON Schema format, matching the Anthropic
+        -- tool definition contract.
+}
+
+value ToolCallContext {
+    conversation_id: String
+    epoch_id: String
+    turn_count: Integer
+    tool_call_id: String
+    tool_name: String
+    input: Map
+
+    @guidance
+        -- Passed to handle_tool_call/2 when the ToolRouter dispatches
+        -- a tool call to the owning plugin. The plugin returns a
+        -- ToolResult (content string + is_error flag).
+        --
+        -- Tool calls execute synchronously within the Agent's tool loop.
+        -- They are subject to the same timeout and truncation as other
+        -- registered tools (tool_execution_timeout_seconds,
+        -- tool_result_max_bytes from inference-pipeline config).
+}
+
 value Injection {
     priority: Integer
     content: String
@@ -171,6 +224,7 @@ entity Plugin {
     module: Atom
     state: any
     subscribed_hooks: [HookPoint]
+    tool_definitions: [ToolDefinition]
     session_metadata: SessionMetadata
 
     @guidance
@@ -178,6 +232,11 @@ entity Plugin {
         -- where it opts in. Supervised by cranium — crashes are
         -- non-fatal to the turn. The supervisor restarts the plugin;
         -- the current turn proceeds without that plugin's contribution.
+        --
+        -- tool_definitions is optional (empty list = no tools). When
+        -- non-empty, the plugin's tools are merged into the ToolRouter's
+        -- definition set and routed back to this plugin on invocation.
+        -- Tools are declared at init time and are static for the session.
 }
 
 ------------------------------------------------------------
@@ -218,10 +277,14 @@ enum HookPoint {
         --   tracking entity mentions in assistant responses). Returns
         --   {:ok, new_state}.
         --
-        -- on_epoch_start: Fires when a new epoch is created. Distinct
-        --   from plugin init — init fires on process start (which may
-        --   be a restart mid-epoch), on_epoch_start fires once per epoch.
-        --   Not yet specified.
+        -- on_epoch_start: Fires when a new epoch is created (including
+        --   successor epochs after a clear). Distinct from plugin init —
+        --   init fires on process start (which may be a restart mid-epoch),
+        --   on_epoch_start fires once per epoch transition. Receives
+        --   EpochStartContext with predecessor info. Primary use case:
+        --   plugins with persistent cross-epoch state rehydrate here
+        --   and prepare first-turn injections (e.g., agenda plugin
+        --   restoring active meeting state after an epoch clear).
         --
         -- on_epoch_end: Fires when an epoch is clearing. Receives
         --   EpochEndContext with the full message history for the epoch.
@@ -249,13 +312,19 @@ rule StartPlugins {
 
         -- Start GenServer with metadata.
         -- Plugin init returns one of:
-        --   {:ok, subscribed_hooks, state} — plugin opts in
+        --   {:ok, subscribed_hooks, tool_definitions, state} — plugin opts in
+        --   {:ok, subscribed_hooks, state} — plugin opts in, no tools
         --   :ignore — plugin declines this session
 
-    ensures: Plugin.created(module: decl.module, subscribed_hooks, state)
+    ensures: Plugin.created(module: decl.module, subscribed_hooks, tool_definitions, state)
+        when init returns {:ok, subscribed_hooks, tool_definitions, state}
+    ensures: Plugin.created(module: decl.module, subscribed_hooks, tool_definitions: [], state)
         when init returns {:ok, subscribed_hooks, state}
     ensures: no Plugin process exists for decl.module
         when init returns :ignore
+
+    ensures: ToolRouter is notified of plugin tool registrations
+        when any plugin declares non-empty tool_definitions
 
     @guidance
         -- Each plugin declared in the profile gets a start attempt.
@@ -268,6 +337,11 @@ rule StartPlugins {
         -- loses its accumulated state. This is the standard OTP
         -- trade-off — plugins that need durable state should persist
         -- it externally.
+        --
+        -- Tool definitions are static for the session — a plugin
+        -- cannot add or remove tools after init. The ToolRouter
+        -- merges plugin tools with builtins (clear_context, muse)
+        -- to form the complete tool set for API/Ollama backends.
 }
 
 rule StopPlugins {
@@ -468,6 +542,120 @@ rule DispatchOnEpochEnd {
         -- they must not prevent epoch clearing or handoff generation.
 }
 
+rule DispatchOnEpochStart {
+    when: Epoch.created(conversation_id, epoch_id)
+
+    let plugins = active Plugins
+        where on_epoch_start in subscribed_hooks
+        and session_metadata.conversation_id = conversation_id
+
+    let predecessor = most recent cleared Epoch for conversation_id
+        -- nil if this is the first epoch
+
+    let epoch_start_context = EpochStartContext(
+        conversation_id,
+        epoch_id,
+        predecessor_epoch_id: predecessor.id?,
+        room_name
+    )
+
+    for p in plugins:
+        invoke p.on_epoch_start(epoch_start_context)
+        -- Returns {:ok, new_state}
+
+    ensures: plugin state is updated before the first turn's context build
+    ensures: epoch start proceeds normally when a plugin crashes during invocation
+
+    @guidance
+        -- Fires after the new epoch is created but before any turn is
+        -- assembled. This is the rehydration point for plugins with
+        -- persistent cross-epoch state: the plugin reads its persisted
+        -- state (e.g., from a JSON file keyed by room), updates its
+        -- GenServer state, and is ready to contribute injections on the
+        -- first turn.
+        --
+        -- For successor epochs (after a clear), predecessor_epoch_id
+        -- identifies the cleared epoch. For the very first epoch in a
+        -- conversation, predecessor_epoch_id is nil.
+        --
+        -- Ordering: fires AFTER plugin init (GenServer is running),
+        -- AFTER epoch creation, BEFORE the first turn's
+        -- before_context_build. This means plugins can set up state
+        -- that influences their first injection.
+}
+
+------------------------------------------------------------
+-- Rules: Plugin Tool Dispatch
+------------------------------------------------------------
+
+rule RegisterPluginTools {
+    when: Plugin.created with non-empty tool_definitions
+
+    requires: no name collision between plugin tool names and
+        builtin tool names (clear_context, muse tools)
+    requires: no name collision between plugin tool names across
+        different plugins in the same profile
+
+    ensures: ToolRouter includes plugin tools in tool_definitions()
+    ensures: ToolRouter maps plugin tool names to owning plugin PID
+
+    @guidance
+        -- Plugin tools are registered at init time and are immutable
+        -- for the session. The ToolRouter maintains a mapping from
+        -- tool name to plugin PID for dispatch.
+        --
+        -- Name collisions are checked at registration time. If a
+        -- plugin declares a tool with a name that collides with a
+        -- builtin or another plugin's tool, registration fails and
+        -- the plugin's tools are excluded (the plugin itself still
+        -- runs — only its tools are rejected). This is logged as
+        -- a warning.
+        --
+        -- For CC backends, plugin tools are exposed via MCP tool
+        -- definitions alongside marker tools. For API/Ollama backends,
+        -- they are merged into the tool_definitions list.
+}
+
+rule DispatchPluginToolCall {
+    when: ToolRouter.route(tool_call) returns kind = plugin
+
+    let plugin = ToolRouter.plugin_for(tool_call.name)
+
+    let tool_call_context = ToolCallContext(
+        conversation_id,
+        epoch_id,
+        turn_count,
+        tool_call_id: tool_call.id,
+        tool_name: tool_call.name,
+        input: tool_call.input
+    )
+
+    let result = invoke plugin.handle_tool_call(tool_call_context)
+    -- Returns {:ok, content, new_state}
+    -- or {:error, reason, new_state}
+
+    ensures: ToolResult returned to Agent with content and is_error flag
+    ensures: plugin state is updated
+    ensures: turn proceeds normally when plugin crashes during tool execution
+        (ToolResult with is_error: true and error message)
+
+    @guidance
+        -- Plugin tool calls execute synchronously within the Agent's
+        -- tool loop, subject to the same timeout as registered tools.
+        -- The plugin's GenServer state is updated with the new state
+        -- returned from handle_tool_call.
+        --
+        -- If the plugin crashes or times out during tool execution,
+        -- the Agent receives an error ToolResult and continues. The
+        -- plugin GenServer is restarted by the supervisor, but its
+        -- accumulated state is lost (standard OTP trade-off).
+        --
+        -- Tool calls may trigger side effects in plugin state that
+        -- affect subsequent hook invocations within the same turn
+        -- (e.g., activating an agenda via tool call changes what
+        -- before_context_build injects on the next turn).
+}
+
 ------------------------------------------------------------
 -- Rules: Hot Code Reload
 ------------------------------------------------------------
@@ -563,6 +751,37 @@ invariant HotReloadStatePreservation {
         -- should implement code_change/3.
 }
 
+invariant PluginToolNameCollision {
+    for p in Plugins with non-empty tool_definitions:
+        no tool name in p.tool_definitions matches any builtin tool name
+        no tool name in p.tool_definitions matches any other plugin's tool names
+
+    @guidance
+        -- Enforced at registration time (RegisterPluginTools rule).
+        -- Collisions are detected eagerly and the offending plugin's
+        -- tools are excluded. The check covers: clear_context (builtin),
+        -- all muse tool names (loaded from muse binary), and all tools
+        -- from previously registered plugins in the same profile.
+        --
+        -- Plugin tools do not need a namespace prefix — names are
+        -- checked for uniqueness, not namespaced by convention. This
+        -- keeps tool names clean for the model (activate_agenda, not
+        -- agenda_plugin__activate_agenda).
+}
+
+invariant EpochStartBeforeFirstTurn {
+    for e in Epochs:
+        when e is created with active plugins subscribed to on_epoch_start,
+        on_epoch_start hooks complete before the first turn's
+        before_context_build fires
+
+    @guidance
+        -- Plugins that persist state across epochs must have their
+        -- state rehydrated before the first turn can build context.
+        -- This ensures a plugin's first injection reflects its
+        -- persistent state, not its fresh-init state.
+}
+
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------
@@ -593,4 +812,19 @@ open question "Builtin migration to plugin contract" {
     -- would validate the plugin contract and simplify cranium's core.
     -- The migration is mechanical once the contract is proven with
     -- a real external plugin (gloss). Deferred until then.
+}
+
+open question "Dynamic tool sets" {
+    -- Plugin tools are currently static (declared at init). If a plugin
+    -- needs to change its tool set mid-session (e.g., removing
+    -- activate_agenda when an agenda is already active, or adding
+    -- agenda-specific tools on activation), the current model doesn't
+    -- support it. The model would see stale tool definitions.
+    --
+    -- Options: (a) plugins manage tool availability via error responses
+    -- ("agenda already active"), (b) add a tool_definitions_changed
+    -- notification that triggers ToolRouter refresh, (c) accept static
+    -- tools as a constraint. Currently using (a) — tools always present,
+    -- plugin returns errors for invalid states. Revisit if this becomes
+    -- a usability problem for the model.
 }

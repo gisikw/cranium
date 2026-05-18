@@ -26,6 +26,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
           {:marker, atom(), map()}
           | {:execute, module(), map()}
           | {:muse, String.t(), map()}
+          | {:plugin, pid(), map()}
           | {:clear, String.t() | nil}
           | {:unknown, String.t()}
 
@@ -50,6 +51,32 @@ defmodule Cranium.Inference.Agent.ToolRouter do
   end
 
   @doc """
+  Route a tool call, checking plugin tools for a specific conversation.
+
+  Plugin tools are checked after builtins (clear, marker, muse) but before
+  falling through to registered tools and :unknown.
+  """
+  @spec route(map(), String.t()) :: route_result()
+  def route(%{name: name, input: input}, conversation_id) do
+    cond do
+      name == "clear_context" ->
+        {:clear, Map.get(input, "continuation")}
+
+      name in @marker_tools ->
+        {:marker, String.to_existing_atom(name), input}
+
+      Cranium.Muse.handles?(name) ->
+        {:muse, name, input}
+
+      true ->
+        case find_plugin_handler(name, conversation_id) do
+          {:plugin, pid} -> {:plugin, pid, input}
+          nil -> find_handler(name, input)
+        end
+    end
+  end
+
+  @doc """
   Check if a tool call requires user approval.
   """
   @spec requires_approval?(String.t()) :: boolean()
@@ -68,7 +95,16 @@ defmodule Cranium.Inference.Agent.ToolRouter do
 
   @doc "Collect Anthropic tool definitions from all registered tools and marker tools."
   @spec tool_definitions() :: list(map())
-  def tool_definitions do
+  def tool_definitions, do: tool_definitions(nil)
+
+  @doc """
+  Collect tool definitions, including plugin tools for a conversation.
+
+  When `conversation_id` is nil, returns only builtin tools.
+  When provided, merges plugin-declared tools with builtins.
+  """
+  @spec tool_definitions(String.t() | nil) :: list(map())
+  def tool_definitions(conversation_id) do
     clear_def = %{
       name: "clear_context",
       description: """
@@ -86,8 +122,18 @@ defmodule Cranium.Inference.Agent.ToolRouter do
     }
 
     muse_defs = Cranium.Muse.tool_definitions()
+    builtin_defs = [clear_def | muse_defs]
 
-    [clear_def | muse_defs]
+    plugin_defs =
+      if conversation_id do
+        conversation_id
+        |> Cranium.Plugin.ConversationSupervisor.plugin_tools()
+        |> Enum.map(fn {_name, _pid, def} -> def end)
+      else
+        []
+      end
+
+    builtin_defs ++ plugin_defs
   end
 
   defp find_handler(name, input) do
@@ -95,5 +141,14 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       {_, module} -> {:execute, module, input}
       nil -> {:unknown, name}
     end
+  end
+
+  defp find_plugin_handler(name, conversation_id) do
+    conversation_id
+    |> Cranium.Plugin.ConversationSupervisor.plugin_tools()
+    |> Enum.find_value(fn
+      {^name, pid, _def} -> {:plugin, pid}
+      _ -> nil
+    end)
   end
 end

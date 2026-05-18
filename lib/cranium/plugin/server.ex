@@ -60,12 +60,37 @@ defmodule Cranium.Plugin.Server do
   defp default_timeout(:on_epoch_end), do: @epoch_end_timeout
   defp default_timeout(_), do: @hook_timeout
 
-  @doc "Return the module and subscribed hooks for a running plugin server."
-  @spec info(pid()) :: {:ok, %{module: module(), hooks: [Cranium.Plugin.hook()]}} | {:error, term()}
+  @doc "Return the module, subscribed hooks, and tool definitions for a running plugin server."
+  @spec info(pid()) ::
+          {:ok, %{module: module(), hooks: [Cranium.Plugin.hook()], tool_definitions: [map()]}}
+          | {:error, term()}
   def info(pid) do
     GenServer.call(pid, :info)
   catch
     :exit, reason -> {:error, reason}
+  end
+
+  @doc "Return the tool definitions declared by this plugin, or [] if none."
+  @spec tool_definitions(pid()) :: [Cranium.Plugin.tool_definition()]
+  def tool_definitions(pid) do
+    GenServer.call(pid, :tool_definitions)
+  catch
+    :exit, _reason -> []
+  end
+
+  @doc """
+  Dispatch a tool call to this plugin's handle_tool_call/2 callback.
+
+  Returns `{:ok, content}` or `{:error, reason}`.
+  """
+  @spec call_tool(pid(), Cranium.Plugin.tool_call_context(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def call_tool(pid, tool_call_context, timeout \\ @hook_timeout) do
+    GenServer.call(pid, {:tool_call, tool_call_context}, timeout)
+  catch
+    :exit, reason ->
+      Logger.warning("Plugin.Server: tool call failed", reason: inspect(reason))
+      {:error, reason}
   end
 
   # --- GenServer callbacks ---
@@ -73,13 +98,22 @@ defmodule Cranium.Plugin.Server do
   @impl true
   def init({module, metadata}) do
     case module.init(metadata) do
+      {:ok, hooks, tool_defs, state} ->
+        Logger.info("Plugin.Server: #{inspect(module)} started",
+          hooks: inspect(hooks),
+          tools: length(tool_defs),
+          conversation_id: metadata.conversation_id
+        )
+
+        {:ok, %{module: module, hooks: hooks, tool_definitions: tool_defs, state: state}}
+
       {:ok, hooks, state} ->
         Logger.info("Plugin.Server: #{inspect(module)} started",
           hooks: inspect(hooks),
           conversation_id: metadata.conversation_id
         )
 
-        {:ok, %{module: module, hooks: hooks, state: state}}
+        {:ok, %{module: module, hooks: hooks, tool_definitions: [], state: state}}
 
       :ignore ->
         :ignore
@@ -105,8 +139,29 @@ defmodule Cranium.Plugin.Server do
   end
 
   @impl true
+  def handle_call({:tool_call, tool_call_context}, _from, data) do
+    case safe_tool_call(data.module, tool_call_context, data.state) do
+      {:ok, content, new_state} ->
+        {:reply, {:ok, content}, %{data | state: new_state}}
+
+      {:error, reason, new_state} ->
+        {:reply, {:error, reason}, %{data | state: new_state}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, data}
+    end
+  end
+
+  @impl true
   def handle_call(:info, _from, data) do
-    {:reply, {:ok, %{module: data.module, hooks: data.hooks}}, data}
+    {:reply,
+     {:ok, %{module: data.module, hooks: data.hooks, tool_definitions: data.tool_definitions}},
+     data}
+  end
+
+  @impl true
+  def handle_call(:tool_definitions, _from, data) do
+    {:reply, data.tool_definitions, data}
   end
 
   defp safe_callback(module, callback, args) do
@@ -123,5 +178,21 @@ defmodule Cranium.Plugin.Server do
       )
 
       {:error, {:raised, e}}
+  end
+
+  defp safe_tool_call(module, tool_call_context, state) do
+    case module.handle_tool_call(tool_call_context, state) do
+      {:ok, content, new_state} -> {:ok, content, new_state}
+      {:error, reason, new_state} -> {:error, reason, new_state}
+      other -> {:error, {:unexpected_return, other}}
+    end
+  rescue
+    e ->
+      Logger.warning("Plugin.Server: #{inspect(module)}.handle_tool_call raised",
+        error: Exception.message(e),
+        tool: tool_call_context.tool_name
+      )
+
+      {:error, Exception.message(e)}
   end
 end
