@@ -1,5 +1,5 @@
 project:
-  prefix: cv2
+  prefix: crn
 
 pipeline:
   from: ~/Projects/hoard/pipelines/coding
