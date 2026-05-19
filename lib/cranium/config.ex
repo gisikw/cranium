@@ -116,6 +116,13 @@ defmodule Cranium.Config do
     end
   end
 
+  @doc "Return all room default mappings as `%{room_name => profile_name}`."
+  @spec list_room_defaults() :: %{String.t() => String.t()}
+  def list_room_defaults do
+    :ets.match(@table, {{:room_default, :"$1"}, :"$2"})
+    |> Enum.into(%{}, fn [room, profile] -> {room, profile} end)
+  end
+
   @doc "Ollama API base URL from config."
   @spec ollama_url() :: String.t()
   def ollama_url do

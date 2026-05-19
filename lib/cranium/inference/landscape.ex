@@ -70,19 +70,22 @@ defmodule Cranium.Inference.Landscape do
   List all known rooms as `[%{id: String.t(), name: String.t(), description: String.t()}]`.
 
   Returns every conversation the Landscape knows about (DB + hoard), suitable
-  for a room picker UI. Excludes conversations in the `exclude` list.
+  for a room picker UI. Rooms configured in `room_defaults` appear even if
+  they have no message history. Excludes conversations in the `exclude` list.
 
   ## Options
 
   - `:exclude` — list of conversation_ids to omit (default `[]`).
   - `:name` — GenServer name (default `__MODULE__`, used by tests).
+  - `:room_defaults` — override the room defaults map (default: `Config.list_room_defaults()`).
   """
   @spec list_rooms(keyword()) :: [map()]
   def list_rooms(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     exclude = Keyword.get(opts, :exclude, [])
+    room_defaults = Keyword.get(opts, :room_defaults, Cranium.Config.list_room_defaults())
 
-    GenServer.call(name, {:list_rooms, exclude})
+    GenServer.call(name, {:list_rooms, exclude, room_defaults})
   end
 
   @doc """
@@ -129,10 +132,10 @@ defmodule Cranium.Inference.Landscape do
   end
 
   @impl true
-  def handle_call({:list_rooms, exclude}, _from, state) do
+  def handle_call({:list_rooms, exclude, room_defaults}, _from, state) do
     exclude_set = MapSet.new(exclude)
 
-    rooms =
+    known_rooms =
       state.entries
       |> Map.values()
       |> Enum.reject(fn e -> MapSet.member?(exclude_set, e.conversation_id) end)
@@ -141,7 +144,19 @@ defmodule Cranium.Inference.Landscape do
         %{id: e.conversation_id, name: e.room_name, description: e.summary}
       end)
 
-    {:reply, rooms, state}
+    # Merge in room_defaults entries that have no history yet
+    known_ids = MapSet.new(known_rooms, & &1.id)
+
+    stub_rooms =
+      room_defaults
+      |> Enum.reject(fn {room, _} ->
+        MapSet.member?(known_ids, room) or MapSet.member?(exclude_set, room)
+      end)
+      |> Enum.map(fn {room, _profile} ->
+        %{id: room, name: room, description: nil}
+      end)
+
+    {:reply, known_rooms ++ stub_rooms, state}
   end
 
   @impl true

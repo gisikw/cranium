@@ -262,7 +262,7 @@ defmodule Cranium.Inference.LandscapeTest do
 
       name = start_landscape(dir)
 
-      rooms = Landscape.list_rooms(name: name)
+      rooms = Landscape.list_rooms(name: name, room_defaults: %{})
       assert length(rooms) == 2
       [first, second] = rooms
       assert first.id == "fort-nix"
@@ -284,14 +284,14 @@ defmodule Cranium.Inference.LandscapeTest do
 
       name = start_landscape(dir)
 
-      rooms = Landscape.list_rooms(name: name, exclude: ["ops"])
+      rooms = Landscape.list_rooms(name: name, exclude: ["ops"], room_defaults: %{})
       assert length(rooms) == 1
       assert hd(rooms).id == "roost"
     end
 
     test "returns empty list when no entries exist", %{tmp_dir: dir} do
       name = start_landscape(dir)
-      assert Landscape.list_rooms(name: name) == []
+      assert Landscape.list_rooms(name: name, room_defaults: %{}) == []
     end
 
     test "sorts by recency (most recent first)", %{tmp_dir: dir} do
@@ -309,8 +309,38 @@ defmodule Cranium.Inference.LandscapeTest do
 
       name = start_landscape(dir)
 
-      rooms = Landscape.list_rooms(name: name)
+      rooms = Landscape.list_rooms(name: name, room_defaults: %{})
       assert [%{id: "new"}, %{id: "old"}] = rooms
+    end
+
+    test "includes room_defaults entries with no history", %{tmp_dir: dir} do
+      write_hoard_summary(dir, "cranium.json", %{
+        room_name: "cranium",
+        summary: "Cranium project",
+        last_message_ts: DateTime.to_unix(@now)
+      })
+
+      name = start_landscape(dir)
+      defaults = %{"new-room" => "exo-ensemble", "cranium" => "exo"}
+
+      rooms = Landscape.list_rooms(name: name, room_defaults: defaults)
+      assert length(rooms) == 2
+
+      ids = Enum.map(rooms, & &1.id)
+      assert "cranium" in ids
+      assert "new-room" in ids
+
+      # The stub room has nil description
+      stub = Enum.find(rooms, &(&1.id == "new-room"))
+      assert stub.description == nil
+    end
+
+    test "room_defaults entries respect exclude list", %{tmp_dir: dir} do
+      name = start_landscape(dir)
+      defaults = %{"secret-room" => "exo"}
+
+      rooms = Landscape.list_rooms(name: name, exclude: ["secret-room"], room_defaults: defaults)
+      assert rooms == []
     end
   end
 
