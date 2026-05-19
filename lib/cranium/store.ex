@@ -62,7 +62,7 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:append_message, conversation_id, epoch_id, message})
   end
 
-  @spec get_messages(String.t(), keyword()) :: {:ok, [map()]}
+  @spec get_messages(String.t(), keyword()) :: {:ok, [map()]} | {:error, :db_error}
   def get_messages(conversation_id, opts \\ []) do
     GenServer.call(__MODULE__, {:get_messages, conversation_id, opts})
   end

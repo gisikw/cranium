@@ -385,10 +385,10 @@ defmodule Cranium.Plugins.Agenda do
     case Cranium.Store.get_messages(state.conversation_id, epoch_id: state.epoch_id) do
       {:ok, messages} ->
         # Drop messages before activation; then drop those before last eval
-        msg_offset = (state.agenda.last_eval_message_count || 0)
+        msg_offset = state.agenda.last_eval_message_count || 0
         Enum.drop(messages, msg_offset)
 
-      _ ->
+      {:error, _} ->
         []
     end
   end
@@ -531,7 +531,7 @@ defmodule Cranium.Plugins.Agenda do
   defp count_current_messages(state) do
     case Cranium.Store.get_messages(state.conversation_id, epoch_id: state.epoch_id) do
       {:ok, messages} -> length(messages)
-      _ -> 0
+      {:error, _} -> 0
     end
   end
 
