@@ -262,7 +262,7 @@ defmodule Cranium.Inference.Landscape do
         "- **#{e.room_name}** (last active #{ago}): #{e.summary}"
       end)
 
-    "<cross-room-context>\nHere's what's happening in your other rooms:\n\n" <>
+    "<cross-room-context>\nHere are summaries of recent or ongoing conversations between you and Kevin in other rooms:\n\n" <>
       Enum.join(lines, "\n") <>
       "\n</cross-room-context>"
   end

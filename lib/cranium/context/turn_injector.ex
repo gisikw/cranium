@@ -241,7 +241,12 @@ defmodule Cranium.Context.TurnInjector do
 
     cond do
       message[:is_fresh] ->
-        case Cranium.Inference.Landscape.build(message[:conversation_id], now: now) do
+        since = DateTime.add(now, -14, :day)
+
+        case Cranium.Inference.Landscape.build(message[:conversation_id],
+               since: since,
+               now: now
+             ) do
           nil -> {nil, false}
           block -> {block, true}
         end

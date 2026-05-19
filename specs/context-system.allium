@@ -215,7 +215,7 @@ rule BuildLandscapeBlock {
     requires: at least one entry survives filtering
 
     ensures: block formatted as:
-        "<cross-room-context>\nHere's what's happening in your other rooms:\n\n"
+        "<cross-room-context>\nHere are summaries of recent or ongoing conversations between you and Kevin in other rooms:\n\n"
         + "- **room_name** (last active {ago}): {summary}\n" for each entry
         + "</cross-room-context>"
     ensures: nil when no entries survive filtering
