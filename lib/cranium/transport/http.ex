@@ -50,9 +50,20 @@ defmodule Cranium.Transport.HTTP do
 
     # Commands are synchronous — no stream, no manifest, no inference pass
     case text do
-      "!clear" ->
-        Cranium.clear_epoch(conversation_id, source: origin || "submit")
-        Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
+      "!clear" <> rest ->
+        continuation = String.trim(rest)
+        continuation = if continuation == "", do: nil, else: continuation
+
+        Cranium.clear_epoch(conversation_id,
+          source: origin || "submit",
+          continuation: continuation
+        )
+
+        Logger.info("Cleared epoch",
+          conversation_id: conversation_id,
+          transport: :http,
+          has_continuation: continuation != nil
+        )
 
         conn
         |> put_resp_content_type("application/json")
@@ -415,8 +426,9 @@ defmodule Cranium.Transport.HTTP do
 
   post "/v1/clear" do
     conversation_id = conn.body_params["conversation_id"] || "default"
+    continuation = conn.body_params["continuation"]
 
-    Cranium.clear_epoch(conversation_id, source: "api")
+    Cranium.clear_epoch(conversation_id, source: "api", continuation: continuation)
     Logger.info("Cleared epoch", conversation_id: conversation_id, transport: :http)
 
     conn

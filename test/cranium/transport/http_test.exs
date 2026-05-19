@@ -1,5 +1,5 @@
 defmodule Cranium.Transport.HTTPTest do
-  use ExUnit.Case, async: false
+  use CraniumTest.DataCase, async: false
 
   @moduletag :capture_log
 
@@ -243,6 +243,115 @@ defmodule Cranium.Transport.HTTPTest do
 
       assert conn.status == 200
       assert is_list(Jason.decode!(conn.resp_body))
+    end
+  end
+
+  describe "!clear command" do
+    test "bare !clear returns command response" do
+      cid = "clear-bare-#{System.unique_integer([:positive])}"
+
+      conn =
+        Plug.Test.conn(:post, "/v1/submit", %{
+          "conversation_id" => cid,
+          "text" => "!clear"
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["command"] == "clear"
+    end
+
+    test "!clear with continuation text returns command response" do
+      cid = "clear-cont-#{System.unique_integer([:positive])}"
+
+      conn =
+        Plug.Test.conn(:post, "/v1/submit", %{
+          "conversation_id" => cid,
+          "text" => "!clear hey could you do blah blah blah"
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["command"] == "clear"
+    end
+
+    test "!clear with continuation stores it on the new epoch" do
+      cid = "clear-store-#{System.unique_integer([:positive])}"
+
+      # Create an epoch so clear_epoch has something to clear
+      {:ok, _epoch_id} = Cranium.Store.create_epoch(cid)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/submit", %{
+          "conversation_id" => cid,
+          "text" => "!clear pick up where we left off"
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+
+      # The new epoch should have the continuation stored
+      {:ok, epoch} = Cranium.Store.get_epoch(cid)
+      assert epoch.continuation == "pick up where we left off"
+    end
+
+    test "bare !clear does not store continuation" do
+      cid = "clear-nocont-#{System.unique_integer([:positive])}"
+      {:ok, _epoch_id} = Cranium.Store.create_epoch(cid)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/submit", %{
+          "conversation_id" => cid,
+          "text" => "!clear"
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+
+      {:ok, epoch} = Cranium.Store.get_epoch(cid)
+      assert epoch.continuation == nil
+    end
+  end
+
+  describe "POST /v1/clear" do
+    test "accepts continuation parameter" do
+      cid = "api-clear-cont-#{System.unique_integer([:positive])}"
+      {:ok, _epoch_id} = Cranium.Store.create_epoch(cid)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/clear", %{
+          "conversation_id" => cid,
+          "continuation" => "resume the migration work"
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["status"] == "cleared"
+
+      {:ok, epoch} = Cranium.Store.get_epoch(cid)
+      assert epoch.continuation == "resume the migration work"
+    end
+
+    test "works without continuation" do
+      cid = "api-clear-bare-#{System.unique_integer([:positive])}"
+      {:ok, _epoch_id} = Cranium.Store.create_epoch(cid)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/clear", %{
+          "conversation_id" => cid
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+
+      {:ok, epoch} = Cranium.Store.get_epoch(cid)
+      assert epoch.continuation == nil
     end
   end
 
