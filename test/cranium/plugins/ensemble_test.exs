@@ -104,7 +104,7 @@ defmodule Cranium.Plugins.EnsembleTest do
     test "selects a candidate and records in last_selection", %{state: state} do
       {:ok, _context, new_state} = Ensemble.after_resolve_profile(@resolved_context, state)
       assert new_state.last_selection != nil
-      assert new_state.last_selection.profile in ["exo", "exo-local"]
+      assert new_state.last_selection.selected_profile in ["exo", "exo-local"]
       assert length(new_state.last_selection.scores) == 2
     end
 
@@ -125,7 +125,7 @@ defmodule Cranium.Plugins.EnsembleTest do
         for _ <- 1..200, reduce: %{state: state, selections: []} do
           %{state: s, selections: sels} ->
             {:ok, _ctx, new_state} = Ensemble.after_resolve_profile(@resolved_context, s)
-            %{state: new_state, selections: [new_state.last_selection.profile | sels]}
+            %{state: new_state, selections: [new_state.last_selection.selected_profile | sels]}
         end
 
       exo_count = Enum.count(results.selections, &(&1 == "exo"))
@@ -230,7 +230,7 @@ defmodule Cranium.Plugins.EnsembleTest do
         for _ <- 1..200, reduce: %{state: state, selections: []} do
           %{state: s, selections: sels} ->
             {:ok, _ctx, new_state} = Ensemble.after_resolve_profile(@resolved_context, s)
-            %{state: new_state, selections: [new_state.last_selection.profile | sels]}
+            %{state: new_state, selections: [new_state.last_selection.selected_profile | sels]}
         end
 
       exo_count = Enum.count(results.selections, &(&1 == "exo"))

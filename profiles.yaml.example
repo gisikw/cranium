@@ -23,15 +23,20 @@ profiles:
     model: gemma4-cranium
     identity: /path/to/identity.md
 
+  exo-api:
+    backend: anthropic
+    model: claude-opus-4-6
+    identity: /path/to/identity.md
+
   exo-ensemble:
-    backend: claudecode
+    backend: anthropic
     model: claude-opus-4-6
     identity: /path/to/identity.md
     plugins:
       - module: Cranium.Plugins.Ensemble
         config:
           candidates:
-            - profile: exo
+            - profile: exo-api
               evaluator: Cranium.Plugins.Ensemble.Evaluators.Always
             - profile: exo-local
               evaluator: Cranium.Plugins.Ensemble.Evaluators.TurnGated

@@ -28,7 +28,7 @@ defmodule Cranium.Store do
 
   import Ecto.Query
 
-  alias Cranium.Store.{Repo, Epoch, Message, Summary}
+  alias Cranium.Store.{Repo, Epoch, Message, Summary, EnsembleSelection}
 
   defstruct locks: %{}
 
@@ -149,6 +149,13 @@ defmodule Cranium.Store do
   @spec get_last_message_at(String.t()) :: {:ok, DateTime.t()} | :not_found
   def get_last_message_at(epoch_id) do
     GenServer.call(__MODULE__, {:get_last_message_at, epoch_id})
+  end
+
+  # Ensemble selection operations
+
+  @spec save_ensemble_selection(map()) :: :ok
+  def save_ensemble_selection(attrs) do
+    GenServer.call(__MODULE__, {:save_ensemble_selection, attrs})
   end
 
   # Summary operations
@@ -446,6 +453,14 @@ defmodule Cranium.Store do
       |> Enum.map(&summary_to_map/1)
 
     {:reply, {:ok, summaries}, state}
+  end
+
+  defp do_handle_call({:save_ensemble_selection, attrs}, _from, state) do
+    %EnsembleSelection{}
+    |> EnsembleSelection.changeset(attrs)
+    |> Repo.insert!()
+
+    {:reply, :ok, state}
   end
 
   defp do_handle_call({:clear_epoch, conversation_id, continuation}, _from, state) do

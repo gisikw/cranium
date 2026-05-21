@@ -97,29 +97,38 @@ defmodule Cranium.Plugins.Ensemble do
     # Temperature scaling and normalization
     case select(scored, state.temperature, state.rng_state) do
       {:ok, selected_profile, scored_candidates, new_rng} ->
+        final_context =
+          if selected_profile == context.profile_name do
+            # Same profile — no swap needed
+            context
+          else
+            case swap_profile(context, selected_profile) do
+              {:ok, new_context} ->
+                new_context
+
+              {:error, reason} ->
+                Logger.warning("Ensemble: profile swap failed, keeping default",
+                  target: selected_profile,
+                  reason: inspect(reason)
+                )
+
+                context
+            end
+          end
+
         state = %{
           state
           | rng_state: new_rng,
-            last_selection: %{profile: selected_profile, scores: scored_candidates}
+            last_selection: %{
+              profile: final_context.profile_name,
+              selected_profile: selected_profile,
+              model: final_context.model,
+              backend: to_string(final_context.backend),
+              scores: scored_candidates
+            }
         }
 
-        if selected_profile == context.profile_name do
-          # Same profile — no swap needed
-          {:ok, context, state}
-        else
-          case swap_profile(context, selected_profile) do
-            {:ok, new_context} ->
-              {:ok, new_context, state}
-
-            {:error, reason} ->
-              Logger.warning("Ensemble: profile swap failed, keeping default",
-                target: selected_profile,
-                reason: inspect(reason)
-              )
-
-              {:ok, context, state}
-          end
-        end
+        {:ok, final_context, state}
 
       :no_eligible ->
         Logger.warning("Ensemble: all candidates ineligible, keeping default",
@@ -143,11 +152,32 @@ defmodule Cranium.Plugins.Ensemble do
           scores: selection.scores
         }
 
+        Cranium.Store.save_ensemble_selection(%{
+          epoch_id: pass_context.epoch_id,
+          turn_count: pass_context.turn_count,
+          profile: selection.profile,
+          model: selection.model,
+          backend: selection.backend,
+          scores: encode_scores(selection.scores)
+        })
+
         {:ok, %{state | history: [record | state.history], last_selection: nil}}
     end
   end
 
   # --- Private ---
+
+  defp encode_scores(scores) when is_list(scores) do
+    Enum.map(scores, fn s ->
+      %{
+        "profile" => s.profile,
+        "confidence" => s.confidence,
+        "weight" => s.weight
+      }
+    end)
+  end
+
+  defp encode_scores(_), do: nil
 
   defp validate_candidates(nil), do: {:error, :no_candidates}
   defp validate_candidates(cs) when length(cs) < 2, do: {:error, :too_few_candidates}
