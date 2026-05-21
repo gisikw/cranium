@@ -384,9 +384,9 @@ defmodule Cranium.Inference.Agent do
           # Emit final message and end stream
           clear_message =
             if continuation do
-              "Context cleared. Continuation will execute after handoff completes."
+              "\n\nContext cleared. Continuation will execute after handoff completes."
             else
-              "Context cleared."
+              "\n\nContext cleared."
             end
 
           emit(stream_id, state.conversation_id, {:chunk, stream_id, clear_message})
@@ -463,9 +463,9 @@ defmodule Cranium.Inference.Agent do
 
       # Emit final message and end stream
       clear_message = if continuation do
-        "Context cleared. Continuation will execute after handoff completes."
+        "\n\nContext cleared. Continuation will execute after handoff completes."
       else
-        "Context cleared."
+        "\n\nContext cleared."
       end
 
       emit(stream_id, state.conversation_id, {:chunk, stream_id, clear_message})
