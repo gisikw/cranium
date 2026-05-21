@@ -303,6 +303,7 @@ defmodule Cranium.Inference.TurnAssembler do
       model: resolved_model,
       identity: identity,
       thinking: thinking,
+      backend_config: profile.backend_config,
       context_window: saturation_config[:context_window],
       saturation_warn: saturation_config[:saturation_warn],
       saturation_critical: saturation_config[:saturation_critical]
@@ -320,6 +321,7 @@ defmodule Cranium.Inference.TurnAssembler do
     identity = resolved.identity
     profile_name = resolved.profile_name
     thinking = resolved.thinking
+    backend_config = resolved[:backend_config] || %{}
 
     saturation_config = %{
       context_window: resolved.context_window,
@@ -442,6 +444,7 @@ defmodule Cranium.Inference.TurnAssembler do
       model: resolved_model,
       profile: profile_name,
       thinking: thinking,
+      backend_config: backend_config,
       context_window: saturation_config[:context_window],
       ephemeral: ephemeral,
       dispatch: dispatch,
@@ -533,6 +536,7 @@ defmodule Cranium.Inference.TurnAssembler do
       name: profile_name,
       backend: resolved.backend,
       model: model,
+      backend_config: resolved[:backend_config] || %{},
       plugins: resolved[:plugins] || []
     }
 

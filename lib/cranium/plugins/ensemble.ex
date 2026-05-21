@@ -361,6 +361,7 @@ defmodule Cranium.Plugins.Ensemble do
              model: resolved.model,
              identity: resolved.identity,
              thinking: resolved.thinking,
+             backend_config: resolved.backend_config,
              context_window: resolved.context_window,
              saturation_warn: resolved.saturation_warn,
              saturation_critical: resolved.saturation_critical

@@ -167,6 +167,7 @@ defmodule Cranium.Inference.Agent do
       working_dir: context[:working_dir],
       model: context[:model],
       thinking: context[:thinking],
+      backend_config: context[:backend_config],
       ephemeral: context[:ephemeral],
       effort_level: if("audio" in disposition, do: "low")
     ]

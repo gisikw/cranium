@@ -111,6 +111,7 @@ defmodule Cranium.Inference.Harness do
       working_dir: turn[:working_dir],
       model: turn[:model],
       thinking: turn[:thinking],
+      backend_config: turn[:backend_config],
       ephemeral: ephemeral,
       dispatch: turn[:dispatch],
       tools_disabled: turn[:tools_disabled] == true,

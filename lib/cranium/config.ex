@@ -42,6 +42,7 @@ defmodule Cranium.Config do
       saturation_critical: nil,
       openai_system_mode: :replace,
       private: false,
+      backend_config: %{},
       plugins: []
     ]
 
@@ -49,7 +50,7 @@ defmodule Cranium.Config do
 
     @type t :: %__MODULE__{
             name: String.t(),
-            backend: :claudecode | :anthropic | :ollama,
+            backend: :claudecode | :anthropic | :ollama | :openai_compat,
             model: String.t() | nil,
             identity_path: String.t() | nil,
             thinking: boolean() | nil,
@@ -58,6 +59,7 @@ defmodule Cranium.Config do
             saturation_critical: number() | nil,
             openai_system_mode: :replace | :prepend | :append,
             private: boolean(),
+            backend_config: map(),
             plugins: [plugin_declaration()]
           }
   end
@@ -84,6 +86,7 @@ defmodule Cranium.Config do
            saturation_critical: profile.saturation_critical,
            openai_system_mode: profile.openai_system_mode,
            private: profile.private,
+           backend_config: profile.backend_config,
            plugins: profile.plugins
          }}
 
@@ -226,6 +229,7 @@ defmodule Cranium.Config do
             "claudecode" -> :claudecode
             "anthropic" -> :anthropic
             "ollama" -> :ollama
+            "openai_compat" -> :openai_compat
             "mock" -> :mock
             other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'"
           end
@@ -256,6 +260,7 @@ defmodule Cranium.Config do
           saturation_critical: config["saturation_critical"],
           openai_system_mode: openai_system_mode,
           private: config["private"] == true,
+          backend_config: config["backend_config"] || %{},
           plugins: plugins
         }
 
@@ -306,6 +311,7 @@ defmodule Cranium.Config do
   defp backend_module(:claudecode), do: Cranium.Backend.LLM.ClaudeCode
   defp backend_module(:anthropic), do: Cranium.Backend.LLM.Anthropic
   defp backend_module(:ollama), do: Cranium.Backend.LLM.Ollama
+  defp backend_module(:openai_compat), do: Cranium.Backend.LLM.OpenAICompat
   # Dynamic construction avoids compile-time xref warning — Mock only exists in test env.
   defp backend_module(:mock), do: Module.concat([Cranium.Backend.LLM, Mock])
 end

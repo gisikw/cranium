@@ -4,6 +4,8 @@
 # Each profile bundles: backend (which adapter), model (which model on that backend),
 # and identity (system prompt file path — optional).
 #
+# Backends: claudecode, anthropic, ollama, openai_compat
+#
 # The model string is backend-specific. For Ollama, this is the Ollama model name
 # (including custom Modelfiles). Model-specific params (temperature, context window,
 # sampling) live in Ollama Modelfiles, not here.
@@ -42,6 +44,18 @@ profiles:
               evaluator: Cranium.Plugins.Ensemble.Evaluators.TurnGated
               evaluator_config:
                 threshold: 5
+
+  # OpenAI-compatible endpoint (llama.cpp, vLLM, etc.)
+  qwen-local:
+    backend: openai_compat
+    model: qwen3.6-27b
+    identity: /path/to/identity.md
+    thinking: false
+    context_window: 200000
+    backend_config:
+      endpoint: https://llama.gisi.network/v1
+      api_key: sk-xxx
+      # thinking_mode: prefill   # Qwen3.6: use </think> prefill to disable thinking
 
   code:
     backend: ollama
