@@ -618,6 +618,24 @@ defmodule Cranium.Transport.HTTP do
           {:ok, conn} -> multi_stream_sse_loop(conn)
           {:error, _} -> conn
         end
+
+      # -- Service lifecycle events --
+
+      {:service_draining, meta} ->
+        data = meta |> Map.put(:stream_id, "") |> Map.put(:conversation_id, "")
+
+        case chunk(conn, sse_event("service_draining", data)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
+
+      {:service_ready, meta} ->
+        data = meta |> Map.put(:stream_id, "") |> Map.put(:conversation_id, "")
+
+        case chunk(conn, sse_event("service_ready", data)) do
+          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:error, _} -> conn
+        end
     after
       30_000 ->
         case chunk(conn, ": keepalive\n\n") do

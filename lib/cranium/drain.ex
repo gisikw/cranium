@@ -48,6 +48,7 @@ defmodule Cranium.Drain do
   def handle_info(:sigterm, state) do
     Logger.info("SIGTERM received — starting drain")
     :persistent_term.put(@drain_key, true)
+    Cranium.Events.broadcast({:service_draining, %{reason: "sigterm"}})
     send(self(), :poll_drain)
     {:noreply, state}
   end

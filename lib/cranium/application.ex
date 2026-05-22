@@ -78,6 +78,17 @@ defmodule Cranium.Application do
     # Load external tool definitions from the muse kernel
     Cranium.Muse.load_tools!()
 
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    case result do
+      {:ok, _pid} ->
+        version = Application.spec(:cranium, :vsn) |> to_string()
+        Cranium.Events.broadcast({:service_ready, %{version: version}})
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 end
