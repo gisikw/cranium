@@ -22,6 +22,16 @@
 use plugin_system
 
 ------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Store {
+    -- Cranium.Store GenServer. Provides queued DB writes and reads.
+    -- Already used by the ensemble plugin for ensemble_selections.
+    -- Glossary uses it for mention persistence.
+}
+
+------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
 
@@ -107,6 +117,25 @@ value ConversationWindow {
         -- Overlapping windows are merged to avoid redundancy.
 }
 
+value GlossaryMention {
+    epoch_id: String
+    conversation_id: String
+    term: String
+    turn_count: Integer
+    source: user | assistant
+
+    @guidance
+        -- A single mention event persisted to the glossary_mentions
+        -- table via Store. One row per (epoch, term, turn, source).
+        -- Follows the ensemble_selections pattern: dedicated table,
+        -- Store methods, ad-hoc schema.
+        --
+        -- The `seen` map is derived: if any GlossaryMention exists
+        -- for a term in the current epoch, it has been injected.
+        -- The `mentions` map is reconstructed from all rows for the
+        -- epoch, grouped by term.
+}
+
 ------------------------------------------------------------
 -- Entity
 ------------------------------------------------------------
@@ -119,11 +148,22 @@ entity GlossaryPlugin {
     seen: Map<String, SeenRecord>
     mentions: Map<String, MentionRecord>
     file_mtimes: Map<String, Timestamp>
+    epoch_id: String
+    conversation_id: String
 
     @guidance
         -- Session-scoped state. `seen` gates injection (first mention
         -- only, re-eligible on file change). `mentions` tracks all
         -- occurrences for epoch-end windowing regardless of injection.
+        --
+        -- Both `seen` and `mentions` are backed by the glossary_mentions
+        -- table. On each turn, new mentions are persisted via Store.
+        -- On init (including crash recovery), both maps are rehydrated
+        -- from DB for the current epoch_id. This makes mention state
+        -- survive process restarts within an epoch.
+        --
+        -- epoch_id and conversation_id are captured from session metadata
+        -- for use in Store calls.
 }
 
 value SeenRecord {
@@ -150,13 +190,23 @@ rule InitGlossary {
         parse YAML frontmatter, extract term/aliases/summary/body,
         build regex patterns, index by term and aliases
 
+    -- Rehydrate mention state from DB for the current epoch
+    let persisted = Store.get_glossary_mentions(metadata.epoch_id)
+    let seen = derive seen map from persisted
+        -- A term is seen if any GlossaryMention exists for it.
+        -- SeenRecord.mtime is looked up from the current entries.
+    let mentions = derive mentions map from persisted
+        -- Group by term, collect turn_counts into turn_indices.
+
     ensures: GlossaryPlugin.created(
         entries: entries,
         path: path,
         priority: config.priority,
-        seen: empty,
-        mentions: empty,
-        file_mtimes: file_mtimes
+        seen: seen,
+        mentions: mentions,
+        file_mtimes: file_mtimes,
+        epoch_id: metadata.epoch_id,
+        conversation_id: metadata.conversation_id
     )
     ensures: plugin subscribes to [before_context_build, after_pass_complete]
         when update_model is not configured
@@ -168,6 +218,17 @@ rule InitGlossary {
         -- Always subscribes to before_context_build (injection) and
         -- after_pass_complete (assistant mention tracking). Subscribes
         -- to on_epoch_end only when update_model is configured.
+        --
+        -- Rehydration on init covers crash recovery: if the GenServer
+        -- restarts mid-epoch (OTP supervisor), it recovers its mention
+        -- state from DB rather than starting fresh. For a brand-new
+        -- epoch, the DB has no rows yet, so seen and mentions are
+        -- empty — same as before.
+        --
+        -- The seen map derivation uses the entries' current mtimes.
+        -- If a glossary file changed while the process was down, the
+        -- mtime mismatch makes that term re-eligible for injection
+        -- (same as the live file-change detection path).
 }
 
 ------------------------------------------------------------
@@ -203,6 +264,8 @@ rule InjectOnFirstMention {
     -- Always track the mention, regardless of injection
     ensures: mentions updated with turn_context.turn_count
         for all matching terms (injectable or not)
+    ensures: GlossaryMention persisted via Store for each matching term
+        with source = user
 
     -- Inject only for first-mention terms
     ensures: injection with formatted glossary content
@@ -226,6 +289,10 @@ rule InjectOnFirstMention {
         -- in the mentions map. This is critical for epoch-end
         -- windowing: corrections often occur on later mentions,
         -- not on the injection turn.
+        --
+        -- DB persistence is fire-and-forget via Store (queued write).
+        -- The in-memory maps are updated synchronously as before;
+        -- the DB write is the durable backup for crash recovery.
 }
 
 rule TrackAssistantMentions {
@@ -236,6 +303,8 @@ rule TrackAssistantMentions {
 
     ensures: mentions updated with pass_complete_context.turn_count
         for all matching terms
+    ensures: GlossaryMention persisted via Store for each matching term
+        with source = assistant
 
     @guidance
         -- Scans the assistant's output for glossary term mentions
@@ -249,6 +318,9 @@ rule TrackAssistantMentions {
         --
         -- Does NOT trigger injection — injection is user-turn only.
         -- This hook is purely for mention bookkeeping.
+        --
+        -- Same persistence pattern as InjectOnFirstMention: in-memory
+        -- update is synchronous, DB write is queued via Store.
 }
 
 ------------------------------------------------------------
@@ -280,6 +352,13 @@ rule BuildConversationWindows {
         --
         -- Turn indices that fall outside message bounds are clamped
         -- (no negative indices, no past-end indices).
+        --
+        -- The mentions map is the in-memory copy (already rehydrated
+        -- from DB on init if this is a recovered process). The DB
+        -- is the source of truth but the in-memory map is always
+        -- consistent with it during normal operation. An alternative
+        -- implementation could query Store directly here, but the
+        -- in-memory map avoids a DB round-trip on the critical path.
 }
 
 rule EvaluateTermUpdate {
@@ -424,6 +503,49 @@ invariant BodyPreserved {
         -- plugin must not alter.
 }
 
+invariant MentionStateSurvivesRestart {
+    for restarts in GlossaryPlugin process restarts within an epoch:
+        after restart, seen contains all terms that were injected
+        before the restart
+
+    for restarts in GlossaryPlugin process restarts within an epoch:
+        after restart, mentions contains all turn indices recorded
+        before the restart
+
+    @guidance
+        -- This is the core persistence invariant. When the GenServer
+        -- crashes and the supervisor restarts it, init/1 rehydrates
+        -- seen and mentions from the glossary_mentions table.
+        --
+        -- Consequences:
+        -- - No duplicate injections after restart (seen is restored)
+        -- - Epoch-end windowing includes pre-restart mentions
+        -- - Auto-update evaluation sees the full conversation, not
+        --   just the post-restart portion
+        --
+        -- The invariant does NOT hold across epoch boundaries: a new
+        -- epoch starts with empty DB state for that epoch_id, which
+        -- is correct — fresh epoch, fresh injection eligibility.
+        --
+        -- Follows the ensemble_selections pattern: dedicated table,
+        -- Store methods, writes queued behind the Store GenServer.
+}
+
+invariant MentionPersistenceNonBlocking {
+    for turns in Turns:
+        a Store write failure for GlossaryMention does not prevent
+        the turn from proceeding to inference
+
+    @guidance
+        -- Store writes are queued (fire-and-forget from the plugin's
+        -- perspective). If the Store is backed up or the DB is
+        -- unreachable, the in-memory maps are still updated and the
+        -- turn proceeds normally. The only consequence of a lost
+        -- write is that crash recovery may miss that mention — an
+        -- acceptable degradation given the alternative is blocking
+        -- inference on a DB write.
+}
+
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------
@@ -450,4 +572,13 @@ open question "Conflict with manual edits" {
     -- provides auditability but not prevention. Possible mitigation:
     -- compare mtime before writing and skip if the file changed
     -- since session start.
+}
+
+open question "Mention row cleanup" {
+    -- GlossaryMention rows accumulate per epoch. Old epoch rows are
+    -- never queried after the epoch ends (mentions are epoch-scoped).
+    -- Options: (a) leave them — they're small and queryable for
+    -- analytics, (b) delete on epoch clear alongside plugin shutdown,
+    -- (c) periodic vacuum. Leaning toward (a) unless storage becomes
+    -- a concern.
 }
