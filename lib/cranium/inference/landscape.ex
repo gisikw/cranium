@@ -177,12 +177,16 @@ defmodule Cranium.Inference.Landscape do
   defp load_and_merge do
     db_entries = load_db()
     hoard_entries = load_hoard()
+    epoch_stubs = load_epoch_stubs()
 
     db_map = Map.new(db_entries, &{&1.conversation_id, &1})
     hoard_map = Map.new(hoard_entries, &{&1.conversation_id, &1})
+    epoch_map = Map.new(epoch_stubs, &{&1.conversation_id, &1})
 
-    # DB entries always win; hoard fills gaps
-    Map.merge(hoard_map, db_map)
+    # Epoch stubs fill the base; hoard wins over stubs; DB wins over both
+    epoch_map
+    |> Map.merge(hoard_map)
+    |> Map.merge(db_map)
   end
 
   defp load_db do
@@ -221,6 +225,29 @@ defmodule Cranium.Inference.Landscape do
       end)
     else
       []
+    end
+  end
+
+  defp load_epoch_stubs do
+    try do
+      case Cranium.Store.list_conversation_ids() do
+        {:ok, ids} ->
+          ids
+          |> Enum.reject(&String.starts_with?(&1, "_"))
+          |> Enum.map(fn id ->
+            %{
+              conversation_id: id,
+              room_name: id,
+              summary: nil,
+              last_message_ts: DateTime.from_unix!(0)
+            }
+          end)
+
+        _ ->
+          []
+      end
+    catch
+      :exit, _ -> []
     end
   end
 

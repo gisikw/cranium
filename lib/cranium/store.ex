@@ -170,6 +170,12 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, :get_all_summaries)
   end
 
+  @doc "Return all distinct conversation_ids that have at least one epoch."
+  @spec list_conversation_ids() :: {:ok, [String.t()]} | {:error, term()}
+  def list_conversation_ids do
+    GenServer.call(__MODULE__, :list_conversation_ids)
+  end
+
   # --- GenServer Implementation ---
 
   @impl true
@@ -453,6 +459,17 @@ defmodule Cranium.Store do
       |> Enum.map(&summary_to_map/1)
 
     {:reply, {:ok, summaries}, state}
+  end
+
+  defp do_handle_call(:list_conversation_ids, _from, state) do
+    ids =
+      from(e in Epoch,
+        select: e.conversation_id,
+        distinct: true
+      )
+      |> Repo.all()
+
+    {:reply, {:ok, ids}, state}
   end
 
   defp do_handle_call({:save_ensemble_selection, attrs}, _from, state) do
