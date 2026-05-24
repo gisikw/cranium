@@ -43,7 +43,10 @@ defmodule Cranium.Config do
       openai_system_mode: :replace,
       private: false,
       backend_config: %{},
-      plugins: []
+      plugins: [],
+      tool_posture: :sandbox,
+      tool_rw: [],
+      tool_ro: []
     ]
 
     @type plugin_declaration :: %{module: module(), config: map() | nil}
@@ -60,7 +63,10 @@ defmodule Cranium.Config do
             openai_system_mode: :replace | :prepend | :append,
             private: boolean(),
             backend_config: map(),
-            plugins: [plugin_declaration()]
+            plugins: [plugin_declaration()],
+            tool_posture: :sandbox | :permissive,
+            tool_rw: [String.t()],
+            tool_ro: [String.t()]
           }
   end
 
@@ -87,7 +93,10 @@ defmodule Cranium.Config do
            openai_system_mode: profile.openai_system_mode,
            private: profile.private,
            backend_config: profile.backend_config,
-           plugins: profile.plugins
+           plugins: profile.plugins,
+           tool_posture: profile.tool_posture,
+           tool_rw: profile.tool_rw,
+           tool_ro: profile.tool_ro
          }}
 
       [] ->
@@ -249,6 +258,12 @@ defmodule Cranium.Config do
 
         plugins = parse_plugins(config["plugins"])
 
+        tool_posture =
+          case config["tool_posture"] do
+            "permissive" -> :permissive
+            _ -> :sandbox
+          end
+
         profile = %Profile{
           name: name,
           backend: backend,
@@ -261,7 +276,10 @@ defmodule Cranium.Config do
           openai_system_mode: openai_system_mode,
           private: config["private"] == true,
           backend_config: config["backend_config"] || %{},
-          plugins: plugins
+          plugins: plugins,
+          tool_posture: tool_posture,
+          tool_rw: config["tool_rw"] || [],
+          tool_ro: config["tool_ro"] || []
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

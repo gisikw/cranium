@@ -94,6 +94,27 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "tool_posture" do
+    test "defaults to :sandbox when not specified" do
+      {:ok, resolved} = Config.resolve_profile("test")
+      assert resolved.tool_posture == :sandbox
+      assert resolved.tool_rw == []
+      assert resolved.tool_ro == []
+    end
+
+    test "parses permissive posture" do
+      {:ok, resolved} = Config.resolve_profile("test-permissive")
+      assert resolved.tool_posture == :permissive
+    end
+
+    test "parses rw and ro grants" do
+      {:ok, resolved} = Config.resolve_profile("test-sandbox-grants")
+      assert resolved.tool_posture == :sandbox
+      assert resolved.tool_rw == ["/home/dev/Projects/hoard"]
+      assert resolved.tool_ro == ["/var/log"]
+    end
+  end
+
   describe "room_default_profile/1" do
     test "returns profile for configured room" do
       assert Config.room_default_profile("personal-chat") == "test-with-identity"

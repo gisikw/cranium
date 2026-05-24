@@ -115,7 +115,10 @@ defmodule Cranium.Inference.Harness do
       ephemeral: ephemeral,
       dispatch: turn[:dispatch],
       tools_disabled: turn[:tools_disabled] == true,
-      silent: silent
+      silent: silent,
+      tool_posture: turn[:tool_posture] || :sandbox,
+      tool_rw: turn[:tool_rw] || [],
+      tool_ro: turn[:tool_ro] || []
     }
 
     result = Cranium.Inference.Agent.infer(agent_pid, context)

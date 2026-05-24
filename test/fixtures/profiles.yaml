@@ -39,6 +39,19 @@ profiles:
         config:
           threshold: 3
 
+  test-permissive:
+    backend: mock
+    model: test-model
+    tool_posture: permissive
+
+  test-sandbox-grants:
+    backend: mock
+    model: test-model
+    tool_rw:
+      - /home/dev/Projects/hoard
+    tool_ro:
+      - /var/log
+
 ollama_url: http://localhost:11434
 
 room_defaults:

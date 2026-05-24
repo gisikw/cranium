@@ -61,15 +61,29 @@ defmodule Cranium.Muse do
   @spec handles?(String.t()) :: boolean()
   def handles?(name), do: name in tool_names()
 
-  @spec exec(String.t(), map(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
-  def exec(name, input, working_dir) do
+  @spec exec(String.t(), map(), String.t() | nil, map()) :: {:ok, String.t()} | {:error, term()}
+  def exec(name, input, working_dir, tool_config \\ %{}) do
     payload = Jason.encode!(%{tool: name, input: input})
+    posture = Map.get(tool_config, :posture, :sandbox)
 
     args =
-      if working_dir,
-        do: ["--rw", working_dir, "--exec", payload],
-        else: ["--exec", payload]
+      case posture do
+        :permissive ->
+          ["--exec", payload]
 
+        :sandbox ->
+          rw_dirs = if working_dir, do: [working_dir], else: []
+          rw_dirs = rw_dirs ++ Map.get(tool_config, :rw, [])
+          ro_dirs = Map.get(tool_config, :ro, [])
+
+          grant_args =
+            Enum.flat_map(rw_dirs, &["--rw", &1]) ++
+              Enum.flat_map(ro_dirs, &["--ro", &1])
+
+          grant_args ++ ["--exec", payload]
+      end
+
+    # Always cd into working_dir regardless of posture
     opts = [stderr_to_stdout: true]
     opts = if working_dir, do: Keyword.put(opts, :cd, working_dir), else: opts
 
