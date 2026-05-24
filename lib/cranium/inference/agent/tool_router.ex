@@ -40,7 +40,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
         {:clear, Map.get(input, "continuation")}
 
       name in @marker_tools ->
-        {:marker, String.to_existing_atom(name), input}
+        {:marker, String.to_atom(name), input}
 
       Cranium.Muse.handles?(name) ->
         {:muse, name, input}
@@ -63,7 +63,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
         {:clear, Map.get(input, "continuation")}
 
       name in @marker_tools ->
-        {:marker, String.to_existing_atom(name), input}
+        {:marker, String.to_atom(name), input}
 
       Cranium.Muse.handles?(name) ->
         {:muse, name, input}
