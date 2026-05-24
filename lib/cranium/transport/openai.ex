@@ -16,6 +16,14 @@ defmodule Cranium.Transport.OpenAI do
   No epochs, no history persistence, no landscape injection, no turn
   injection. All requests are ephemeral.
 
+  ## Tool Passthrough
+
+  Client-side tools are supported. If the request includes a `tools` array,
+  tools are translated to the backend's internal format and forwarded. When
+  the model makes tool calls, they are returned in OpenAI format with
+  `finish_reason: "tool_calls"`. The client manages the tool loop — cranium
+  does not execute tools server-side through this endpoint.
+
   ## System Prompt Policy
 
   Each profile has an `openai_system_mode` setting:
@@ -34,21 +42,23 @@ defmodule Cranium.Transport.OpenAI do
     stream = conn.body_params["stream"] == true
     messages = conn.body_params["messages"] || []
     max_tokens = conn.body_params["max_tokens"]
+    client_tools = conn.body_params["tools"]
 
     case resolve(model_name, messages) do
       {:ok, profile, system, backend_messages} ->
         completion_id = "cranium-" <> Cranium.Stage.new_stream_id()
+        tools = translate_tools(client_tools)
 
         opts = [
           system: system,
           model: profile.model,
           max_tokens: max_tokens || 8192,
-          tools: [],
+          tools: tools,
           ephemeral: true,
           working_dir: ephemeral_working_dir()
         ]
 
-        Logger.info("OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)}")
+        Logger.info("OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)} tools=#{length(tools)}")
 
         if stream do
           stream_response(conn, backend_messages, opts, profile, completion_id)
@@ -86,7 +96,8 @@ defmodule Cranium.Transport.OpenAI do
       {:ok, resolved} ->
         {client_system, non_system} = extract_system_messages(messages)
         system = apply_system_mode(resolved.openai_system_mode, resolved.identity, client_system)
-        {:ok, resolved, system, non_system}
+        backend_messages = translate_messages(non_system)
+        {:ok, resolved, system, backend_messages}
 
       {:error, :not_found} ->
         {:error, :profile_not_found}
@@ -126,6 +137,89 @@ defmodule Cranium.Transport.OpenAI do
   defp join_system(a, ""), do: a
   defp join_system(a, b), do: a <> "\n\n" <> b
 
+  # --- Message Translation (OpenAI → Anthropic internal) ---
+
+  defp translate_messages(messages) do
+    messages
+    |> Enum.flat_map(&translate_message/1)
+    |> merge_consecutive_tool_results()
+  end
+
+  # Assistant message with tool_calls → Anthropic content blocks
+  defp translate_message(%{"role" => "assistant", "tool_calls" => tool_calls} = msg)
+       when is_list(tool_calls) and tool_calls != [] do
+    text = msg["content"]
+
+    content =
+      (if is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []) ++
+        Enum.map(tool_calls, fn tc ->
+          func = tc["function"]
+
+          input =
+            case func["arguments"] do
+              s when is_binary(s) -> Jason.decode!(s)
+              m when is_map(m) -> m
+              _ -> %{}
+            end
+
+          %{"type" => "tool_use", "id" => tc["id"], "name" => func["name"], "input" => input}
+        end)
+
+    [%{"role" => "assistant", "content" => content}]
+  end
+
+  # Tool result message → Anthropic user message with tool_result block
+  defp translate_message(%{"role" => "tool"} = msg) do
+    [%{
+      "role" => "user",
+      "content" => [%{
+        "type" => "tool_result",
+        "tool_use_id" => msg["tool_call_id"],
+        "content" => msg["content"]
+      }]
+    }]
+  end
+
+  # Everything else passes through
+  defp translate_message(msg), do: [msg]
+
+  # Anthropic requires consecutive tool_result blocks in a single user message.
+  # Multiple OpenAI tool messages become multiple user messages after translate_message;
+  # merge them here.
+  defp merge_consecutive_tool_results(messages) do
+    messages
+    |> Enum.reduce([], fn msg, acc ->
+      case {msg, acc} do
+        {%{"role" => "user", "content" => [%{"type" => "tool_result"} | _] = new_blocks},
+         [%{"role" => "user", "content" => [%{"type" => "tool_result"} | _] = prev_blocks} | rest]} ->
+          [%{"role" => "user", "content" => prev_blocks ++ new_blocks} | rest]
+
+        _ ->
+          [msg | acc]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  # --- Tool Translation (OpenAI → Anthropic internal) ---
+
+  defp translate_tools(nil), do: []
+  defp translate_tools([]), do: []
+
+  defp translate_tools(tools) when is_list(tools) do
+    Enum.map(tools, fn
+      %{"type" => "function", "function" => func} ->
+        %{
+          name: func["name"],
+          description: func["description"],
+          input_schema: func["parameters"]
+        }
+
+      tool ->
+        tool
+    end)
+  end
+
   # --- Streaming Response ---
 
   defp stream_response(conn, messages, opts, profile, completion_id) do
@@ -142,10 +236,20 @@ defmodule Cranium.Transport.OpenAI do
     case profile.backend_module.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        {conn, usage} = stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
+        {conn, usage, tool_calls} = stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
 
-        # Send final chunk with finish_reason and usage
-        {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "stop", usage)
+        conn =
+          if tool_calls != [] do
+            # Emit tool calls and finish with tool_calls reason
+            oai_tool_calls = format_tool_calls(tool_calls)
+            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{"tool_calls" => oai_tool_calls}, nil)
+            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "tool_calls", usage)
+            conn
+          else
+            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "stop", usage)
+            conn
+          end
+
         {:ok, conn} = Plug.Conn.chunk(conn, "data: [DONE]\n\n")
         conn
 
@@ -167,32 +271,31 @@ defmodule Cranium.Transport.OpenAI do
             # Client disconnected
             Process.demonitor(ref, [:flush])
             Process.exit(llm_pid, :shutdown)
-            {conn, nil}
+            {conn, nil, []}
         end
 
-      {:llm_tool_use, _tool_call} ->
-        # Swallow tool calls — not exposed to OpenAI clients
+      {:llm_tool_use, tool_call} ->
+        acc = Process.get(:tool_calls_acc, [])
+        Process.put(:tool_calls_acc, acc ++ [tool_call])
         stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
 
       {:llm_usage, usage} ->
-        # Stash usage for final chunk
         Process.put(:openai_usage, usage)
         stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
 
       {:llm_stop, "end_turn"} ->
         Process.demonitor(ref, [:flush])
         await_exit(llm_pid)
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
 
       {:llm_stop, "tool_use"} ->
-        # Backend wants tool execution but we don't support it — treat as end
         Process.demonitor(ref, [:flush])
         await_exit(llm_pid)
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
 
       {:llm_stop, {:error, _} = _err} ->
         Process.demonitor(ref, [:flush])
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), []}
 
       {:cc_session, _session_id} ->
         stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
@@ -204,16 +307,16 @@ defmodule Cranium.Transport.OpenAI do
         stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
 
       {:DOWN, ^ref, :process, ^llm_pid, reason} ->
         Logger.error("OpenAI: LLM process crashed", reason: inspect(reason))
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), []}
     after
       300_000 ->
         Process.demonitor(ref, [:flush])
         Process.exit(llm_pid, :shutdown)
-        {conn, Process.get(:openai_usage)}
+        {conn, Process.get(:openai_usage), []}
     end
   end
 
@@ -223,7 +326,18 @@ defmodule Cranium.Transport.OpenAI do
     case profile.backend_module.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        {text, usage} = buffered_receive_loop(llm_pid, ref, [], nil)
+        {text, usage, tool_calls} = buffered_receive_loop(llm_pid, ref, [], nil)
+
+        message = %{"role" => "assistant", "content" => text}
+
+        {message, finish_reason} =
+          if tool_calls != [] do
+            msg = Map.put(message, "tool_calls", format_tool_calls(tool_calls))
+            msg = if text == "", do: Map.put(msg, "content", nil), else: msg
+            {msg, "tool_calls"}
+          else
+            {message, "stop"}
+          end
 
         body = %{
           "id" => completion_id,
@@ -233,8 +347,8 @@ defmodule Cranium.Transport.OpenAI do
           "choices" => [
             %{
               "index" => 0,
-              "message" => %{"role" => "assistant", "content" => text},
-              "finish_reason" => "stop"
+              "message" => message,
+              "finish_reason" => finish_reason
             }
           ],
           "usage" => format_usage(usage)
@@ -254,7 +368,9 @@ defmodule Cranium.Transport.OpenAI do
       {:llm_text, text} ->
         buffered_receive_loop(llm_pid, ref, [text | acc], usage)
 
-      {:llm_tool_use, _} ->
+      {:llm_tool_use, tool_call} ->
+        tool_acc = Process.get(:tool_calls_acc, [])
+        Process.put(:tool_calls_acc, tool_acc ++ [tool_call])
         buffered_receive_loop(llm_pid, ref, acc, usage)
 
       {:llm_usage, new_usage} ->
@@ -263,16 +379,16 @@ defmodule Cranium.Transport.OpenAI do
       {:llm_stop, "end_turn"} ->
         Process.demonitor(ref, [:flush])
         await_exit(llm_pid)
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}
 
       {:llm_stop, "tool_use"} ->
         Process.demonitor(ref, [:flush])
         await_exit(llm_pid)
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}
 
       {:llm_stop, {:error, _}} ->
         Process.demonitor(ref, [:flush])
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, []}
 
       {:cc_session, _} ->
         buffered_receive_loop(llm_pid, ref, acc, usage)
@@ -284,17 +400,35 @@ defmodule Cranium.Transport.OpenAI do
         buffered_receive_loop(llm_pid, ref, acc, usage)
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}
 
       {:DOWN, ^ref, :process, ^llm_pid, reason} ->
         Logger.error("OpenAI: LLM process crashed in buffered mode", reason: inspect(reason))
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, []}
     after
       300_000 ->
         Process.demonitor(ref, [:flush])
         Process.exit(llm_pid, :shutdown)
-        {acc |> Enum.reverse() |> Enum.join(), usage}
+        {acc |> Enum.reverse() |> Enum.join(), usage, []}
     end
+  end
+
+  # --- Tool Call Formatting (Anthropic internal → OpenAI) ---
+
+  defp format_tool_calls(tool_calls) do
+    tool_calls
+    |> Enum.with_index()
+    |> Enum.map(fn {tc, idx} ->
+      %{
+        "index" => idx,
+        "id" => tc.id || "call_#{idx}",
+        "type" => "function",
+        "function" => %{
+          "name" => tc.name,
+          "arguments" => Jason.encode!(tc.input || %{})
+        }
+      }
+    end)
   end
 
   # --- SSE Formatting ---

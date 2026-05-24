@@ -321,6 +321,172 @@ defmodule Cranium.Transport.OpenAITest do
     end
   end
 
+  # --- Tool passthrough ---
+
+  describe "tool passthrough (buffered)" do
+    test "translates client tools to backend format and passes them" do
+      test_pid = self()
+
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
+        send(test_pid, {:backend_tools, opts[:tools]})
+        caller = self()
+        pid = spawn(fn ->
+          send(caller, {:llm_text, "ok"})
+          send(caller, {:llm_stop, "end_turn"})
+        end)
+        {:ok, pid}
+      end)
+
+      Plug.Test.conn(:post, "/v1/chat/completions", %{
+        "model" => "test",
+        "messages" => [%{"role" => "user", "content" => "Hi"}],
+        "tools" => [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "get_weather",
+              "description" => "Get weather for a city",
+              "parameters" => %{"type" => "object", "properties" => %{"city" => %{"type" => "string"}}}
+            }
+          }
+        ]
+      })
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> HTTP.call(HTTP.init([]))
+
+      assert_receive {:backend_tools, tools}
+      assert length(tools) == 1
+      [tool] = tools
+      assert tool.name == "get_weather"
+      assert tool.description == "Get weather for a city"
+      assert tool.input_schema == %{"type" => "object", "properties" => %{"city" => %{"type" => "string"}}}
+    end
+
+    test "returns tool_calls in response when model makes tool calls" do
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, _opts ->
+        caller = self()
+        pid = spawn(fn ->
+          send(caller, {:llm_tool_use, %{id: "call_123", name: "get_weather", input: %{"city" => "Portland"}}})
+          send(caller, {:llm_stop, "tool_use"})
+        end)
+        {:ok, pid}
+      end)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/chat/completions", %{
+          "model" => "test",
+          "messages" => [%{"role" => "user", "content" => "What's the weather?"}],
+          "tools" => [%{"type" => "function", "function" => %{"name" => "get_weather", "description" => "Get weather", "parameters" => %{}}}]
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      json = Jason.decode!(conn.resp_body)
+
+      [choice] = json["choices"]
+      assert choice["finish_reason"] == "tool_calls"
+      assert choice["message"]["content"] == nil
+
+      [tc] = choice["message"]["tool_calls"]
+      assert tc["id"] == "call_123"
+      assert tc["type"] == "function"
+      assert tc["function"]["name"] == "get_weather"
+      assert Jason.decode!(tc["function"]["arguments"]) == %{"city" => "Portland"}
+    end
+
+    test "translates tool role messages to Anthropic format" do
+      test_pid = self()
+
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn messages, _opts ->
+        send(test_pid, {:backend_messages, messages})
+        caller = self()
+        pid = spawn(fn ->
+          send(caller, {:llm_text, "It is 72°F"})
+          send(caller, {:llm_stop, "end_turn"})
+        end)
+        {:ok, pid}
+      end)
+
+      Plug.Test.conn(:post, "/v1/chat/completions", %{
+        "model" => "test",
+        "messages" => [
+          %{"role" => "user", "content" => "What's the weather?"},
+          %{"role" => "assistant", "content" => nil, "tool_calls" => [
+            %{"id" => "call_123", "type" => "function", "function" => %{"name" => "get_weather", "arguments" => ~s({"city":"Portland"})}}
+          ]},
+          %{"role" => "tool", "tool_call_id" => "call_123", "content" => "72°F and sunny"}
+        ]
+      })
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> HTTP.call(HTTP.init([]))
+
+      assert_receive {:backend_messages, messages}
+      assert length(messages) == 3
+
+      # First: user message (unchanged)
+      assert Enum.at(messages, 0)["role"] == "user"
+
+      # Second: assistant with tool_use content blocks
+      assistant = Enum.at(messages, 1)
+      assert assistant["role"] == "assistant"
+      [tool_use] = assistant["content"]
+      assert tool_use["type"] == "tool_use"
+      assert tool_use["id"] == "call_123"
+      assert tool_use["name"] == "get_weather"
+      assert tool_use["input"] == %{"city" => "Portland"}
+
+      # Third: user with tool_result content block
+      tool_result_msg = Enum.at(messages, 2)
+      assert tool_result_msg["role"] == "user"
+      [tool_result] = tool_result_msg["content"]
+      assert tool_result["type"] == "tool_result"
+      assert tool_result["tool_use_id"] == "call_123"
+      assert tool_result["content"] == "72°F and sunny"
+    end
+  end
+
+  describe "tool passthrough (streaming)" do
+    test "streams tool_calls with tool_calls finish_reason" do
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, _opts ->
+        caller = self()
+        pid = spawn(fn ->
+          send(caller, {:llm_tool_use, %{id: "call_456", name: "search", input: %{"q" => "elixir"}}})
+          send(caller, {:llm_stop, "tool_use"})
+        end)
+        {:ok, pid}
+      end)
+
+      conn =
+        Plug.Test.conn(:post, "/v1/chat/completions", %{
+          "model" => "test",
+          "messages" => [%{"role" => "user", "content" => "Search for elixir"}],
+          "stream" => true,
+          "tools" => [%{"type" => "function", "function" => %{"name" => "search", "description" => "Search", "parameters" => %{}}}]
+        })
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      chunks = parse_sse_chunks(conn.resp_body)
+
+      # Should have a tool_calls chunk
+      tc_chunk = Enum.find(chunks, fn c ->
+        c["choices"] && Map.has_key?(hd(c["choices"])["delta"], "tool_calls")
+      end)
+      assert tc_chunk
+      [tc] = hd(tc_chunk["choices"])["delta"]["tool_calls"]
+      assert tc["id"] == "call_456"
+      assert tc["function"]["name"] == "search"
+
+      # Final chunk should have tool_calls finish reason
+      final = Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "tool_calls" end)
+      assert final
+
+      assert conn.resp_body =~ "data: [DONE]"
+    end
+  end
+
   # --- SSE parsing helper ---
 
   defp parse_sse_chunks(body) do
