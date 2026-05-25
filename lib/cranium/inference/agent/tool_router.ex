@@ -27,6 +27,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
           | {:execute, module(), map()}
           | {:muse, String.t(), map()}
           | {:plugin, pid(), map()}
+          | {:macro, String.t(), map()}
           | {:clear, String.t() | nil}
           | {:unknown, String.t()}
 
@@ -70,8 +71,15 @@ defmodule Cranium.Inference.Agent.ToolRouter do
 
       true ->
         case find_plugin_handler(name, conversation_id) do
-          {:plugin, pid} -> {:plugin, pid, input}
-          nil -> find_handler(name, input)
+          {:plugin, pid} ->
+            {:plugin, pid, input}
+
+          nil ->
+            cond do
+              name == "search_macros" -> {:macro, "search_macros", input}
+              Cranium.Macro.Engine.macro_tool?(name) -> {:macro, name, input}
+              true -> find_handler(name, input)
+            end
         end
     end
   end
@@ -133,7 +141,23 @@ defmodule Cranium.Inference.Agent.ToolRouter do
         []
       end
 
-    builtin_defs ++ plugin_defs
+    # Macro tools: explicit-trigger macros with listed/discoverable advertising
+    macro_defs =
+      if conversation_id do
+        Cranium.Macro.Engine.tool_definitions_for_room(conversation_id)
+      else
+        Cranium.Macro.Engine.tool_definitions()
+      end
+
+    # Search tool: available when any macro has searchable advertising
+    search_defs =
+      if Cranium.Macro.Registry.list_by_advertising(:searchable) != [] do
+        [search_macros_tool_def()]
+      else
+        []
+      end
+
+    builtin_defs ++ plugin_defs ++ macro_defs ++ search_defs
   end
 
   defp find_handler(name, input) do
@@ -141,6 +165,24 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       {_, module} -> {:execute, module, input}
       nil -> {:unknown, name}
     end
+  end
+
+  defp search_macros_tool_def do
+    %{
+      name: "search_macros",
+      description:
+        "Search available macros by keyword. Returns matching macro names and descriptions. Use when you need a capability that isn't in your current tool list.",
+      input_schema: %{
+        type: "object",
+        properties: %{
+          query: %{
+            type: "string",
+            description: "Search query — matched against macro names, descriptions, and tags"
+          }
+        },
+        required: ["query"]
+      }
+    }
   end
 
   defp find_plugin_handler(name, conversation_id) do

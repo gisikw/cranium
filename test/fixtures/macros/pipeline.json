@@ -1,0 +1,35 @@
+{
+  "name": "test-pipeline",
+  "description": "A multi-step test pipeline",
+  "version": 1,
+  "trigger": "explicit",
+  "advertising": "searchable",
+  "lifecycle": "turn",
+  "learning": "none",
+  "revision": "never",
+  "disposition": "foreground",
+  "body_type": "sequence",
+  "sequence_body": {
+    "steps": [
+      {"name": "deploy"},
+      {
+        "inline": {
+          "name": "verify-step",
+          "description": "Verify the deployment",
+          "trigger": "passive",
+          "advertising": "hidden",
+          "lifecycle": "parent",
+          "learning": "none",
+          "revision": "never",
+          "disposition": "foreground",
+          "body_type": "script",
+          "script_body": {
+            "command": "echo verifying"
+          }
+        }
+      }
+    ],
+    "on_failure": "halt"
+  },
+  "tags": ["pipeline", "test"]
+}

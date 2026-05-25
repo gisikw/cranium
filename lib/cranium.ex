@@ -44,6 +44,9 @@ defmodule Cranium do
           epoch_end_context
         )
 
+        # Dispatch macro revision after plugin hooks but before epoch clear
+        Cranium.Macro.Engine.on_epoch_end(epoch_end_context)
+
         Cranium.Store.clear_epoch(conversation_id, continuation)
 
         Cranium.Events.broadcast(

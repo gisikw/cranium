@@ -1,0 +1,1189 @@
+-- allium: 3
+
+-- Macro Primitive
+--
+-- The unified primitive for all harness-managed instruction bundles in cranium.
+-- Skills, agendas, glossary entries, and orchestration nodes are all macros
+-- with different axis configurations.
+--
+-- This spec defines the macro definition shape — what you write to create a
+-- macro, and what the harness needs to know to load, trigger, advertise,
+-- execute, and retire it. It does NOT specify the macro runtime engine
+-- (GenServer lifecycle, hook dispatch, injection pipeline) — that remains
+-- in plugin-system.allium and context-system.allium. This spec is the
+-- definition layer; the runtime is the execution layer.
+--
+-- Scope: Macro definition schema, axis taxonomy, body types, match
+-- configuration, composition model, child macro advertising, tool
+-- surface. Does NOT cover: runtime state management, injection pipeline
+-- mechanics, sidecar model prompt engineering, specific macro
+-- implementations (those are separate specs or instances).
+--
+-- Depends on: plugin-system.allium (Plugin, hooks — the execution substrate)
+--             context-system.allium (injection pipeline)
+--             inference-pipeline.allium (ToolRouter, ToolResult)
+
+use plugin_system
+use context_system
+use inference_pipeline
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    macros_path: String
+        -- Filesystem path to the directory tree containing macro
+        -- definition files. Scanned recursively at boot and on
+        -- reload. Subdirectories are organizational — they do not
+        -- impose namespace on macro names.
+
+    macro_format: json
+        -- Serialization format for macro definition files.
+        -- JSON for machine-parseability. Human authoring is
+        -- secondary; macros may be generated or evolved by the
+        -- system itself.
+}
+
+------------------------------------------------------------
+-- Value Types: Axes
+------------------------------------------------------------
+
+-- A macro is defined by six axes that determine its behavior.
+-- Each axis is an enum (or small struct) on the definition.
+
+enum Trigger {
+    explicit
+    match
+    ambient
+    passive
+
+    @guidance
+        -- How the macro fires.
+        --
+        -- explicit: The model invokes it via tool call. The macro
+        --   must be advertised (see Advertising) for the model to
+        --   know it exists. Example: a skill the model calls by name.
+        --
+        -- match: The harness matches a keyword or regex pattern
+        --   against the user's turn content and fires the macro.
+        --   Configured via MatchConfig. Example: glossary entry
+        --   injected on first mention of a term.
+        --
+        -- ambient: The harness evaluates the macro every turn.
+        --   The macro's body may produce output or no-op based on
+        --   its own conditions. Example: time-gap reminder, saturation
+        --   warning.
+        --
+        -- passive: No self-trigger. The macro fires only when
+        --   invoked by a parent macro (in a sequence) or by
+        --   external orchestration. Example: a KO pipeline node,
+        --   a child tool macro.
+}
+
+value MatchConfig {
+    patterns: [String]
+    once: Boolean
+
+    @guidance
+        -- Configuration for trigger = match.
+        --
+        -- patterns: A list of match patterns. Each pattern is either:
+        --   - A literal string: word-boundary wrapped automatically.
+        --     Case-insensitive. Hyphens and spaces are interchangeable.
+        --     Example: "kubernetes" matches "Kubernetes", "KUBERNETES"
+        --   - A regex: delimited by /slashes/. Passed through raw to
+        --     the regex engine. Example: "/kube[-\s]?cluster/"
+        --
+        -- once: When true, the macro fires at most once per session
+        --   (first-mention semantics). The harness tracks a seen-set
+        --   per macro instance. When false, the macro may fire on
+        --   every matching turn.
+        --
+        -- Match evaluation happens before context build. All matching
+        -- macros contribute injections for that turn.
+}
+
+enum Advertising {
+    listed
+    discoverable
+    searchable
+    hidden
+
+    @guidance
+        -- What the model knows about the macro, and when.
+        -- Independent of trigger — advertising controls progressive
+        -- disclosure, trigger controls execution.
+        --
+        -- listed: Always in context, every turn. The macro appears
+        --   in the tool definitions or system prompt. Expensive in
+        --   context budget. Example: a frequently-used skill.
+        --
+        -- discoverable: Self-advertises when a keyword is first
+        --   mentioned. The macro is not in context until triggered
+        --   by a match on its advertising keywords. After discovery,
+        --   it remains visible for the session. Trigger and advertising
+        --   keywords may differ: a macro can be discovered by one
+        --   pattern but triggered (explicit) by tool call.
+        --
+        -- searchable: Not advertised. The model can query a registry
+        --   tool ("is there a macro for deploy?") and get back the
+        --   macro's name and description. Requires the registry tool
+        --   to be available.
+        --
+        -- hidden: Harness-only. The model never sees this macro's
+        --   existence. Used for ambient injections, passive nodes,
+        --   and infrastructure macros.
+}
+
+value DiscoverableConfig {
+    keywords: [String]
+
+    @guidance
+        -- Configuration for advertising = discoverable.
+        --
+        -- keywords: Patterns that trigger advertisement of this macro.
+        -- Uses the same literal/regex syntax as MatchConfig.patterns.
+        -- When a keyword matches the user's turn, the macro's tool
+        -- definition or description is injected into context for the
+        -- remainder of the session.
+        --
+        -- This is distinct from MatchConfig — discoverable keywords
+        -- control when the model learns the macro exists, not when
+        -- the macro fires. A macro with advertising = discoverable
+        -- and trigger = explicit becomes visible on keyword match
+        -- but only fires when the model explicitly invokes it.
+}
+
+enum Lifecycle {
+    turn
+    epoch
+    session
+    condition
+    parent
+
+    @guidance
+        -- How long the macro lives once activated.
+        --
+        -- turn: Active for one turn only. Fires, contributes its
+        --   injection or executes its body, then is done. No state
+        --   persists. Example: ephemeral formatting instruction.
+        --
+        -- epoch: Lives until context clear. Rehydrates across clears
+        --   if the macro has persistent state. Example: agenda.
+        --
+        -- session: Lives for the entire conversation session (all
+        --   epochs). Example: glossary seen-set, discovered macros.
+        --
+        -- condition: Lives until its completion conditions are met.
+        --   Conditions are evaluated by the learning axis. When all
+        --   conditions are satisfied, the macro deactivates.
+        --   Example: agenda with criteria.
+        --
+        -- parent: Lifecycle is bound to a parent macro. When the
+        --   parent deactivates, this macro deactivates. Used for
+        --   child macros (tools exposed while a parent is active).
+}
+
+enum Learning {
+    none
+    self_report
+    sidecar
+    structured
+
+    @guidance
+        -- How the macro accumulates experience and tracks completion.
+        -- "Learning" rather than "eval" — the macro isn't being graded,
+        -- it's building understanding of whether its objective was met.
+        --
+        -- none: Fire and forget. No completion tracking. The macro
+        --   contributes its content and the harness moves on.
+        --   Example: glossary injection, skill prompt.
+        --
+        -- self_report: The agent signals completion in its response.
+        --   The harness looks for a structured signal (tool call,
+        --   tagged output) indicating the macro's objective was met.
+        --   Example: KO action node — agent calls a completion tool.
+        --
+        -- sidecar: A cheap model evaluates async. The harness
+        --   dispatches the macro's learning prompt to a sidecar model
+        --   with recent conversation context. The sidecar returns
+        --   a structured assessment. Example: agenda condition tracking.
+        --
+        -- structured: The agent returns typed output that the harness
+        --   parses directly. No sidecar needed — the agent's response
+        --   is the assessment. Example: KO decision node returning
+        --   JSON disposition.
+}
+
+value SidecarConfig {
+    model: String?
+    interval: Integer
+    prompt: String
+
+    @guidance
+        -- Configuration for learning = sidecar.
+        --
+        -- model: Profile name for the sidecar learner. When nil,
+        --   uses a harness default (cheap local model). Determines
+        --   model and backend only — the learning prompt is macro-owned.
+        --
+        -- interval: Evaluate every N turns. Also controls injection
+        --   cadence — results are consumed on the next turn's context
+        --   build, producing a progress injection.
+        --
+        -- prompt: The learning prompt template. Template variables
+        --   are macro-defined. Common variables:
+        --     %{conditions} — remaining conditions with status
+        --     %{lookback} — recent turns as formatted text
+        --   The sidecar returns JSON. The expected shape is declared
+        --   by the macro.
+}
+
+enum Revision {
+    never
+    session_end
+    on_condition
+
+    @guidance
+        -- Does the macro self-modify, and when?
+        -- Orthogonal to learning — learning asks "did it work?",
+        -- revision asks "should this macro learn?"
+        --
+        -- never: Static. The definition does not change.
+        --   Example: most skills, ambient injections.
+        --
+        -- session_end: On epoch end, the harness evaluates whether
+        --   the macro's definition should update based on what
+        --   happened in the conversation. Uses a revision prompt
+        --   (macro-defined) and the epoch's message history.
+        --   Example: glossary entry updating its summary after
+        --   new information surfaces in conversation.
+        --
+        -- on_condition: Revises when a named condition is met.
+        --   The condition is macro-defined. Example: a skill
+        --   that updates its own prompt after N invocations.
+}
+
+value RevisionConfig {
+    prompt: String
+    condition: String?
+
+    @guidance
+        -- Configuration for revision != never.
+        --
+        -- prompt: The revision prompt template. Receives the full
+        --   epoch message history and the macro's current definition.
+        --   Expected to return a JSON patch or replacement for the
+        --   macro's body/metadata.
+        --
+        -- condition: For revision = on_condition, the named condition
+        --   that triggers revision. Condition semantics are
+        --   macro-defined. Nil for session_end revision.
+}
+
+enum Disposition {
+    foreground
+    background
+    gated
+
+    @guidance
+        -- Who has the floor when this macro fires.
+        --
+        -- foreground: Yields conversational turn to the macro.
+        --   The user sees the macro's execution. The primary
+        --   agent's attention is on the macro's objective.
+        --   Example: "go implement this ticket" — the agent
+        --   works on the macro's task visibly.
+        --
+        -- background: Fires and forgets. The main conversation
+        --   continues uninterrupted. The macro's execution is
+        --   invisible to the user. Example: sidecar evaluation,
+        --   glossary injection, ambient time reminders.
+        --
+        -- gated: Background execution, but the next turn may
+        --   depend on the result. The harness holds the result
+        --   and injects it when available. Example: agenda sidecar
+        --   influencing subsequent agent behavior.
+}
+
+------------------------------------------------------------
+-- Value Types: Body
+------------------------------------------------------------
+
+enum BodyType {
+    prompt
+    script
+    sequence
+
+    @guidance
+        -- What the macro does when it fires.
+        --
+        -- prompt: Text injected into the agent's context. This is
+        --   the most common body type — skills, glossary entries,
+        --   ambient reminders are all prompt-bodied macros.
+        --
+        -- script: A shell command executed by the harness. No LLM
+        --   involved. The harness runs the command and captures
+        --   stdout/stderr. If inference is needed, the script
+        --   shells out to muse. Example: "mix test", "muse --exec".
+        --
+        -- sequence: An ordered list of child macro references.
+        --   Each child runs in order. A sequence macro is the
+        --   composition primitive — KO pipelines, multi-step
+        --   workflows are sequences of prompt and script macros.
+}
+
+value PromptBody {
+    text: String
+    tag: String?
+    priority: Integer?
+
+    @guidance
+        -- Body for body_type = prompt.
+        --
+        -- text: The prose to inject. May contain template variables
+        --   resolved at injection time. Variables are macro-defined
+        --   and populated from macro state or turn context.
+        --
+        -- tag: Optional XML tag to wrap the injection in. When set,
+        --   the injection is wrapped: <{tag}>...text...</{tag}>.
+        --   When nil, the text is injected raw. Common tags:
+        --   "system-reminder", "glossary", "skill".
+        --
+        -- priority: Injection priority. When nil, uses the macro's
+        --   default priority or the harness default (50). Lower
+        --   numbers appear earlier in the turn prefix.
+}
+
+value ScriptBody {
+    command: String
+    timeout_seconds: Integer?
+    sandbox: Boolean?
+
+    @guidance
+        -- Body for body_type = script.
+        --
+        -- command: Shell command to execute. Runs in the
+        --   conversation's working directory. Receives macro
+        --   state and turn context as environment variables.
+        --
+        -- timeout_seconds: Maximum execution time. When nil,
+        --   uses harness default (30s). The harness kills the
+        --   process on timeout.
+        --
+        -- sandbox: When true, the script runs in a bubblewrap
+        --   sandbox with restricted filesystem access (same model
+        --   as muse tool execution). When nil, inherits the
+        --   parent macro's sandbox setting or the profile's
+        --   tool_posture.
+}
+
+value SequenceBody {
+    steps: [MacroRef]
+    on_failure: halt | skip | abort
+
+    @guidance
+        -- Body for body_type = sequence.
+        --
+        -- steps: Ordered list of child macro references. Each step
+        --   is either a reference to a named macro or an inline
+        --   macro definition. Steps execute in order.
+        --
+        -- on_failure: What happens when a step fails.
+        --   halt: Stop the sequence. No further steps run. The
+        --     sequence macro reports partial completion.
+        --   skip: Log the failure and continue to the next step.
+        --     The sequence completes with gaps.
+        --   abort: Stop the sequence and report failure. The
+        --     sequence macro's learning (if any) reports failure.
+        --
+        -- Execution context: The harness creates a temporary
+        -- directory for the sequence. All steps execute with this
+        -- tempdir as their working context. Steps share data by
+        -- writing files to the tempdir. The tempdir lives for the
+        -- lifecycle of the parent macro and is cleaned up on
+        -- deactivation. This is the data passing model — no pipes,
+        -- no env var hacks, just files in a shared workspace.
+}
+
+value MacroRef {
+    name: String?
+    inline: MacroDefinition?
+
+    @guidance
+        -- A reference to a child macro in a sequence.
+        --
+        -- name: Reference to a named macro by its name field.
+        --   The macro must exist in the registry. Resolved at
+        --   sequence execution time, not at definition load time.
+        --
+        -- inline: An inline macro definition. Used for one-off
+        --   steps that don't warrant their own named definition.
+        --   Common for simple script steps in a pipeline.
+        --
+        -- Exactly one of name or inline must be set.
+}
+
+------------------------------------------------------------
+-- Value Types: Tools
+------------------------------------------------------------
+
+value MacroToolDefinition {
+    name: String
+    description: String
+    input_schema: Map
+    handler: script | self_report
+
+    @guidance
+        -- A tool exposed by a macro while it is active.
+        --
+        -- Macros with trigger = explicit expose themselves as tools.
+        -- Macros with lifecycle = condition may expose interaction
+        -- tools (like agenda's end/skip/status tools) as child
+        -- macros with lifecycle = parent.
+        --
+        -- handler determines what happens on invocation:
+        --   script: The macro's script body runs with the tool
+        --     input as environment variables. stdout becomes the
+        --     tool result content.
+        --   self_report: The tool call is recorded in macro state.
+        --     The macro's eval axis processes it on the next cycle.
+        --     Tool result is an acknowledgment.
+        --
+        -- Tool names must not collide with builtin tools or other
+        -- active macro tools (same invariant as plugin tools).
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity MacroDefinition {
+    -- Identity
+    name: String
+    description: String
+    version: Integer?
+
+    -- Axes
+    trigger: Trigger
+    match_config: MatchConfig when trigger = match
+    advertising: Advertising
+    discoverable_config: DiscoverableConfig when advertising = discoverable
+    lifecycle: Lifecycle
+    learning: Learning
+    sidecar_config: SidecarConfig when learning = sidecar
+    revision: Revision
+    revision_config: RevisionConfig when revision != never
+    disposition: Disposition
+
+    -- Body
+    body_type: BodyType
+    prompt_body: PromptBody when body_type = prompt
+    script_body: ScriptBody when body_type = script
+    sequence_body: SequenceBody when body_type = sequence
+
+    -- Tools (optional — macros that expose interaction surfaces)
+    tools: [MacroToolDefinition]?
+
+    -- Children (macros whose lifecycle is bound to this one)
+    children: [MacroDefinition]?
+
+    -- Conditions (for lifecycle = condition)
+    conditions: [ConditionDef]?
+
+    -- State shape (optional — for stateful macros)
+    state_schema: Map?
+
+    -- Metadata
+    tags: [String]?
+    source: String?
+
+    @guidance
+        -- A macro definition is a standalone JSON file in the macros
+        -- directory. It is the complete specification of a single
+        -- instruction bundle — everything the harness needs to load,
+        -- trigger, advertise, execute, and retire it.
+        --
+        -- Macros are harness-agnostic: the definition describes
+        -- behavior, not implementation. The harness (cranium) maps
+        -- axes to its own execution model (plugins, hooks, injection
+        -- pipeline). A different harness could execute the same
+        -- definitions differently.
+        --
+        -- State model: Macros are reducer-style pure functions. The
+        -- harness owns all state persistence. When a macro fires,
+        -- the harness hands it (state, context) and the macro
+        -- produces (output, new_state). The harness persists the
+        -- new state and hands it back on the next invocation.
+        -- state_schema declares the shape of state the macro needs
+        -- (as a JSON Schema). The harness initializes state from
+        -- the schema's defaults on first activation. Macros with
+        -- no state_schema are stateless (turn-scoped prompt macros).
+        --
+        -- version: Optional monotonic version number. When present,
+        --   the harness can detect definition changes (e.g., for
+        --   cache invalidation or re-injection after update).
+        --
+        -- source: Optional provenance. "manual" for hand-authored,
+        --   "generated" for system-created, or a macro name for
+        --   macros created by revision. Informational only.
+        --
+        -- tags: Optional labels for organization and filtering.
+        --   No semantic meaning to the harness — purely for human
+        --   and tooling consumption.
+}
+
+value ConditionDef {
+    description: String
+    section: String?
+
+    @guidance
+        -- A completable condition for lifecycle = condition macros.
+        --
+        -- description: Human-readable description of what "done"
+        --   looks like. This is what the sidecar evaluates against.
+        --   Example: "User confirmed the Q4 budget projection."
+        --
+        -- section: Optional grouping label. Conditions with the same
+        --   section are displayed together in progress injections.
+        --   Replaces the CriterionSection hierarchy from the agenda
+        --   spec with a flat list + optional grouping — simpler,
+        --   same expressiveness for most cases.
+}
+
+------------------------------------------------------------
+-- Rules: Loading
+------------------------------------------------------------
+
+rule LoadMacros {
+    when: Application starts or macros_path changes
+
+    let files = all .json files in macros_path, recursive
+
+    for file in files:
+        let definition = parse JSON as MacroDefinition
+        ensures: definition validated against axis constraints
+        ensures: definition registered in MacroRegistry
+
+    ensures: invalid files are logged and skipped
+    ensures: name collisions are logged and last-writer-wins
+
+    @guidance
+        -- The macro registry is an in-memory index of all loaded
+        -- definitions. It is the lookup table for:
+        --   - Trigger evaluation (which macros match this turn?)
+        --   - Advertising (which macros are listed/discoverable?)
+        --   - Tool registration (which macros expose tools?)
+        --   - Sequence resolution (resolving MacroRef.name)
+        --
+        -- Hot reload: The harness watches macros_path for changes
+        -- and reloads affected definitions. Running macro instances
+        -- are not affected by reload — they continue with their
+        -- original definition. New instances use the updated
+        -- definition.
+        --
+        -- Name collisions within the directory tree are resolved by
+        -- last-writer-wins (most recently modified file). This is
+        -- a simplification — if it causes problems, we add explicit
+        -- namespacing.
+}
+
+------------------------------------------------------------
+-- Rules: Trigger Evaluation
+------------------------------------------------------------
+
+rule EvaluateMatchTriggers {
+    when: AssembleTurn(conversation_id, epoch_id, turn_count, message_text)
+
+    let match_macros = MacroRegistry
+        where trigger = match
+        and (not match_config.once or not seen_this_session)
+
+    for m in match_macros:
+        let matched = any pattern in m.match_config.patterns
+            matches message_text
+
+        when matched:
+            ensures: m fires (body is executed per disposition)
+            ensures: m is marked seen when match_config.once = true
+
+    @guidance
+        -- Match evaluation runs during the before_context_build
+        -- phase, before injection assembly. All matching macros
+        -- contribute their injections (if prompt-bodied) or
+        -- execute (if script-bodied) for that turn.
+        --
+        -- Pattern matching:
+        --   - Literal strings are word-boundary wrapped, case-
+        --     insensitive, hyphen-space interchangeable.
+        --   - /regex/ patterns are compiled and matched as-is.
+        --   - A macro matches if ANY pattern in its list matches.
+        --
+        -- The seen-set for once=true macros is session-scoped
+        -- (survives epoch clears). This matches glossary semantics:
+        -- a term injected once doesn't re-inject unless its
+        -- definition changes (version bump).
+}
+
+rule EvaluateAmbientTriggers {
+    when: AssembleTurn(conversation_id, epoch_id, turn_count, message_text)
+
+    let ambient_macros = MacroRegistry where trigger = ambient
+
+    for m in ambient_macros:
+        ensures: m fires (body is executed per disposition)
+
+    @guidance
+        -- Ambient macros fire every turn. Whether they produce
+        -- output depends on their body logic. A time-gap macro
+        -- checks elapsed time and no-ops if < 30 minutes. A
+        -- saturation macro checks the threshold and no-ops if
+        -- below warning level.
+        --
+        -- Ambient macros with prompt bodies may include conditional
+        -- logic via template variables that resolve to empty strings
+        -- when conditions aren't met. The harness strips empty
+        -- injections.
+}
+
+rule EvaluateDiscoverable {
+    when: AssembleTurn(conversation_id, epoch_id, turn_count, message_text)
+
+    let discoverable_macros = MacroRegistry
+        where advertising = discoverable
+        and not discovered_this_session
+
+    for m in discoverable_macros:
+        let matched = any keyword in m.discoverable_config.keywords
+            matches message_text
+
+        when matched:
+            ensures: m is marked discovered
+            ensures: m's tool definition or description is injected
+                into context for the remainder of the session
+
+    @guidance
+        -- Discovery is one-shot per session: once a macro is
+        -- discovered, it stays visible. The discovery injection
+        -- is a brief announcement:
+        --
+        --   <system-reminder>
+        --   Available macro: "deploy" — Run the deployment pipeline
+        --   for the current project. Invoke with deploy(target).
+        --   </system-reminder>
+        --
+        -- After discovery, the macro's tool definition (if
+        -- trigger = explicit) is added to the active tool set.
+        -- For non-explicit triggers, discovery is informational —
+        -- the model knows the macro exists but doesn't invoke it.
+}
+
+------------------------------------------------------------
+-- Rules: Execution
+------------------------------------------------------------
+
+rule ExecutePromptBody {
+    when: macro fires and body_type = prompt
+
+    let resolved_text = resolve template variables in prompt_body.text
+    let content = wrap(resolved_text, prompt_body.tag)
+
+    ensures: Injection(
+        priority: prompt_body.priority or macro default or 50,
+        content: content
+    ) contributed to the turn's injection pipeline
+
+    @guidance
+        -- Prompt macros are the simplest execution path. The body
+        -- text is resolved (template variables filled), optionally
+        -- wrapped in an XML tag, and contributed as an injection.
+        --
+        -- Template variables are populated from:
+        --   1. Macro instance state (for stateful macros)
+        --   2. Turn context (conversation_id, turn_count, etc.)
+        --   3. Environment (current time, room name, etc.)
+        --
+        -- Empty resolved text produces no injection (stripped).
+}
+
+rule ExecuteScriptBody {
+    when: macro fires and body_type = script
+
+    let env = macro state + turn context as environment variables
+    let result = execute shell command script_body.command
+        with timeout script_body.timeout_seconds
+        with sandbox script_body.sandbox
+
+    ensures: result.stdout is captured
+    ensures: result.stderr is logged
+    ensures: result.exit_code is recorded
+
+    ensures: on timeout, process is killed and failure is recorded
+    ensures: on non-zero exit, failure is recorded
+
+    @guidance
+        -- Script macros shell out. The command runs in the
+        -- conversation's working directory with macro state and
+        -- turn context as environment variables.
+        --
+        -- Environment variables follow a convention:
+        --   MACRO_NAME, MACRO_TURN_COUNT, MACRO_CONVERSATION_ID,
+        --   MACRO_EPOCH_ID, MACRO_ROOM_NAME
+        --   Plus any macro-specific state variables.
+        --
+        -- stdout is the script's output. For foreground disposition,
+        -- it's shown to the user or injected into context. For
+        -- background, it's captured and available to subsequent
+        -- sequence steps.
+        --
+        -- Sandbox mode uses the same bubblewrap pattern as muse
+        -- tool execution. The sandbox setting cascades: macro
+        -- definition > parent macro > profile tool_posture.
+}
+
+rule ExecuteSequenceBody {
+    when: macro fires and body_type = sequence
+
+    for step in sequence_body.steps:
+        let child = resolve step (by name from registry or inline)
+        let result = execute child macro
+
+        when result is failure and on_failure = halt:
+            ensures: sequence stops, partial completion recorded
+        when result is failure and on_failure = skip:
+            ensures: failure logged, continue to next step
+        when result is failure and on_failure = abort:
+            ensures: sequence stops, failure reported
+
+    ensures: sequence completes when all steps succeed or are skipped
+
+    @guidance
+        -- Sequences are the composition primitive. Each step is
+        -- a macro execution (prompt, script, or nested sequence).
+        --
+        -- Steps execute serially. Parallelism is a future extension.
+        --
+        -- Data passing between steps is file-based: each step can
+        -- read artifacts written by previous steps. The working
+        -- directory is shared across the sequence. Environment
+        -- variables include MACRO_STEP_INDEX for sequencing.
+        --
+        -- A sequence macro's disposition applies to the sequence
+        -- as a whole, not individual steps. A foreground sequence
+        -- runs all steps visibly. A background sequence runs all
+        -- steps invisibly.
+}
+
+------------------------------------------------------------
+-- Rules: Child Macros
+------------------------------------------------------------
+
+rule ActivateChildren {
+    when: parent macro activates (fires with lifecycle != turn)
+
+    for child in parent.children:
+        ensures: child macro is registered in the active macro set
+        ensures: child's advertising is respected
+            (child may be listed, discoverable, searchable, or hidden)
+        ensures: child's lifecycle = parent (bound to parent)
+
+    @guidance
+        -- Child macros are the mechanism for interaction surfaces
+        -- on running macros. An agenda macro has children:
+        --   - end_agenda (trigger: explicit, advertising: listed)
+        --   - agenda_status (trigger: explicit, advertising: listed)
+        --   - agenda_skip (trigger: explicit, advertising: listed)
+        --
+        -- Children share the parent's state space. When a child
+        -- tool is invoked, it operates on the parent's state.
+        -- The parent macro definition declares what state mutations
+        -- each child can perform.
+        --
+        -- Children activate when the parent activates and deactivate
+        -- when the parent deactivates. Their tool definitions are
+        -- added to and removed from the active tool set dynamically.
+        -- This solves the "dynamic tool sets" open question from
+        -- plugin-system.allium — tools appear and disappear with
+        -- macro lifecycle, not hack around static registration.
+}
+
+rule DeactivateChildren {
+    when: parent macro deactivates
+
+    for child in parent.children:
+        ensures: child macro removed from active macro set
+        ensures: child's tool definitions removed from tool set
+
+    @guidance
+        -- Clean removal. The model no longer sees these tools
+        -- after the parent deactivates. No stale tool definitions,
+        -- no error responses for invalid states.
+}
+
+------------------------------------------------------------
+-- Rules: Evaluation
+------------------------------------------------------------
+
+rule EvaluateSidecar {
+    when: macro has learning = sidecar
+        and macro is active
+        and (turns_since_last_learning >= sidecar_config.interval)
+        and no learning in flight for this macro
+
+    let remaining = macro.conditions where status = pending
+
+    requires: remaining is not empty
+
+    let lookback = messages since last learning cycle
+    let prompt = resolve sidecar_config.prompt with
+        conditions: remaining, lookback: lookback
+
+    ensures: async sidecar inference dispatched
+    ensures: learning_in_flight = true for this macro
+    ensures: on completion, results applied to condition state
+    ensures: on failure, logged, learning_in_flight reset
+
+    @guidance
+        -- Identical to the agenda spec's FireSidecarEvaluation.
+        -- Generalized: any macro with learning = sidecar and conditions
+        -- gets this behavior. The sidecar config (model, interval,
+        -- prompt) is macro-defined. The harness provides the
+        -- mechanics.
+}
+
+rule EvaluateSelfReport {
+    when: agent response contains completion signal for macro
+        and macro has learning = self_report
+
+    ensures: macro's conditions updated based on signal
+    ensures: auto-close check if lifecycle = condition
+
+    @guidance
+        -- The agent signals completion via a tool call to one of
+        -- the macro's child tools, or via a structured tag in its
+        -- response (macro-defined). The harness parses the signal
+        -- and updates macro state.
+}
+
+rule AutoClose {
+    when: macro has lifecycle = condition
+        and all conditions are complete or skipped
+
+    ensures: macro deactivates
+    ensures: children deactivate (DeactivateChildren)
+    ensures: completion injection on next turn
+
+    @guidance
+        -- Generalized from agenda's AutoCloseAgenda. Any macro
+        -- with lifecycle = condition auto-closes when all conditions
+        -- are resolved. The completion injection notifies the agent.
+}
+
+------------------------------------------------------------
+-- Rules: Revision
+------------------------------------------------------------
+
+rule ReviseOnSessionEnd {
+    when: epoch ends
+        and macro has revision = session_end
+
+    let messages = epoch message history
+    let prompt = resolve revision_config.prompt with
+        definition: macro's current definition,
+        messages: messages
+
+    ensures: revision prompt dispatched to sidecar model
+    ensures: on update response, macro definition file rewritten
+    ensures: on no-update response, no change
+
+    @guidance
+        -- Generalized from glossary's epoch-end self-update. The
+        -- revision prompt receives the macro's current definition
+        -- and the epoch's conversation history, and decides whether
+        -- the definition should change.
+        --
+        -- The sidecar returns either:
+        --   { "update": true, "definition": {...} }
+        --   { "update": false }
+        --
+        -- On update, the macro's JSON file is rewritten atomically.
+        -- A changelog entry is appended to the file's metadata
+        -- (or a separate changelog file) for auditability.
+        --
+        -- Revision fires after on_epoch_end hooks but before
+        -- plugin termination — the macro still has its session
+        -- state available for the revision prompt.
+}
+
+------------------------------------------------------------
+-- Existing Patterns as Macros
+------------------------------------------------------------
+
+-- This section shows how existing cranium patterns map to
+-- macro definitions. These are illustrative, not normative —
+-- the actual definitions would be JSON files in macros_path.
+
+-- CC Skill
+--   trigger: explicit
+--   advertising: listed
+--   lifecycle: turn
+--   learning: none
+--   revision: never
+--   disposition: foreground
+--   body_type: prompt
+--   prompt_body: { text: "skill content...", tag: "skill" }
+
+-- Agenda
+--   trigger: explicit (activated via tool call)
+--   advertising: listed
+--   lifecycle: condition
+--   learning: sidecar
+--   revision: never
+--   disposition: foreground
+--   body_type: prompt
+--   prompt_body: { text: "agenda body...", tag: "system-reminder" }
+--   conditions: [{ description: "User ack'd forecast" }, ...]
+--   children: [end_agenda, agenda_status, agenda_skip]
+
+-- Glossary entry
+--   trigger: match
+--   match_config: { patterns: ["kubernetes", "k8s"], once: true }
+--   advertising: hidden
+--   lifecycle: session
+--   learning: none
+--   revision: session_end
+--   disposition: background
+--   body_type: prompt
+--   prompt_body: { text: "term definition...", tag: "glossary" }
+
+-- Time-gap reminder
+--   trigger: ambient
+--   advertising: hidden
+--   lifecycle: epoch
+--   learning: none
+--   revision: never
+--   disposition: background
+--   body_type: prompt
+--   prompt_body: { text: "It's been %{elapsed}...", tag: "system-reminder" }
+
+-- Landscape / cross-room context
+--   trigger: ambient
+--   advertising: hidden
+--   lifecycle: epoch
+--   learning: none
+--   revision: never
+--   disposition: background
+--   body_type: prompt
+
+-- Saturation warning
+--   trigger: ambient
+--   advertising: hidden
+--   lifecycle: epoch
+--   learning: none
+--   revision: never
+--   disposition: background
+--   body_type: prompt
+
+-- KO pipeline
+--   trigger: passive (dispatched by orchestration)
+--   advertising: hidden
+--   lifecycle: parent (bound to pipeline invocation)
+--   learning: structured (each node returns disposition)
+--   revision: never
+--   disposition: background
+--   body_type: sequence
+--   sequence_body: { steps: [plan, implement, lint, eval], on_failure: halt }
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant MacroNameUnique {
+    for m1, m2 in MacroRegistry where m1 != m2:
+        m1.name != m2.name
+
+    @guidance
+        -- Macro names are unique within the registry. Name
+        -- collisions at load time are resolved by last-writer-wins
+        -- with a warning log. This is a soft invariant — the
+        -- harness does not crash on collision, it resolves and warns.
+}
+
+invariant ChildLifecycleBound {
+    for c in active child macros:
+        c's parent is active
+
+    @guidance
+        -- A child macro cannot outlive its parent. When the parent
+        -- deactivates (completion, explicit end, epoch clear), all
+        -- children deactivate. This is enforced by DeactivateChildren.
+}
+
+invariant ToolNameNoCollision {
+    for t1, t2 in active tool definitions where t1 != t2:
+        t1.name != t2.name
+
+    @guidance
+        -- No two active macros may expose tools with the same name.
+        -- Since child macros activate and deactivate dynamically,
+        -- this is checked at activation time, not just at load time.
+        -- Collisions at activation time prevent the child from
+        -- registering its tools (logged as warning, parent still
+        -- activates).
+}
+
+invariant MatchOnceSessionScoped {
+    for m in macros where trigger = match and match_config.once = true:
+        m fires at most once per session (across all epochs)
+
+    @guidance
+        -- The seen-set for once=true macros survives epoch clears.
+        -- This prevents re-injection of glossary terms after context
+        -- clear — the term was already introduced this session.
+        --
+        -- Exception: if the macro's version changes (definition
+        -- updated on disk), the seen-set entry is invalidated and
+        -- the macro may fire again. This handles glossary updates.
+}
+
+invariant AmbientMayNoop {
+    for m in macros where trigger = ambient:
+        m's body may produce empty output (no injection)
+
+    @guidance
+        -- Ambient macros are evaluated every turn but are not
+        -- required to produce output. The harness strips empty
+        -- injections. This is how conditional ambient logic works:
+        -- the macro's template resolves to empty when conditions
+        -- aren't met.
+}
+
+invariant ScriptTimeout {
+    for m in macros where body_type = script:
+        m's script execution is bounded by timeout_seconds
+
+    @guidance
+        -- Scripts always have a timeout. When not specified in the
+        -- definition, the harness default (30s) applies. The harness
+        -- kills the process on timeout. No unbounded execution.
+}
+
+invariant SidecarNonBlocking {
+    for m in macros where learning = sidecar:
+        sidecar learning does not block the turn that fires it
+
+    @guidance
+        -- Sidecar learning is async. The turn proceeds without
+        -- waiting. Results are consumed on the next turn's context
+        -- build phase. This is the same guarantee as the agenda
+        -- spec's SidecarNonBlocking invariant, generalized.
+}
+
+invariant DefinitionHarnessAgnostic {
+    for m in MacroDefinitions:
+        m does not reference harness internals (GenServer, hooks,
+        Elixir modules, OTP concepts)
+
+    @guidance
+        -- Macro definitions are behavioral specifications, not
+        -- implementation instructions. They describe what the macro
+        -- does, not how the harness implements it. A different
+        -- harness (not cranium) could execute the same definitions.
+        --
+        -- This is the key distinction from the plugin system:
+        -- plugins are Elixir modules that implement callbacks.
+        -- Macros are data files that declare behavior. The harness
+        -- maps macro axes to its execution model.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface MacroRegistryTool {
+    facing agent: PrimaryAgent
+
+    provides: search_macros(query) when any macros have
+        advertising = searchable
+
+    exposes: macro name, description, trigger type for each
+        matching macro
+
+    @guidance
+        -- The registry tool enables the searchable advertising
+        -- mode. The agent can query "is there a macro for deploy?"
+        -- and get back matching macro names and descriptions.
+        --
+        -- Search is simple substring matching against name,
+        -- description, and tags. No embeddings, no ranking —
+        -- just "show me what matches 'overlay'." Start simple,
+        -- revisit if the macro count demands sophistication.
+        --
+        -- This tool is only registered when at least one macro
+        -- has advertising = searchable. Otherwise it's absent
+        -- from the tool set.
+        --
+        -- Registry misses are first-class signal. Every query
+        -- that returns no results is logged as a miss with the
+        -- query text, conversation_id, and room_name. Aggregated
+        -- misses form a prioritized creation queue — the most-
+        -- searched-for-missing-macros list tells you what macros
+        -- ought to exist. This is higher-fidelity signal than
+        -- post-session interviews ("did you do anything useful?")
+        -- because the signal happens at the moment of need.
+}
+
+surface MacroDiscoveryInjection {
+    facing agent: PrimaryAgent
+
+    exposes: macro name, description, available tool calls
+        for discovered macros
+
+    @guidance
+        -- When a discoverable macro is discovered (keyword match),
+        -- the harness injects a brief announcement into the turn.
+        -- If the macro has trigger = explicit, its tool definition
+        -- is also added to the active tool set.
+        --
+        -- Format:
+        -- <system-reminder>
+        -- Available: "{name}" — {description}
+        -- {tool usage hint if explicit trigger}
+        -- </system-reminder>
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Macro creation by the agent" {
+    -- Hermes-style self-improving skills: can the agent create
+    -- new macros or modify existing ones during a session?
+    --
+    -- The revision axis handles post-session self-modification.
+    -- But runtime creation (agent says "I keep doing this pattern,
+    -- let me save it as a macro") is a different capability.
+    --
+    -- This could be a meta-macro: a listed tool called
+    -- "create_macro" that writes a new JSON file to macros_path.
+    -- The new macro is available after the next registry reload.
+    --
+    -- Deferred until the base system is proven. The revision axis
+    -- is the safe starting point for self-modification.
+}
+
+open question "Macro litmus test" {
+    -- Not everything should be a macro. The litmus test: "is this
+    -- something you did once and then went 'we should make a macro
+    -- out of this'?" Things that are core harness affordances
+    -- (cross-room landscape, saturation warnings, time-gap
+    -- reminders, ensemble routing) are NOT macros — they are
+    -- builtin harness capabilities that happen to use the same
+    -- injection pipeline.
+    --
+    -- Macros are for repeatable, composable instruction bundles
+    -- that benefit from being declarative and portable. The
+    -- distinction is operational: if removing it would break the
+    -- harness's core loop, it's not a macro.
+}

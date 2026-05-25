@@ -1,0 +1,25 @@
+{
+  "name": "kubernetes",
+  "description": "Kubernetes glossary entry",
+  "version": 1,
+  "trigger": "match",
+  "match_config": {
+    "patterns": ["kubernetes", "k8s", "/kube[-\\s]?cluster/"],
+    "once": true
+  },
+  "advertising": "hidden",
+  "lifecycle": "session",
+  "learning": "none",
+  "revision": "session_end",
+  "revision_config": {
+    "prompt": "Review this glossary entry based on conversation context."
+  },
+  "disposition": "background",
+  "body_type": "prompt",
+  "prompt_body": {
+    "text": "Kubernetes (k8s) is an open-source container orchestration platform.",
+    "tag": "glossary",
+    "priority": 15
+  },
+  "tags": ["glossary", "infrastructure"]
+}

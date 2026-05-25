@@ -352,6 +352,12 @@ defmodule Cranium.Inference.TurnAssembler do
         turn_context
       )
 
+    # 5d. Evaluate macro triggers and collect macro injections
+    {macro_injections, macro_announcements} =
+      Cranium.Macro.Engine.evaluate_turn(turn_context)
+
+    plugin_injections = plugin_injections ++ macro_injections ++ macro_announcements
+
     # 6. Turn injections (merged with plugin injections)
     injection_message = %{
       text: text,

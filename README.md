@@ -24,6 +24,7 @@ These terms are settled and used consistently throughout the codebase.
 | **Transport** | Protocol adapter that accepts input and delivers output. HTTP is the sole transport; Matrix integration is handled externally by bridge clients. | `Cranium.Transport.HTTP` | — |
 | **Backend** | Hot-swappable service implementation behind a behaviour. STT (Whisper), TTS (ExoVoice), LLM (Claude Code, Anthropic, Ollama). | `Cranium.Backend.*` | — |
 | **Handoff** | Summary document generated on `!clear`, capturing epoch context for the next epoch. | — (stored entity) | — |
+| **Macro** | A JSON-defined instruction unit with six axes (trigger, advertising, lifecycle, learning, revision, disposition) and a body (prompt, script, or sequence). Loaded from disk, evaluated per-turn by the macro engine. | `Cranium.Macro.*` | macro name |
 | **Landscape** | Cross-conversation awareness — summaries from other active conversations injected into the system prompt. | `Cranium.Inference.Landscape` | — |
 | **Marker** | SCTE-style positional cue in the output stream. The model calls tools like `show`, `show_code`, `play_audio` that are intercepted and emitted as markers at the model's intended position. | — (stream event) | — |
 | **Take** | A chunked audio input session. Opened, filled with numbered chunks, sealed, then assembled for transcription. | `Cranium.Transport.SegmentRegistry` | `take_id` |
@@ -157,6 +158,102 @@ Muse tool definitions are loaded at boot via `muse --tools` and advertised to
 backends in Anthropic tool shape. If muse is not on PATH, tool loading is
 skipped gracefully.
 
+### Macro Engine
+
+The macro engine is a declarative instruction management system that runs
+alongside the plugin system. It loads JSON definitions from disk, evaluates
+triggers per-turn, manages reducer-style state, and integrates with the
+injection pipeline and tool router. The formal spec is at `specs/macro.allium`.
+
+A macro is defined by **six axes** and a **body type**:
+
+| Axis | Values | Controls |
+|------|--------|----------|
+| **Trigger** | `explicit`, `match`, `ambient`, `passive` | How the macro fires |
+| **Advertising** | `listed`, `discoverable`, `searchable`, `hidden` | Visibility to the model |
+| **Lifecycle** | `turn`, `epoch`, `session`, `condition`, `parent` | How long it stays active |
+| **Learning** | `none`, `self_report`, `sidecar`, `structured` | How completion is tracked |
+| **Revision** | `never`, `session_end`, `on_condition` | Whether it self-modifies |
+| **Disposition** | `foreground`, `background`, `gated` | Who has the floor |
+
+| Body Type | What It Does |
+|-----------|-------------|
+| **prompt** | Template text injected into context (with optional XML tag + priority) |
+| **script** | Shell command executed by the harness (with timeout, env vars) |
+| **sequence** | Ordered chain of child macros with shared tmpdir |
+
+#### Macro Definition Shape
+
+```json
+{
+  "name": "example",
+  "description": "What this macro does",
+  "version": 1,
+  "trigger": "match",
+  "match_config": {
+    "patterns": ["keyword", "/regex-pattern/"],
+    "once": true
+  },
+  "advertising": "hidden",
+  "lifecycle": "session",
+  "learning": "none",
+  "revision": "session_end",
+  "revision_config": {
+    "prompt": "Review this definition: %{definition}\nConversation: %{messages}"
+  },
+  "disposition": "background",
+  "body_type": "prompt",
+  "prompt_body": {
+    "text": "Injected context with %{template_variables}",
+    "tag": "glossary",
+    "priority": 15
+  },
+  "tags": ["optional", "searchable-tags"]
+}
+```
+
+Optional fields by axis configuration:
+
+- `match_config` — required when trigger=match. `patterns` are literal
+  (word-boundary, case-insensitive) or `/regex/`. `once` prevents re-firing.
+- `discoverable_config` — required when advertising=discoverable. `keywords`
+  trigger one-time discovery announcements.
+- `sidecar_config` — required when learning=sidecar. Async evaluation via
+  cheap model with `interval` turn gating. Template vars: `%{conditions}`,
+  `%{lookback}`.
+- `revision_config` — required when revision != never. Template vars:
+  `%{definition}`, `%{messages}`.
+- `conditions` — list of `{description, section}` for lifecycle=condition macros.
+- `children` — nested macro definitions (lifecycle=parent, activated with parent).
+- `tools` — tool definitions exposed while macro is active.
+- `state_schema` — JSON schema for reducer-style persistent state.
+- `script_body` — `{command, timeout_seconds, sandbox}` for body_type=script.
+- `sequence_body` — `{steps: [{name} | {inline}], on_failure: halt|skip|abort}`
+  for body_type=sequence.
+
+#### Engine Integration
+
+- **TurnAssembler** calls `Macro.Engine.evaluate_turn/1` during context build.
+  Trigger evaluation, condition activation, and prompt injection happen here.
+- **PassReactor** calls `Macro.Engine.after_pass/1` to dispatch sidecar
+  evaluations for active condition macros.
+- **Epoch end** calls `Macro.Engine.on_epoch_end/1` to dispatch revision for
+  macros with revision=session_end.
+- **ToolRouter** queries `Macro.Engine.tool_definitions_for_room/1` for
+  explicit-trigger macros. Tool names are prefixed `macro_` to avoid collisions.
+
+#### Patterns
+
+The engine subsumes several existing patterns into a single primitive:
+
+| Pattern | Axes | Example |
+|---------|------|---------|
+| **Skill** | explicit, listed, turn, prompt | "Run the handoff generator" |
+| **Glossary** | match, hidden, session, prompt, revision=session_end | "Inject k8s context on mention" |
+| **Agenda** | explicit, listed, condition, sidecar, prompt+children | "Run standup with tracked items" |
+| **Script tool** | explicit, discoverable, turn, script | "Deploy on keyword mention" |
+| **Pipeline** | explicit, searchable, turn, sequence | "Multi-step deploy+verify" |
+
 ### Module Reference
 
 #### Inference
@@ -190,6 +287,20 @@ skipped gracefully.
 | `Inference.Agent.MarkerEmitter` | Intercepts SCTE-style marker tools, returns fake success, emits positional markers into the output stream. |
 | `Inference.Agent.Tools.Bash` | Shell command execution tool. |
 | `Inference.Agent.Tools.Subagent` | Spawns sub-agent inference passes via `claude -p`. |
+
+#### Macro Engine
+
+| Module | Responsibility |
+|--------|---------------|
+| `Macro.Engine` | Coordination layer — evaluates triggers, activates macros, returns injections, manages tool registration. Lifecycle hooks: `evaluate_turn`, `after_pass`, `on_epoch_end`. |
+| `Macro.Definition` | Struct + JSON parser. Validates six axes, body types, configs, children (recursive). |
+| `Macro.Registry` | ETS-backed GenServer. Loads JSON files from `macros_path`, indexes by trigger and advertising, supports hot reload via file watcher. |
+| `Macro.State` | Two-tier state: persistent (per-room, per-macro, disk-backed) and session (ETS, ephemeral). Atomic writes. |
+| `Macro.Trigger` | Evaluates match/ambient triggers against message text. Manages seen-sets and discovery. |
+| `Macro.Matcher` | Pattern compilation — literal strings become word-boundary regexes, `/regex/` strings compile raw. |
+| `Macro.Executor` | Executes prompt (template resolution + tag wrapping), script (shell + env vars + timeout), and sequence (ordered steps + tmpdir) bodies. |
+| `Macro.Sidecar` | Async condition evaluation via cheap model. ETS-backed in-flight tracking with interval gating. |
+| `Macro.Revision` | Epoch-end self-modification. Calls sidecar model with definition + messages, atomic file rewrite on update. |
 
 #### Effects
 
@@ -449,6 +560,17 @@ lib/
     context/
       router.ex                         # conversation_id → working directory
       turn_injector.ex                  # Per-turn context injections
+
+    macro/
+      definition.ex                     # Macro struct + JSON parser
+      engine.ex                         # Trigger evaluation, activation, injection coordination
+      executor.ex                       # Body execution (prompt, script, sequence)
+      matcher.ex                        # Pattern compilation (literal + regex)
+      registry.ex                       # ETS-backed macro loader + indexer
+      revision.ex                       # Epoch-end self-modification
+      sidecar.ex                        # Async condition evaluation
+      state.ex                          # Per-room, per-macro state (persistent + session)
+      trigger.ex                        # Trigger evaluation (match, ambient, once, discovery)
 
     effects.ex                          # Effects supervisor
     effects/

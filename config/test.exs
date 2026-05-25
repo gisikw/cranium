@@ -27,7 +27,9 @@ config :cranium, :paths,
   handoffs: System.tmp_dir!(),
   summaries: System.tmp_dir!(),
   skills: Path.join(File.cwd!(), "skills"),
-  subagent_prompt: nil
+  subagent_prompt: nil,
+  macros: Path.join(File.cwd!(), "test/fixtures/macros"),
+  macros_state: Path.join(System.tmp_dir!(), "cranium_test_macro_state")
 
 # Profile config — test fixture
 config :cranium, :profiles_path, Path.join(File.cwd!(), "test/fixtures/profiles.yaml")

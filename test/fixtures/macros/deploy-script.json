@@ -1,0 +1,21 @@
+{
+  "name": "deploy",
+  "description": "Run the deployment pipeline",
+  "version": 2,
+  "trigger": "explicit",
+  "advertising": "discoverable",
+  "discoverable_config": {
+    "keywords": ["deploy", "deployment", "ship it"]
+  },
+  "lifecycle": "turn",
+  "learning": "none",
+  "revision": "never",
+  "disposition": "foreground",
+  "body_type": "script",
+  "script_body": {
+    "command": "echo deploying $MACRO_NAME",
+    "timeout_seconds": 60,
+    "sandbox": true
+  },
+  "tags": ["ops", "deploy"]
+}

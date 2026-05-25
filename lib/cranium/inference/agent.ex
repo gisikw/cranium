@@ -556,6 +556,42 @@ defmodule Cranium.Inference.Agent do
         emit_tool_result(stream_id, conversation_id, tool_call.id, result)
         result
 
+      {:macro, name, input} ->
+        emit_tool_use(stream_id, conversation_id, tool_call, name, input)
+
+        epoch_id = Keyword.get(opts, :epoch_id)
+        turn_count = Keyword.get(opts, :turn_count, 0)
+
+        macro_context = %{
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          turn_count: turn_count,
+          room_name: conversation_id
+        }
+
+        result =
+          if name == "search_macros" do
+            query = input["query"] || ""
+            results = Cranium.Macro.Registry.search(query)
+            Logger.info("search_macros query=#{inspect(query)} results=#{length(results)}")
+
+            if results == [] do
+              "No macros found matching \"#{query}\"."
+            else
+              results
+              |> Enum.map(fn m -> "- **#{m.name}**: #{m.description}" end)
+              |> Enum.join("\n")
+            end
+          else
+            case Cranium.Macro.Engine.execute_tool(name, input, macro_context) do
+              {:ok, text} -> ToolExecutor.truncate_result(text)
+              {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
+            end
+          end
+
+        emit_tool_result(stream_id, conversation_id, tool_call.id, result)
+        result
+
       {:execute, module, input} ->
         emit_tool_use(stream_id, conversation_id, tool_call, tool_call.name, input)
 

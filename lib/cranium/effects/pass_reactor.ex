@@ -62,12 +62,17 @@ defmodule Cranium.Effects.PassReactor do
 
       # Notify plugins of assistant output (e.g., glossary mention tracking)
       if payload.output != "" do
-        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(cid, %{
+        after_pass_context = %{
           conversation_id: cid,
           epoch_id: payload.epoch_id,
           output: payload.output,
           turn_count: payload.turn_count
-        })
+        }
+
+        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(cid, after_pass_context)
+
+        # Dispatch sidecar evaluations for active macros
+        Cranium.Macro.Engine.after_pass(after_pass_context)
       end
     end
 

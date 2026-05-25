@@ -10,6 +10,8 @@ defmodule Cranium.Application do
       ├── Cranium.Store               # Storage service with soft locking
       ├── Cranium.Events              # Unified event pub/sub
       ├── Cranium.Config              # Profile configuration (profiles.yaml)
+      ├── Cranium.Macro.Registry      # Macro definitions (JSON files → ETS)
+      ├── Cranium.Macro.State         # Macro state (persistent + session ETS)
       ├── Cranium.Effects              # Post-inference effects
       │   ├── TaskSupervisor          #   async (handoffs, summaries)
       │   └── PassReactor             #   sync (Store mutations, backpressure)
@@ -58,6 +60,15 @@ defmodule Cranium.Application do
 
       # Profile configuration — must start before Inference (TurnAssembler depends on it)
       Cranium.Config,
+
+      # Macro registry — loads macro definitions from disk, indexed in ETS
+      Cranium.Macro.Registry,
+
+      # Macro state — per-room/per-macro persistent + session state
+      Cranium.Macro.State,
+
+      # Macro sidecar — async condition evaluation tracking (ETS)
+      Cranium.Macro.Sidecar,
 
       Cranium.Effects,
       Cranium.Transport,

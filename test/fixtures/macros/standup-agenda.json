@@ -1,0 +1,51 @@
+{
+  "name": "standup",
+  "description": "Daily standup meeting agenda",
+  "version": 1,
+  "trigger": "explicit",
+  "advertising": "listed",
+  "lifecycle": "condition",
+  "learning": "sidecar",
+  "sidecar_config": {
+    "model": "exo-local",
+    "interval": 3,
+    "prompt": "Evaluate which standup items have been discussed:\n%{conditions}\n\nRecent conversation:\n%{lookback}"
+  },
+  "revision": "never",
+  "disposition": "foreground",
+  "body_type": "prompt",
+  "prompt_body": {
+    "text": "Standup agenda:\n1. What did you do yesterday?\n2. What are you doing today?\n3. Any blockers?",
+    "tag": "system-reminder",
+    "priority": 25
+  },
+  "conditions": [
+    {"description": "Yesterday's work discussed", "section": "Updates"},
+    {"description": "Today's plan discussed", "section": "Updates"},
+    {"description": "Blockers identified or confirmed none", "section": "Blockers"}
+  ],
+  "children": [
+    {
+      "name": "end_standup",
+      "description": "End the standup meeting",
+      "trigger": "explicit",
+      "advertising": "listed",
+      "lifecycle": "parent",
+      "learning": "none",
+      "revision": "never",
+      "disposition": "foreground",
+      "body_type": "prompt",
+      "prompt_body": {
+        "text": "The standup meeting has been ended."
+      }
+    }
+  ],
+  "state_schema": {
+    "type": "object",
+    "properties": {
+      "started_at": {"type": "string"},
+      "items_discussed": {"type": "array", "items": {"type": "string"}, "default": []}
+    }
+  },
+  "tags": ["meeting", "agenda"]
+}
