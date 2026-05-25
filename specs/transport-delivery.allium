@@ -79,7 +79,6 @@ config {
     sse_keepalive_ms: Integer = 30000
     take_ttl_ms: Integer = 86400000
     openai_timeout_ms: Integer = 300000
-    openai_max_tokens_default: Integer = 8192
 }
 
 ------------------------------------------------------------
@@ -739,8 +738,12 @@ rule OpenAIChatCompletions {
     @guidance
         -- No epochs, no history persistence, no landscape injection, no turn
         -- injection. All requests are ephemeral.
-        -- Tools are NOT exposed to OpenAI clients (tool_use events swallowed).
-        -- If backend wants tool_use, treated as end_turn.
+        -- Client-side tool loops supported: tools array translated to backend
+        -- format, tool_calls returned in OpenAI format with finish_reason
+        -- "tool_calls". Cranium does not execute tools server-side.
+        -- Profile thinking and backend_config threaded to backend opts.
+        -- max_tokens passed through from request (nil if absent — backends
+        -- apply their own defaults).
         -- 300s timeout on both streaming and buffered modes.
         -- Client disconnect in streaming mode kills the backend process.
 }
@@ -846,10 +849,14 @@ invariant OpenAIEphemeral {
         Store not written
 }
 
-invariant OpenAIToolsSwallowed {
-    -- Tool use events from the backend are never exposed to OpenAI clients.
-    for request via /v1/chat/completions:
-        response never contains tool_call data
+invariant OpenAIToolPassthrough {
+    -- Client-provided tools are translated to backend format and forwarded.
+    -- When the model makes tool calls, they are returned in OpenAI format
+    -- with finish_reason: "tool_calls". Cranium does not execute tools
+    -- server-side — the client manages the tool loop.
+    for request via /v1/chat/completions with tools:
+        tools translated from OpenAI schema to backend format
+        tool_calls returned in OpenAI format
 }
 
 invariant TakeChunksOrderPreserved {

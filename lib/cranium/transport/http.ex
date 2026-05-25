@@ -455,6 +455,14 @@ defmodule Cranium.Transport.HTTP do
     Cranium.Transport.OpenAI.models(conn)
   end
 
+  post "/v1/audio/speech" do
+    Cranium.Transport.Audio.speech(conn)
+  end
+
+  post "/v1/audio/transcriptions" do
+    Cranium.Transport.Audio.transcriptions(conn)
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")

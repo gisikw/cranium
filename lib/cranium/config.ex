@@ -46,7 +46,14 @@ defmodule Cranium.Config do
       plugins: [],
       tool_posture: :sandbox,
       tool_rw: [],
-      tool_ro: []
+      tool_ro: [],
+      # Audio config (optional — profiles without these use backend defaults)
+      voice: nil,
+      speed: nil,
+      response_format: nil,
+      tts_url: nil,
+      stt_url: nil,
+      stt_language: nil
     ]
 
     @type plugin_declaration :: %{module: module(), config: map() | nil}
@@ -66,7 +73,13 @@ defmodule Cranium.Config do
             plugins: [plugin_declaration()],
             tool_posture: :sandbox | :permissive,
             tool_rw: [String.t()],
-            tool_ro: [String.t()]
+            tool_ro: [String.t()],
+            voice: String.t() | nil,
+            speed: float() | nil,
+            response_format: String.t() | nil,
+            tts_url: String.t() | nil,
+            stt_url: String.t() | nil,
+            stt_language: String.t() | nil
           }
   end
 
@@ -96,7 +109,13 @@ defmodule Cranium.Config do
            plugins: profile.plugins,
            tool_posture: profile.tool_posture,
            tool_rw: profile.tool_rw,
-           tool_ro: profile.tool_ro
+           tool_ro: profile.tool_ro,
+           voice: profile.voice,
+           speed: profile.speed,
+           response_format: profile.response_format,
+           tts_url: profile.tts_url,
+           stt_url: profile.stt_url,
+           stt_language: profile.stt_language
          }}
 
       [] ->
@@ -264,6 +283,12 @@ defmodule Cranium.Config do
             _ -> :sandbox
           end
 
+        speed =
+          case config["speed"] do
+            v when is_number(v) -> v / 1
+            _ -> nil
+          end
+
         profile = %Profile{
           name: name,
           backend: backend,
@@ -279,7 +304,13 @@ defmodule Cranium.Config do
           plugins: plugins,
           tool_posture: tool_posture,
           tool_rw: config["tool_rw"] || [],
-          tool_ro: config["tool_ro"] || []
+          tool_ro: config["tool_ro"] || [],
+          voice: config["voice"],
+          speed: speed,
+          response_format: config["response_format"],
+          tts_url: config["tts_url"],
+          stt_url: config["stt_url"],
+          stt_language: config["stt_language"]
         }
 
         :ets.insert(@table, {{:profile, name}, profile})

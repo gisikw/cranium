@@ -60,6 +60,16 @@ profiles:
       thinking_mode: prefill
       endpoint: http://localhost:9999/v1
 
+  test-audio:
+    backend: mock
+    model: test-model
+    voice: af_heart
+    speed: 0.9
+    response_format: wav
+    tts_url: http://localhost:8800/v1/audio/speech
+    stt_url: http://localhost:8801/v1/audio/transcriptions
+    stt_language: en
+
 ollama_url: http://localhost:11434
 
 room_defaults:

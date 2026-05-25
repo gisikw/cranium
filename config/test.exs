@@ -13,6 +13,10 @@ config :cranium, :backends,
   tts_url: "http://localhost:9999/v1/audio/speech",
   stt_url: "http://localhost:9999/transcribe"
 
+# Audio compat endpoint backends (mockable)
+config :cranium, :tts_backend, Cranium.Backend.TTS.Mock
+config :cranium, :stt_backend, Cranium.Backend.STT.Mock
+
 # Port 0 = OS-assigned random port. Tests use Plug.Test.conn directly,
 # so Bandit's actual port doesn't matter. Avoids eaddrinuse races.
 config :cranium, :http_port, 0

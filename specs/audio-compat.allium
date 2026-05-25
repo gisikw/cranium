@@ -1,0 +1,420 @@
+-- allium: 3
+
+-- Audio Compatibility Endpoints
+--
+-- OpenAI-compatible TTS and STT endpoints exposed through cranium's HTTP
+-- transport. These provide direct access to cranium's audio backends —
+-- the same backends used internally for conversational audio pipelines —
+-- as standalone, stateless, request/response APIs.
+--
+-- The primary consumer is muse (cranium's local executor), which curls
+-- these endpoints the same way it curls /v1/chat/completions. Any
+-- OpenAI-compatible client can also use them directly.
+--
+-- Profile resolution works identically to chat completions: the `model`
+-- field maps to a cranium profile name, and audio-specific config
+-- (voice, speed, strip_silence, etc.) lives as profile-level attributes.
+--
+-- Scope: POST /v1/audio/speech (TTS), POST /v1/audio/transcriptions (STT),
+-- profile audio config, backend dispatch. Does NOT cover the conversational
+-- audio pipeline (segmentation, warming, caching — see media-pipeline.allium),
+-- conversational input (chunked takes — see transport-delivery.allium), or
+-- profile loading mechanics (see profile-config.allium).
+--
+-- Depends on: profile-config.allium (Profile, ResolveProfile)
+--             media-pipeline.allium (TTS backend contract, STT backend)
+
+use profile-config
+use media-pipeline
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity ProfileStore {
+    -- Profile configuration. Managed by profile-config spec.
+    -- Audio compat endpoints use resolve_profile to look up
+    -- audio-specific config by model name.
+}
+
+external entity TTSBackend {
+    -- TTS synthesis. Managed by media-pipeline spec.
+    -- synthesize(text, opts) :: {:ok, audio} | {:error, term}
+    -- Current implementation: ExoVoice (OpenAI-compatible HTTP).
+}
+
+external entity STTBackend {
+    -- Speech-to-text transcription.
+    -- @callback transcribe(audio :: binary(), opts :: keyword()) ::
+    --             {:ok, text :: String.t()} | {:error, term()}
+    -- Formal behaviour: Cranium.Backend.STT
+    -- Current implementation: Cranium.Backend.STT.Whisper (HTTP multipart).
+    -- opts may include :language, :url (backend endpoint override).
+}
+
+------------------------------------------------------------
+-- Profile Audio Config
+------------------------------------------------------------
+
+-- Audio-specific fields added to the Profile entity defined in
+-- profile-config.allium. These are optional — profiles without
+-- them use backend defaults.
+
+value AudioConfig {
+    voice: String?
+        -- TTS voice identifier. Overrides tts.yaml prosody.
+        -- Example: "af_exo", "af_heart"
+
+    speed: Float?
+        -- TTS speaking rate. Overrides tts.yaml prosody.
+        -- Usable range: 0.8 – 1.3 (Kokoro engine limits).
+
+    response_format: String?
+        -- Audio output format. Default: "mp3".
+        -- Supported: mp3, wav, opus, flac (backend-dependent).
+
+    tts_url: String?
+        -- Override TTS backend URL for this profile.
+        -- Default: nil (falls through to application-level TTS_URL).
+        -- Enables per-profile backend routing — e.g., one profile
+        -- using local Kokoro, another using a cloud TTS service
+        -- for higher-quality but slower podcast-style synthesis.
+
+    stt_url: String?
+        -- Override STT backend URL for this profile.
+        -- Default: nil (falls through to application-level STT_URL).
+
+    stt_language: String?
+        -- Language hint for STT backend. Passed to Whisper's
+        -- language parameter. Default: nil (auto-detect).
+
+    @guidance
+        -- These fields live on the Profile struct alongside existing
+        -- fields like thinking, backend_config, etc. They are parsed
+        -- from profile YAML at boot and resolved via resolve_profile.
+        --
+        -- Example profile YAML:
+        --   exo:
+        --     backend: claudecode
+        --     model: claude-opus-4-6
+        --     voice: af_exo
+        --     speed: 1.0
+        --
+        --   podcast:
+        --     backend: anthropic
+        --     model: claude-sonnet-4-6
+        --     voice: af_heart
+        --     speed: 0.9
+        --     tts_url: https://cloud-tts.example.com/v1
+        --     response_format: wav
+        --
+        -- The conversational pipeline (media-pipeline) also reads
+        -- these fields — they are the single source of truth for
+        -- per-profile audio behavior, whether accessed via compat
+        -- endpoint or conversational pass.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    speech_max_input_length: Integer = 4096
+        -- Maximum character length for TTS input text.
+        -- Prevents abuse and avoids backend timeouts on very long text.
+
+    transcription_max_file_size: Integer = 26214400
+        -- Maximum upload size for STT (25 MB).
+        -- Whisper's practical limit for single-file transcription.
+}
+
+------------------------------------------------------------
+-- Rules: Text-to-Speech (POST /v1/audio/speech)
+------------------------------------------------------------
+
+rule SpeechRequest {
+    -- OpenAI-compatible TTS endpoint.
+    -- Accepts text, resolves profile for audio config, synthesizes,
+    -- returns raw audio bytes.
+    when: HTTPRequest(method: POST, path: "/v1/audio/speech")
+
+    requires: request.input is non-empty string
+    requires: request.model is present
+
+    let profile = ResolveProfile(request.model)
+
+    -- Resolve voice/speed with precedence:
+    -- request params > profile audio config > tts.yaml prosody > defaults
+    let voice = request.voice or profile.voice or prosody.voice
+    let speed = request.speed or profile.speed or prosody.speed
+    let format = request.response_format or profile.response_format or "mp3"
+
+    ensures: TTSBackend.synthesize(request.input, [
+        voice: voice,
+        speed: speed,
+        format: format,
+        url: profile.tts_url
+    ])
+
+    ensures: if synthesis succeeds:
+               response.status = 200
+               response.content_type = mime_for_format(format)
+               response.body = audio_binary
+             else:
+               response.status = 502
+               response.body.error.message = synthesis error description
+
+    @guidance
+        -- The response is raw audio bytes, not JSON. This matches
+        -- OpenAI's /v1/audio/speech contract.
+        --
+        -- Content-Type mapping:
+        --   mp3  -> audio/mpeg
+        --   wav  -> audio/wav
+        --   opus -> audio/opus
+        --   flac -> audio/flac
+        --
+        -- The endpoint is stateless and ephemeral — no conversation
+        -- context, no caching, no warming. Each request is independent.
+        -- For conversational TTS (with caching, warming, segmentation),
+        -- use the /v1/submit pipeline instead.
+        --
+        -- Body format (JSON):
+        --   {
+        --     "model": "exo",           // required — profile name
+        --     "input": "Hello world",   // required — text to speak
+        --     "voice": "af_heart",      // optional — override profile voice
+        --     "speed": 1.1,            // optional — override profile speed
+        --     "response_format": "mp3"  // optional — override profile format
+        --   }
+}
+
+rule SpeechProfileNotFound {
+    when: HTTPRequest(method: POST, path: "/v1/audio/speech")
+    requires: not profile_exists(request.model)
+
+    ensures: response.status = 404
+    ensures: response.body.error.message = "model '{model}' not found"
+}
+
+rule SpeechMissingInput {
+    when: HTTPRequest(method: POST, path: "/v1/audio/speech")
+    requires: request.input is nil or empty
+
+    ensures: response.status = 400
+    ensures: response.body.error.message = "missing required field: input"
+}
+
+rule SpeechInputTooLong {
+    when: HTTPRequest(method: POST, path: "/v1/audio/speech")
+    requires: length(request.input) > config.speech_max_input_length
+
+    ensures: response.status = 400
+    ensures: response.body.error.message = "input exceeds maximum length of {max} characters"
+}
+
+------------------------------------------------------------
+-- Rules: Speech-to-Text (POST /v1/audio/transcriptions)
+------------------------------------------------------------
+
+rule TranscriptionRequest {
+    -- OpenAI-compatible STT endpoint.
+    -- Accepts audio file upload, transcribes, returns text.
+    when: HTTPRequest(method: POST, path: "/v1/audio/transcriptions")
+
+    requires: request has file field (multipart upload)
+    requires: request.model is present
+
+    let profile = ResolveProfile(request.model)
+    let language = request.language or profile.stt_language
+
+    ensures: STTBackend.transcribe(file.bytes, [language: language, url: profile.stt_url])
+
+    ensures: if transcription succeeds:
+               response.status = 200
+               response.content_type = "application/json"
+               response.body.text = transcribed_text
+             else:
+               response.status = 502
+               response.body.error.message = transcription error description
+
+    @guidance
+        -- The response is JSON with a "text" field. This matches
+        -- OpenAI's /v1/audio/transcriptions contract.
+        --
+        -- Response format:
+        --   { "text": "The transcribed text." }
+        --
+        -- The file is submitted as multipart form data, matching
+        -- OpenAI's contract:
+        --   curl -X POST /v1/audio/transcriptions \
+        --     -F file=@audio.mp3 \
+        --     -F model=exo
+        --
+        -- Like the speech endpoint, this is stateless — no
+        -- transcription caching (that's a conversational pipeline
+        -- concern), no take assembly, no correlation with inference.
+        --
+        -- The existing Transcriber backend expects raw audio bytes
+        -- via multipart. The compat endpoint's multipart → backend
+        -- multipart is a passthrough with minimal transformation.
+}
+
+rule TranscriptionProfileNotFound {
+    when: HTTPRequest(method: POST, path: "/v1/audio/transcriptions")
+    requires: not profile_exists(request.model)
+
+    ensures: response.status = 404
+    ensures: response.body.error.message = "model '{model}' not found"
+}
+
+rule TranscriptionMissingFile {
+    when: HTTPRequest(method: POST, path: "/v1/audio/transcriptions")
+    requires: request has no file field
+
+    ensures: response.status = 400
+    ensures: response.body.error.message = "missing required field: file"
+}
+
+rule TranscriptionFileTooLarge {
+    when: HTTPRequest(method: POST, path: "/v1/audio/transcriptions")
+    requires: file.size > config.transcription_max_file_size
+
+    ensures: response.status = 400
+    ensures: response.body.error.message = "file exceeds maximum size of {max} bytes"
+}
+
+------------------------------------------------------------
+-- Rules: Profile Audio Config Resolution
+------------------------------------------------------------
+
+rule ParseProfileAudioConfig {
+    -- Audio fields parsed from YAML alongside existing profile fields.
+    when: ProfileStore loads profiles from YAML
+
+    ensures: for each profile in YAML:
+        profile.voice = config["voice"] (String or nil)
+        profile.speed = config["speed"] (Float or nil)
+        profile.response_format = config["response_format"] (String or nil)
+        profile.tts_url = config["tts_url"] (String or nil)
+        profile.stt_url = config["stt_url"] (String or nil)
+        profile.stt_language = config["stt_language"] (String or nil)
+
+    @guidance
+        -- All audio fields are optional. Profiles without audio config
+        -- work identically to today — the TTS backend falls through to
+        -- tts.yaml prosody and then to hardcoded defaults.
+        --
+        -- The audio fields are included in the resolved profile map
+        -- returned by resolve_profile, making them available to both
+        -- compat endpoints and the conversational pipeline.
+}
+
+rule AudioConfigPrecedence {
+    -- Voice/speed resolution follows a clear precedence chain.
+    when: TTS synthesis needed (compat endpoint or conversational pipeline)
+
+    -- Precedence (highest to lowest):
+    -- 1. Per-request parameters (compat endpoint only)
+    -- 2. Profile audio config (voice, speed fields)
+    -- 3. tts.yaml prosody (hot-reloaded file)
+    -- 4. Hardcoded defaults (voice: af_exo, speed: 1.0)
+
+    @guidance
+        -- The conversational pipeline doesn't have per-request params
+        -- (step 1), so profile config is the highest precedence there.
+        --
+        -- This means a profile with voice: af_heart will always use
+        -- af_heart in conversational audio, regardless of tts.yaml.
+        -- But tts.yaml still serves as the fallback for profiles
+        -- without explicit voice config.
+        --
+        -- The compat endpoint allows per-request overrides so callers
+        -- like muse can do: muse tts --voice af_sky "text" without
+        -- needing a separate profile per voice.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant SpeechEndpointStateless {
+    -- Speech endpoint never interacts with epochs, manifests, or
+    -- conversation state. Each request is independent.
+    for request via /v1/audio/speech:
+        no Manifest created
+        no PassHeader broadcast
+        no Store writes
+}
+
+invariant TranscriptionEndpointStateless {
+    -- Transcription endpoint never interacts with epochs, takes,
+    -- or conversation state. No transcription cache used.
+    for request via /v1/audio/transcriptions:
+        no TakeState created
+        no PassHeader broadcast
+        no TranscriptionCache consulted
+        no Store writes
+}
+
+invariant AudioConfigBackwardsCompatible {
+    -- Profiles without audio config fields behave identically to
+    -- today. Adding audio fields to a profile is purely additive.
+    for profile where profile.voice = nil
+                  and profile.speed = nil
+                  and profile.tts_url = nil:
+        TTS synthesis uses application-level TTS_URL,
+        tts.yaml prosody, then hardcoded defaults
+        -- Exactly the current behavior.
+}
+
+invariant SpeechResponseIsRawAudio {
+    -- The /v1/audio/speech response body is raw audio bytes,
+    -- not JSON-wrapped. Content-Type matches the requested format.
+    for successful request via /v1/audio/speech:
+        response.body is binary audio data
+        response.content_type matches requested format
+}
+
+invariant TranscriptionResponseIsJSON {
+    -- The /v1/audio/transcriptions response is always JSON,
+    -- matching OpenAI's contract.
+    for successful request via /v1/audio/transcriptions:
+        response.content_type = "application/json"
+        response.body has "text" key
+}
+
+invariant ProfileAudioFieldsInResolved {
+    -- Audio config fields are included in the resolved profile map
+    -- so both compat endpoints and conversational pipeline can read them.
+    for resolved = ResolveProfile(name):
+        resolved contains voice, speed, response_format,
+                          tts_url, stt_url, stt_language
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+-- Resolved: STT backend behaviour — YES, extract Cranium.Backend.STT
+-- with transcribe/2 callback mirroring TTS's synthesize/2. Enables
+-- backend swapping and opts passthrough (language, url).
+
+-- Resolved: Silence stripping — SKIP for v1. Profile field removed.
+-- Can be added later if Kokoro output quality warrants it.
+
+-- Resolved: Per-profile TTS/STT URLs — YES, added tts_url and stt_url
+-- to AudioConfig. Use case: podcast-quality cloud TTS on one profile,
+-- fast local Kokoro on another.
+
+-- Resolved: Streaming TTS — SKIP for v1. 4096 char cap keeps synthesis
+-- times short enough. Revisit if/when longer inputs are needed.
+
+-- Implementation note: Conversational pipeline integration
+-- The conversational audio pipeline (OutputSegmenter → Warmer → Cache)
+-- currently reads prosody from tts.yaml directly. With profile-level
+-- audio config, it should read voice/speed/tts_url from the resolved
+-- profile instead, falling through to tts.yaml only as a default.
+-- This requires threading the resolved profile through to the Warmer
+-- and ExoVoice backend — currently they don't have profile context.
+-- Not blocked on a design decision — just wiring work.
