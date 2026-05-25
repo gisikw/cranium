@@ -22,6 +22,8 @@
       "RELEASE_TMP=/tmp/cranium"
       "FORT_SSH_KEY=/var/lib/fort/dev-sandbox/agent-key"
       "FORT_ORIGIN=dev-sandbox"
+      "MACROS_PATH=/home/dev/Projects/hoard/macros"
+      "MACROS_STATE_PATH=/home/dev/.local/state/cranium/macros_state.json"
       "PATH=/run/current-system/sw/bin:/run/overlays/bin:/run/managed-bin:/home/dev/.local/bin"
     ];
   };
