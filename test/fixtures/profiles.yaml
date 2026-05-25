@@ -52,6 +52,14 @@ profiles:
     tool_ro:
       - /var/log
 
+  test-thinking:
+    backend: mock
+    model: test-model
+    thinking: false
+    backend_config:
+      thinking_mode: prefill
+      endpoint: http://localhost:9999/v1
+
 ollama_url: http://localhost:11434
 
 room_defaults:

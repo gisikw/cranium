@@ -52,8 +52,10 @@ defmodule Cranium.Transport.OpenAI do
         opts = [
           system: system,
           model: profile.model,
-          max_tokens: max_tokens || 8192,
+          max_tokens: max_tokens,
           tools: tools,
+          thinking: profile.thinking,
+          backend_config: profile.backend_config,
           ephemeral: true,
           working_dir: ephemeral_working_dir()
         ]

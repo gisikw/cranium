@@ -197,6 +197,34 @@ defmodule Cranium.Transport.OpenAITest do
       assert opts[:max_tokens] == 1024
       assert opts[:ephemeral] == true
       assert opts[:tools] == []
+      # Profile-level thinking and backend_config are threaded through
+      assert opts[:thinking] == nil
+      assert opts[:backend_config] == %{}
+    end
+
+    test "threads profile thinking and backend_config to backend opts" do
+      test_pid = self()
+
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
+        send(test_pid, {:backend_opts, opts})
+        caller = self()
+        pid = spawn(fn ->
+          send(caller, {:llm_text, "ok"})
+          send(caller, {:llm_stop, "end_turn"})
+        end)
+        {:ok, pid}
+      end)
+
+      Plug.Test.conn(:post, "/v1/chat/completions", %{
+        "model" => "test-thinking",
+        "messages" => [%{"role" => "user", "content" => "Hi"}]
+      })
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> HTTP.call(HTTP.init([]))
+
+      assert_receive {:backend_opts, opts}
+      assert opts[:thinking] == false
+      assert opts[:backend_config] == %{"thinking_mode" => "prefill", "endpoint" => "http://localhost:9999/v1"}
     end
 
     test "returns zero usage when backend reports none" do
