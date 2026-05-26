@@ -23,7 +23,7 @@ defmodule Cranium.Macro.Executor do
         }
 
   @type injection :: %{priority: integer(), content: String.t()}
-  @type output :: injection() | String.t() | nil
+  @type output :: injection() | String.t() | nil | [injection() | String.t() | nil]
   @type result :: {:ok, output(), map()} | {:error, String.t()}
 
   @default_priority 50

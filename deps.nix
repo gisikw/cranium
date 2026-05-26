@@ -99,6 +99,19 @@ let
       beamDeps = [];
     };
 
+    file_system = buildMix rec {
+      name = "file_system";
+      version = "1.1.1";
+
+      src = fetchHex {
+        pkg = "file_system";
+        version = "${version}";
+        sha256 = "7a15ff97dfe526aeefb090a7a9d3d03aa907e100e262a0f8f7746b78f8f87a5d";
+      };
+
+      beamDeps = [];
+    };
+
     finch = buildMix rec {
       name = "finch";
       version = "0.21.0";

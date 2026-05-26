@@ -22,10 +22,11 @@ defmodule Cranium.Macro.Engine do
 
   @type turn_context :: %{
           optional(:room_name) => String.t(),
+          optional(:message_text) => String.t(),
+          optional(atom()) => term(),
           conversation_id: String.t(),
           epoch_id: String.t(),
-          turn_count: integer(),
-          message_text: String.t()
+          turn_count: integer()
         }
 
   @type injection :: %{priority: integer(), content: String.t()}
@@ -559,6 +560,5 @@ defmodule Cranium.Macro.Engine do
   defp format_tool_output(%{content: content}), do: content
   defp format_tool_output(output) when is_binary(output), do: output
   defp format_tool_output(nil), do: "OK"
-  defp format_tool_output(outputs) when is_list(outputs), do: Enum.join(outputs, "\n")
-  defp format_tool_output(other), do: inspect(other)
+  defp format_tool_output(outputs) when is_list(outputs), do: Enum.map_join(outputs, "\n", &format_tool_output/1)
 end
