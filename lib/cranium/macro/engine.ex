@@ -163,6 +163,7 @@ defmodule Cranium.Macro.Engine do
   """
   @spec execute_tool(String.t(), map(), turn_context()) :: {:ok, String.t()} | {:error, String.t()}
   def execute_tool(macro_name, tool_input, context) do
+    macro_name = unprefix_tool_name(macro_name)
     room_name = context[:room_name] || context[:conversation_id] || "unknown"
 
     case Registry.get(macro_name) do
