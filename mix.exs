@@ -46,6 +46,9 @@ defmodule Cranium.MixProject do
       {:typed_struct, "~> 0.3"},
       {:typed_ecto_schema, "~> 0.4"},
 
+      # File watching (macro hot-reload)
+      {:file_system, "~> 1.0"},
+
       # Test
       {:mox, "~> 1.2", only: :test}
     ]

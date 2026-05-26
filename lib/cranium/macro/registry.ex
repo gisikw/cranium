@@ -233,14 +233,34 @@ defmodule Cranium.Macro.Registry do
 
   defp maybe_start_watcher(path) do
     if Code.ensure_loaded?(FileSystem) do
-      case FileSystem.start_link(dirs: [path]) do
+      # Trap exits temporarily so a failed FileSystem.start_link
+      # doesn't kill the registry via the link
+      prev_trap = Process.flag(:trap_exit, true)
+
+      result =
+        try do
+          FileSystem.start_link(dirs: [path])
+        catch
+          :exit, reason -> {:error, reason}
+        end
+
+      case result do
         {:ok, pid} ->
           FileSystem.subscribe(pid)
           Logger.info("Macro.Registry: watching #{path} for changes")
 
-        {:error, reason} ->
-          Logger.warning("Macro.Registry: file watcher failed to start: #{inspect(reason)}")
+        other ->
+          # Drain any EXIT message from the failed process
+          receive do
+            {:EXIT, _pid, _reason} -> :ok
+          after
+            0 -> :ok
+          end
+
+          Logger.warning("Macro.Registry: file watcher failed to start: #{inspect(other)}")
       end
+
+      Process.flag(:trap_exit, prev_trap)
     else
       Logger.info("Macro.Registry: file_system not available, hot reload disabled")
     end
