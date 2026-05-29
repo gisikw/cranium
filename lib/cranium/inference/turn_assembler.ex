@@ -28,8 +28,8 @@ defmodule Cranium.Inference.TurnAssembler do
   ## Backpressure
 
   TurnAssembler won't assemble a new turn until the prior pass completes.
-  If a second pair arrives while a pass is in flight, it queues. On
-  pass_done from Harness, the queued pair is dispatched.
+  If additional pairs arrive while a pass is in flight, they queue (FIFO).
+  On pass_done from Harness, the next queued pair is dispatched.
   """
 
   use GenServer
@@ -66,7 +66,7 @@ defmodule Cranium.Inference.TurnAssembler do
        pending: %{},
        take_index: %{},
        active_pass: nil,
-       queued: nil
+       queue: :queue.new()
      }}
   end
 
@@ -132,13 +132,13 @@ defmodule Cranium.Inference.TurnAssembler do
   def handle_info({:pass_done, _stream_id}, state) do
     state = %{state | active_pass: nil}
 
-    # Dispatch queued pair if any
-    case state.queued do
-      {header, input} ->
-        state = %{state | queued: nil}
+    # Dispatch next queued pair if any
+    case :queue.out(state.queue) do
+      {{:value, {header, input}}, rest} ->
+        state = %{state | queue: rest}
         {:noreply, assemble_and_dispatch(state, header, input)}
 
-      nil ->
+      {:empty, _} ->
         {:noreply, state}
     end
   end
@@ -195,9 +195,9 @@ defmodule Cranium.Inference.TurnAssembler do
         state = %{state | pending: Map.delete(state.pending, pass_id), take_index: take_index}
 
         if state.active_pass do
-          # A pass is already in flight — queue this pair
-          Logger.info("TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass})")
-          %{state | queued: {header, input}}
+          # A pass is already in flight — enqueue this pair
+          Logger.info("TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass}, depth=#{:queue.len(state.queue)})")
+          %{state | queue: :queue.in({header, input}, state.queue)}
         else
           assemble_and_dispatch(state, header, input)
         end
@@ -503,8 +503,8 @@ defmodule Cranium.Inference.TurnAssembler do
       text: @orientation_prompt
     }
 
-    # Queue the user's original pass — it will dispatch after orientation completes
-    state = %{state | queued: {header, input}}
+    # Enqueue the user's original pass — it will dispatch after orientation completes
+    state = %{state | queue: :queue.in({header, input}, state.queue)}
 
     # Dispatch orientation through the normal assembly pipeline
     do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
