@@ -199,6 +199,8 @@ defmodule Cranium.Macro.Executor do
   defp wrap_tag(content, nil), do: content
   defp wrap_tag(content, tag), do: "<#{tag}>#{content}</#{tag}>"
 
+  @base_context_keys ~w(conversation_id epoch_id room_name turn_count tmpdir message_text)a
+
   defp build_env(macro_name, state, context) do
     base = [
       {"MACRO_NAME", macro_name},
@@ -209,11 +211,17 @@ defmodule Cranium.Macro.Executor do
       {"MACRO_TMPDIR", to_string(context[:tmpdir] || "")}
     ]
 
+    # Export extra context keys (includes tool input) as MACRO_<KEY>
+    extra_vars =
+      context
+      |> Enum.reject(fn {k, _v} -> k in @base_context_keys end)
+      |> Enum.map(fn {k, v} -> {"MACRO_#{String.upcase(to_string(k))}", to_string(v)} end)
+
     state_vars =
       state
       |> Enum.map(fn {k, v} -> {"MACRO_STATE_#{String.upcase(to_string(k))}", to_string(v)} end)
 
-    base ++ state_vars
+    base ++ extra_vars ++ state_vars
   end
 
   defp context_to_string_map(context) do

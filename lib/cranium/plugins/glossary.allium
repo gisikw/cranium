@@ -1,584 +1,251 @@
 -- allium: 3
 
--- Glossary Plugin
+-- Glossary System (Macro-based)
 --
--- First-mention glossary injection and conversational auto-update.
+-- First-mention glossary injection and conversational auto-update,
+-- implemented as cranium macros rather than a bespoke plugin.
 --
--- The glossary plugin loads term definitions from markdown files with YAML
--- frontmatter. During a session, it injects context on first mention of
--- each term. At session end, it reviews conversation excerpts around
--- mentioned terms and updates glossary files when the conversation
--- contains corrective or new information.
+-- Each glossary entry is an independent macro definition (JSON) in
+-- ~/Projects/hoard/macros/glossary/. The macro engine handles loading,
+-- pattern matching, first-mention tracking, injection, and epoch-end
+-- revision — all through standard macro axes rather than custom code.
 --
--- Scope: Term loading, matching, injection, mention tracking, epoch-end
--- auto-update via local LLM inference. Does NOT cover new entry creation
--- or LRU eviction (see cv2-d062).
+-- Scope: Entry definition, first-mention injection, extended lookup,
+-- epoch-end auto-update via macro revision. Entry creation guided by
+-- the macro-creator skill macro.
 --
--- Depends on: plugin-system.allium (Plugin, HookPoint, TurnContext,
---             PassCompleteContext, EpochEndContext, Injection,
---             DispatchBeforeContextBuild, DispatchAfterPassComplete,
---             DispatchOnEpochEnd)
-
-use plugin_system
-
-------------------------------------------------------------
--- External Entities
-------------------------------------------------------------
-
-external entity Store {
-    -- Cranium.Store GenServer. Provides queued DB writes and reads.
-    -- Already used by the ensemble plugin for ensemble_selections.
-    -- Glossary uses it for mention persistence.
-}
-
-------------------------------------------------------------
--- Config
-------------------------------------------------------------
-
-config {
-    path: String
-        -- Filesystem path to the glossary directory containing .md files.
-        -- Required. Plugin ignores the session if path is missing or
-        -- not a directory.
-
-    priority: Integer = 15
-        -- Injection priority for glossary content. Sits between
-        -- time-gap (10) and landscape (20) by default.
-
-    ollama_endpoint: String = "http://localhost:11434"
-        -- Ollama API endpoint for auto-update inference.
-
-    update_model: String
-        -- Model to use for auto-update inference (e.g., "gemma4:27b").
-        -- Required for auto-update. If not configured, auto-update
-        -- is disabled and the plugin only does injection.
-
-    window_radius: Integer = 3
-        -- Number of turns before and after each mention to include
-        -- in the context window for auto-update inference.
-}
+-- Depends on: macro-engine (Registry, Trigger, Matcher, Executor,
+--             Revision, State)
 
 ------------------------------------------------------------
 -- Value Types
 ------------------------------------------------------------
 
-value GlossaryEntry {
-    term: String
-        -- Canonical term. Derived from the filename minus .md extension.
-    aliases: [String]
-        -- Additional match patterns from frontmatter.
-    summary: String
-        -- One-line summary from frontmatter.
-    body: String?
-        -- Optional extended content below the frontmatter.
-    mtime: Timestamp?
-        -- File modification time. Used for change detection.
-    pattern: Regex
-        -- Compiled regex matching term and all aliases,
-        -- case-insensitive with word boundaries.
-        -- Hyphens and spaces are interchangeable in matches.
-}
-
-value MentionRecord {
-    term: String
-    turn_indices: [Integer]
-        -- All turn positions in the conversation where this term
-        -- was mentioned. Used for windowing at epoch end.
+value GlossaryMacro {
+    name: String
+        -- "glossary-<term>". Prefixed to avoid collisions with
+        -- other macros. The term portion matches the filename.
+    description: String
+        -- One-line summary. Also serves as the base content for
+        -- the prompt injection.
+    patterns: [String]
+        -- Match patterns: canonical term + aliases. Literal strings
+        -- get word-boundary wrapping, case-insensitivity, and
+        -- hyphen/space interchangeability from Matcher.
+    prompt_text: String
+        -- Formatted injection content:
+        -- "- **Display Name**: summary text"
+        -- Wrapped in <glossary> tags at priority 15.
 
     @guidance
-        -- Tracked for every mention, not just first injection.
-        -- A term injected at turn 3 and mentioned again at turns
-        -- 7 and 12 has turn_indices [3, 7, 12]. The dedup logic
-        -- for injection is separate from mention tracking.
-}
-
-value UpdateProposal {
-    term: String
-    current_summary: String
-    proposed_summary: String
-    rationale: String
-
-    @guidance
-        -- Returned by the local model when it determines the
-        -- conversation contains corrective or new information
-        -- about a glossary term. The rationale is a one-line
-        -- explanation of what changed and why. Persisted in
-        -- the changelog for auditability.
-}
-
-value ConversationWindow {
-    term: String
-    excerpts: [String]
-
-    @guidance
-        -- A set of conversation excerpts around mentions of a term.
-        -- Each excerpt is window_radius turns before and after the
-        -- mention, formatted with role labels (user/assistant).
-        -- Overlapping windows are merged to avoid redundancy.
-}
-
-value GlossaryMention {
-    epoch_id: String
-    conversation_id: String
-    term: String
-    turn_count: Integer
-    source: user | assistant
-
-    @guidance
-        -- A single mention event persisted to the glossary_mentions
-        -- table via Store. One row per (epoch, term, turn, source).
-        -- Follows the ensemble_selections pattern: dedicated table,
-        -- Store methods, ad-hoc schema.
-        --
-        -- The `seen` map is derived: if any GlossaryMention exists
-        -- for a term in the current epoch, it has been injected.
-        -- The `mentions` map is reconstructed from all rows for the
-        -- epoch, grouped by term.
+        -- Each entry is a standalone JSON file in
+        -- ~/Projects/hoard/macros/glossary/<term>.json.
+        -- The Registry scans recursively and hot-reloads on
+        -- file changes. No central index or manifest needed.
 }
 
 ------------------------------------------------------------
--- Entity
+-- Macro Axis Configuration
 ------------------------------------------------------------
 
-entity GlossaryPlugin {
-    entries: Map<String, GlossaryEntry>
-        -- Indexed by canonical term and each alias.
-    path: String
-    priority: Integer
-    seen: Map<String, SeenRecord>
-    mentions: Map<String, MentionRecord>
-    file_mtimes: Map<String, Timestamp>
-    epoch_id: String
-    conversation_id: String
+config GlossaryAxes {
+    trigger: match
+        -- Fires when any pattern matches the user's message.
+    match_once: true
+        -- First mention only per session. The Trigger module
+        -- tracks fired macros in a per-room seen-set (MapSet).
+    advertising: hidden
+        -- Not exposed as a tool. Injection-only.
+    lifecycle: session
+        -- Resets on epoch clear — terms become re-injectable.
+    learning: none
+        -- No sidecar evaluation during the session.
+    revision: session_end
+        -- At epoch end, the Revision module dispatches async
+        -- revision to a sidecar model for any glossary macro
+        -- that fired during the session.
+    disposition: foreground
+        -- Injection happens synchronously during context build.
+
+    prompt_tag: "glossary"
+    prompt_priority: 15
+        -- Between time-gap (10) and landscape (20).
 
     @guidance
-        -- Session-scoped state. `seen` gates injection (first mention
-        -- only, re-eligible on file change). `mentions` tracks all
-        -- occurrences for epoch-end windowing regardless of injection.
-        --
-        -- Both `seen` and `mentions` are backed by the glossary_mentions
-        -- table. On each turn, new mentions are persisted via Store.
-        -- On init (including crash recovery), both maps are rehydrated
-        -- from DB for the current epoch_id. This makes mention state
-        -- survive process restarts within an epoch.
-        --
-        -- epoch_id and conversation_id are captured from session metadata
-        -- for use in Store calls.
-}
-
-value SeenRecord {
-    at: Timestamp
-    mtime: Timestamp?
-
-    @guidance
-        -- Records when a term was first injected and the file's mtime
-        -- at that point. If the file's mtime changes mid-session,
-        -- the term becomes eligible for re-injection.
+        -- The "once" tracking uses the macro engine's session
+        -- state (State.get_session/1 → :seen MapSet), not a
+        -- custom seen map. Version bumps on the macro definition
+        -- reset the seen state, enabling re-injection after
+        -- content changes — replacing the old mtime-based
+        -- re-injection logic.
 }
 
 ------------------------------------------------------------
--- Rules: Initialization
+-- Rules: Injection
 ------------------------------------------------------------
-
-rule InitGlossary {
-    when: Plugin.init(metadata)
-
-    requires: metadata.plugin_config.path is present
-    requires: metadata.plugin_config.path is a directory
-
-    let entries, file_mtimes = load all .md files from path,
-        parse YAML frontmatter, extract term/aliases/summary/body,
-        build regex patterns, index by term and aliases
-
-    -- Rehydrate mention state from DB for the current epoch
-    let persisted = Store.get_glossary_mentions(metadata.epoch_id)
-    let seen = derive seen map from persisted
-        -- A term is seen if any GlossaryMention exists for it.
-        -- SeenRecord.mtime is looked up from the current entries.
-    let mentions = derive mentions map from persisted
-        -- Group by term, collect turn_counts into turn_indices.
-
-    ensures: GlossaryPlugin.created(
-        entries: entries,
-        path: path,
-        priority: config.priority,
-        seen: seen,
-        mentions: mentions,
-        file_mtimes: file_mtimes,
-        epoch_id: metadata.epoch_id,
-        conversation_id: metadata.conversation_id
-    )
-    ensures: plugin subscribes to [before_context_build, after_pass_complete]
-        when update_model is not configured
-    ensures: plugin subscribes to [before_context_build, after_pass_complete, on_epoch_end]
-        when update_model is configured
-
-    @guidance
-        -- Returns :ignore if path is missing or not a directory.
-        -- Always subscribes to before_context_build (injection) and
-        -- after_pass_complete (assistant mention tracking). Subscribes
-        -- to on_epoch_end only when update_model is configured.
-        --
-        -- Rehydration on init covers crash recovery: if the GenServer
-        -- restarts mid-epoch (OTP supervisor), it recovers its mention
-        -- state from DB rather than starting fresh. For a brand-new
-        -- epoch, the DB has no rows yet, so seen and mentions are
-        -- empty — same as before.
-        --
-        -- The seen map derivation uses the entries' current mtimes.
-        -- If a glossary file changed while the process was down, the
-        -- mtime mismatch makes that term re-eligible for injection
-        -- (same as the live file-change detection path).
-}
-
-------------------------------------------------------------
--- Rules: Injection (existing behavior)
-------------------------------------------------------------
-
-rule ReloadOnFileChange {
-    when: before_context_build is invoked
-
-    let current_mtimes = stat all .md files in path
-
-    requires: current_mtimes != stored file_mtimes
-
-    ensures: entries are reloaded from disk
-    ensures: file_mtimes updated to current
-    ensures: terms whose files changed become re-eligible for injection
-
-    @guidance
-        -- Checked on every turn. If no files changed, this is a
-        -- no-op (mtime map comparison). Reload is full — all files
-        -- are re-parsed. This is acceptable because glossary
-        -- directories are small (tens to low hundreds of files).
-}
 
 rule InjectOnFirstMention {
-    when: before_context_build(turn_context)
+    when: Trigger.evaluate matches a glossary macro
 
-    let text = turn_context.message_text
-    let matching = entries where pattern matches text
-    let injectable = matching where not already_seen
-        or seen but file mtime has changed since seen
+    requires: macro.name not in session seen-set
+        (or version changed since last seen)
 
-    -- Always track the mention, regardless of injection
-    ensures: mentions updated with turn_context.turn_count
-        for all matching terms (injectable or not)
-    ensures: GlossaryMention persisted via Store for each matching term
-        with source = user
-
-    -- Inject only for first-mention terms
     ensures: injection with formatted glossary content
-        when injectable is non-empty
-    ensures: seen updated with current timestamp and mtime
-        for all injectable terms
-    ensures: :skip returned when injectable is empty
+        wrapped in <glossary> tags at priority 15
+    ensures: macro.name added to session seen-set
 
     @guidance
-        -- Injection format:
-        --   <glossary>
-        --   - **term**: summary
-        --     optional body
-        --   </glossary>
+        -- Multiple glossary terms matched on the same turn
+        -- produce separate <glossary> injections (one per macro).
+        -- This differs from the old plugin which combined them
+        -- into a single block, but is functionally identical
+        -- for the model.
         --
-        -- Multiple terms matched on the same turn are combined
-        -- into a single injection, sorted alphabetically.
-        --
-        -- Mention tracking is unconditional — even terms that
-        -- were already injected get their turn index recorded
-        -- in the mentions map. This is critical for epoch-end
-        -- windowing: corrections often occur on later mentions,
-        -- not on the injection turn.
-        --
-        -- DB persistence is fire-and-forget via Store (queued write).
-        -- The in-memory maps are updated synchronously as before;
-        -- the DB write is the durable backup for crash recovery.
+        -- Pattern matching uses Matcher.compile_literal/1:
+        -- word boundaries, case-insensitive, hyphen/space
+        -- interchangeable. Patterns like "brian" match "Brian"
+        -- but not "briant" (word boundary).
 }
 
-rule TrackAssistantMentions {
-    when: after_pass_complete(pass_complete_context)
+------------------------------------------------------------
+-- Rules: Lookup
+------------------------------------------------------------
 
-    let output = pass_complete_context.output
-    let matching = entries where pattern matches output
+rule LookupGlossaryEntry {
+    when: agent invokes glossary-lookup tool with term
 
-    ensures: mentions updated with pass_complete_context.turn_count
-        for all matching terms
-    ensures: GlossaryMention persisted via Store for each matching term
-        with source = assistant
+    let file = ~/Projects/hoard/macros/glossary/{term}.json
+
+    ensures: full macro definition JSON returned as tool result
+        when file exists
+    ensures: partial match attempted when exact match fails
+    ensures: available entries listed when no match found
 
     @guidance
-        -- Scans the assistant's output for glossary term mentions
-        -- and records them in the mentions map. This closes a gap
-        -- where the assistant surfaces stale data (e.g., "Brighton
-        -- is five months old") and the user corrects it with a
-        -- pronoun ("he's seven months now"). Without assistant
-        -- mention tracking, the correction wouldn't be windowed
-        -- for epoch-end auto-update because "Brighton" only appears
-        -- in the assistant's output, not the user's reply.
+        -- The glossary-lookup macro is a separate explicit-trigger
+        -- macro (script body) that reads the JSON definition file.
+        -- It returns the full definition, not just the summary —
+        -- the agent can extract extended context from the
+        -- prompt_body.text field.
         --
-        -- Does NOT trigger injection — injection is user-turn only.
-        -- This hook is purely for mention bookkeeping.
-        --
-        -- Same persistence pattern as InjectOnFirstMention: in-memory
-        -- update is synchronous, DB write is queued via Store.
+        -- Tool input "term" is passed to the script as the
+        -- MACRO_TERM environment variable.
 }
 
 ------------------------------------------------------------
 -- Rules: Auto-Update (epoch end)
 ------------------------------------------------------------
 
-rule BuildConversationWindows {
-    when: on_epoch_end(epoch_end_context)
+rule ReviseAtEpochEnd {
+    when: Engine.on_epoch_end is called
 
-    requires: update_model is configured
+    requires: macro.revision = session_end
+    requires: macro.name in session seen-set
+        -- Match-triggered macros don't set "active" state like
+        -- condition macros. The engine checks the seen-set for
+        -- match macros with revision=session_end.
 
-    let mentioned_terms = keys of mentions map
-    let messages = epoch_end_context.messages
-
-    for term in mentioned_terms:
-        let indices = mentions[term].turn_indices
-        let windows = for idx in indices:
-            messages[idx - window_radius .. idx + window_radius]
-        let merged = merge overlapping windows
-        let formatted = format with role labels (user/assistant)
-
-    ensures: ConversationWindow created for each mentioned term
+    ensures: Revision.dispatch called with full conversation
 
     @guidance
-        -- Window radius is configurable (default 3). A mention at
-        -- turn 10 with radius 3 produces turns 7-13. If two mentions
-        -- are at turns 10 and 12, windows [7-13] and [9-15] merge
-        -- into [7-15].
+        -- The Revision module sends the complete conversation
+        -- and current macro definition to a sidecar model
+        -- (default: gemma4 via Ollama). This replaces the old
+        -- plugin's windowed-excerpt approach — sending the full
+        -- conversation is simpler and works well with capable
+        -- local models.
         --
-        -- Turn indices that fall outside message bounds are clamped
-        -- (no negative indices, no past-end indices).
-        --
-        -- The mentions map is the in-memory copy (already rehydrated
-        -- from DB on init if this is a recovered process). The DB
-        -- is the source of truth but the in-memory map is always
-        -- consistent with it during normal operation. An alternative
-        -- implementation could query Store directly here, but the
-        -- in-memory map avoids a DB round-trip on the critical path.
+        -- The revision prompt instructs the model to only update
+        -- the description and prompt_body.text fields, preserving
+        -- all other macro configuration. Updates are atomic
+        -- (tmp+rename) with automatic version bump.
 }
 
-rule EvaluateTermUpdate {
-    when: ConversationWindow created for term
+rule ApplyRevision {
+    when: sidecar model returns {"update": true, "definition": ...}
 
-    let entry = glossary entry for term
-    let window = ConversationWindow for term
+    requires: revised definition passes Definition.parse validation
 
-    -- Dispatch to local LLM via Ollama
-    let prompt = """
-        You are reviewing a glossary entry for potential updates.
-
-        Current entry for "{term}":
-        {entry.summary}
-
-        Conversation excerpts where "{term}" was discussed:
-        {window.excerpts}
-
-        The user's statements are ground truth. If the user corrects,
-        updates, or provides new information about this term, propose
-        an updated summary. If the conversation merely mentions the
-        term without adding or correcting information, respond with
-        null.
-
-        Respond as JSON:
-        {"update": true, "summary": "...", "rationale": "..."} or
-        {"update": false}
-    """
-
-    let response = invoke ollama with update_model, prompt,
-        format: json
-
-    ensures: UpdateProposal created when response.update = true
-    ensures: no action when response.update = false
+    ensures: macro JSON file atomically rewritten
+    ensures: version incremented
+    ensures: _revision_history appended with timestamp and rationale
+    ensures: Registry.reload triggered
 
     @guidance
-        -- The prompt explicitly frames no-update as the default.
-        -- This is critical to prevent model drift — the model will
-        -- want to rewrite entries that don't need rewriting.
+        -- The validation gate prevents malformed revisions from
+        -- corrupting the macro. If the model produces invalid
+        -- JSON or a definition that fails parsing, the revision
+        -- is logged and discarded.
         --
-        -- The model sees only the windowed excerpts, not the full
-        -- conversation. This is intentional: it avoids needle-in-
-        -- haystack failures on long conversations and keeps the
-        -- context small enough for reliable local model inference.
-        --
-        -- Structured JSON output is enforced via Ollama's format
-        -- parameter.
+        -- The _revision_history array provides auditability,
+        -- replacing the old HTML comment changelog in markdown
+        -- files.
 }
 
-rule ApplyUpdate {
-    when: UpdateProposal created for term
+------------------------------------------------------------
+-- Rules: Entry Creation
+------------------------------------------------------------
 
-    let file = path / "{term}.md"
-    let entry = glossary entry for term
+rule CreateGlossaryEntry {
+    when: user requests a new glossary entry
 
-    ensures: file's YAML frontmatter summary is replaced
-        with proposed_summary
-    ensures: file's body content is preserved unchanged
-    ensures: changelog line appended to file:
-        "<!-- updated {date} from session {room}: {rationale} -->"
+    ensures: macro-creator tool invoked with glossary archetype
 
     @guidance
-        -- Only the summary field in frontmatter is updated. Aliases,
-        -- body content, and any other frontmatter fields are preserved.
-        --
-        -- The changelog is an HTML comment appended to the end of the
-        -- file, so it doesn't render in normal markdown views but is
-        -- visible in the raw file for auditability.
-        --
-        -- File writes are atomic (write to temp, rename) to prevent
-        -- corruption if the process is interrupted.
+        -- The macro-creator skill macro includes a glossary
+        -- archetype template with the correct axis configuration,
+        -- file location, pattern format, and revision prompt.
+        -- New entries are created by writing a JSON file to
+        -- ~/Projects/hoard/macros/glossary/<term>.json.
+        -- Hot-reload picks it up automatically.
 }
 
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
 
-invariant MentionTrackingUnconditional {
-    for turn in Turns:
-        when a glossary term matches the user's message
-        or the assistant's response,
-        the term's turn index is recorded in mentions
-        regardless of whether injection occurred
+invariant FirstMentionOnly {
+    for session in Sessions:
+        a glossary macro injects at most once per session
+        unless the macro version changes mid-session
 
     @guidance
-        -- This is the key invariant that makes auto-update work.
-        -- Without tracking non-injected mentions, the windowing
-        -- at epoch end would miss conversational corrections that
-        -- happen after the first injection.
-        --
-        -- Assistant responses are tracked via after_pass_complete,
-        -- ensuring that corrections to stale assistant output are
-        -- captured even when the user's reply uses pronouns.
+        -- Enforced by Trigger.evaluate via the session seen-set.
+        -- The once flag is per-macro, per-room. Version changes
+        -- reset the seen state for that macro.
 }
 
-invariant UpdateRequiresCorrection {
-    for proposal in UpdateProposals:
-        the conversation excerpts contain explicit corrective
-        or new information from the user about the term
-
-    @guidance
-        -- The model must not rewrite entries based on:
-        -- - Mere mentions without new information
-        -- - Assistant's statements (only user is authoritative)
-        -- - Inferred or speculative information
-        -- - Stylistic preferences
-        --
-        -- This invariant is enforced via prompt engineering, not
-        -- programmatic validation. The prompt explicitly frames
-        -- no-update as the default case.
-}
-
-invariant AutoUpdateNonBlocking {
+invariant RevisionNonBlocking {
     for epochs in Epochs:
-        auto-update failures do not prevent epoch clearing
+        revision failures do not prevent epoch clearing
 
     @guidance
-        -- If Ollama is unreachable, a model call times out, or a
-        -- file write fails, the error is logged and the next term
-        -- is processed. Epoch clearing and handoff generation
-        -- proceed regardless.
+        -- Revision.dispatch runs in Task.start (fire-and-forget).
+        -- If Ollama is unreachable, the model times out, or the
+        -- revised definition fails validation, the error is
+        -- logged and the original definition is preserved.
 }
 
-invariant FileWriteAtomic {
-    for updates in ApplyUpdate:
-        glossary file writes are atomic (write-then-rename)
+invariant RevisionPreservesStructure {
+    for revisions in Revisions:
+        only description and prompt_body.text are modified
+        all other macro fields are preserved exactly
 
     @guidance
-        -- Prevents partial writes from corrupting glossary files.
-        -- The temp file is written in the same directory to ensure
-        -- same-filesystem rename.
+        -- Enforced by the revision prompt, not programmatically.
+        -- The model is instructed to only update summary content
+        -- and preserve all configuration. The Definition.parse
+        -- validation provides a safety net — if critical fields
+        -- are altered in a way that breaks parsing, the revision
+        -- is rejected.
 }
 
-invariant BodyPreserved {
-    for updates in ApplyUpdate:
-        the body content below the YAML frontmatter is never
-        modified by auto-update
+invariant AtomicFileWrite {
+    for writes in file writes:
+        glossary macro files are written atomically
+        (write to temp, rename)
 
     @guidance
-        -- Auto-update only touches the summary field in frontmatter.
-        -- Extended body content is user-authored context that the
-        -- plugin must not alter.
-}
-
-invariant MentionStateSurvivesRestart {
-    for restarts in GlossaryPlugin process restarts within an epoch:
-        after restart, seen contains all terms that were injected
-        before the restart
-
-    for restarts in GlossaryPlugin process restarts within an epoch:
-        after restart, mentions contains all turn indices recorded
-        before the restart
-
-    @guidance
-        -- This is the core persistence invariant. When the GenServer
-        -- crashes and the supervisor restarts it, init/1 rehydrates
-        -- seen and mentions from the glossary_mentions table.
-        --
-        -- Consequences:
-        -- - No duplicate injections after restart (seen is restored)
-        -- - Epoch-end windowing includes pre-restart mentions
-        -- - Auto-update evaluation sees the full conversation, not
-        --   just the post-restart portion
-        --
-        -- The invariant does NOT hold across epoch boundaries: a new
-        -- epoch starts with empty DB state for that epoch_id, which
-        -- is correct — fresh epoch, fresh injection eligibility.
-        --
-        -- Follows the ensemble_selections pattern: dedicated table,
-        -- Store methods, writes queued behind the Store GenServer.
-}
-
-invariant MentionPersistenceNonBlocking {
-    for turns in Turns:
-        a Store write failure for GlossaryMention does not prevent
-        the turn from proceeding to inference
-
-    @guidance
-        -- Store writes are queued (fire-and-forget from the plugin's
-        -- perspective). If the Store is backed up or the DB is
-        -- unreachable, the in-memory maps are still updated and the
-        -- turn proceeds normally. The only consequence of a lost
-        -- write is that crash recovery may miss that mention — an
-        -- acceptable degradation given the alternative is blocking
-        -- inference on a DB write.
-}
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "Update model selection" {
-    -- Which local model is best for this task? Gemma 4 27B and
-    -- QWen 3.6 are candidates. The task is judgment-heavy
-    -- (did the user correct this?) with light generation (rewrite
-    -- one sentence). May need experimentation to find the right
-    -- balance of accuracy and speed.
-}
-
-open question "Alias updates" {
-    -- Should auto-update also be able to add or modify aliases?
-    -- Example: user refers to "Bri" for Brian Coleman, and the
-    -- model proposes adding "bri" as an alias. Currently out of
-    -- scope — only summary is updated.
-}
-
-open question "Conflict with manual edits" {
-    -- If a user manually edits a glossary file between sessions,
-    -- and the auto-update proposes a change based on stale context,
-    -- the auto-update could overwrite the manual edit. The changelog
-    -- provides auditability but not prevention. Possible mitigation:
-    -- compare mtime before writing and skip if the file changed
-    -- since session start.
-}
-
-open question "Mention row cleanup" {
-    -- GlossaryMention rows accumulate per epoch. Old epoch rows are
-    -- never queried after the epoch ends (mentions are epoch-scoped).
-    -- Options: (a) leave them — they're small and queryable for
-    -- analytics, (b) delete on epoch clear alongside plugin shutdown,
-    -- (c) periodic vacuum. Leaning toward (a) unless storage becomes
-    -- a concern.
+        -- Inherited from Revision.atomic_write/2. Prevents
+        -- partial writes from corrupting macro definitions.
 }

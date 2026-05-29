@@ -134,21 +134,28 @@ defmodule Cranium.Macro.Engine do
 
   @doc """
   Called at epoch end. Dispatches revision for macros with revision=session_end
-  that were active during this epoch.
+  that were active or fired during this epoch.
   """
   @spec on_epoch_end(map()) :: :ok
   def on_epoch_end(context) do
     conversation_id = context.conversation_id
     room_name = context[:room_name] || conversation_id
     macros = Registry.list()
+    session_state = State.get_session(room_name)
+    seen = Map.get(session_state, :seen, MapSet.new())
 
     macros
     |> Enum.filter(&(&1.revision == :session_end))
     |> Enum.each(fn macro ->
       macro_state = get_macro_state(macro, room_name)
 
-      # Revise if the macro was active at any point this epoch
-      if macro_state["active"] || macro_state["activated_at_turn"] do
+      # Revise if the macro was active (condition lifecycle) or fired (match lifecycle)
+      should_revise =
+        macro_state["active"] ||
+          macro_state["activated_at_turn"] ||
+          (macro.trigger == :match and MapSet.member?(seen, macro.name))
+
+      if should_revise do
         Revision.dispatch(macro, context)
       end
     end)
