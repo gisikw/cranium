@@ -144,5 +144,33 @@ defmodule Cranium.Media.TakeCollectorTest do
 
       refute_receive {:take_complete, _}, 100
     end
+
+    test "failed chunk gets placeholder, take still completes" do
+      take_id = "fail3"
+
+      # Chunk 0 succeeds
+      Cranium.Events.broadcast(
+        {:transcription_complete,
+         %Transcription{text: "Hello ", take_id: take_id, seq: 0}}
+      )
+
+      # Chunk 1 fails
+      Cranium.Events.broadcast(
+        {:transcription_failed,
+         %Transcription{failure: :timeout, take_id: take_id, seq: 1}}
+      )
+
+      # Chunk 2 succeeds
+      Cranium.Events.broadcast(
+        {:transcription_complete,
+         %Transcription{text: " world", take_id: take_id, seq: 2}}
+      )
+
+      # Seal
+      Cranium.Events.broadcast({:take_sealed, take_id, 2})
+
+      assert_receive {:take_complete, %TakeComplete{take_id: ^take_id, text: text}}, 500
+      assert text == "Hello [transcribed segment missing] world"
+    end
   end
 end

@@ -101,18 +101,25 @@ defmodule Cranium.Media.TakeCollector do
     {:noreply, state}
   end
 
-  # Transcription failure (chunked) — take will never complete
+  # Transcription failure (chunked) — substitute placeholder so take can still complete
   @impl true
   def handle_info(
         {:transcription_failed, %Transcription{seq: seq, take_id: take_id}},
         state
       )
       when not is_nil(seq) do
-    Logger.error(
-      "TakeCollector: chunk transcription failed take=#{take_id} seq=#{seq}, take will not complete"
+    Logger.warning(
+      "TakeCollector: chunk transcription failed take=#{take_id} seq=#{seq}, substituting placeholder"
     )
 
-    {:noreply, state}
+    take_state =
+      Map.get(state.takes, take_id, %TakeState{
+        inserted_at: System.monotonic_time(:millisecond)
+      })
+
+    take_state = %{take_state | chunks: Map.put(take_state.chunks, seq, "[transcribed segment missing]")}
+    state = %{state | takes: Map.put(state.takes, take_id, take_state)}
+    {:noreply, maybe_complete(state, take_id)}
   end
 
   # Sweep stale entries
