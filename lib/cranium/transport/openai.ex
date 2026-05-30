@@ -263,6 +263,11 @@ defmodule Cranium.Transport.OpenAI do
   end
 
   defp stream_receive_loop(conn, llm_pid, ref, completion_id, model_name) do
+    deadline = Process.get(:stream_deadline) || System.monotonic_time(:millisecond) + 300_000
+    Process.put(:stream_deadline, deadline)
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    timeout = min(30_000, remaining)
+
     receive do
       {:llm_text, text} ->
         case send_sse_chunk(conn, completion_id, model_name, %{"content" => text}, nil) do
@@ -321,10 +326,24 @@ defmodule Cranium.Transport.OpenAI do
         Logger.error("OpenAI: LLM process crashed", reason: inspect(reason))
         {conn, Process.get(:openai_usage), []}
     after
-      300_000 ->
-        Process.demonitor(ref, [:flush])
-        Process.exit(llm_pid, :shutdown)
-        {conn, Process.get(:openai_usage), []}
+      timeout ->
+        if remaining <= 0 do
+          # Overall deadline reached
+          Process.demonitor(ref, [:flush])
+          Process.exit(llm_pid, :shutdown)
+          {conn, Process.get(:openai_usage), []}
+        else
+          # SSE keepalive comment (prevents proxy/LB timeouts)
+          case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+            {:ok, conn} ->
+              stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
+
+            {:error, _} ->
+              Process.demonitor(ref, [:flush])
+              Process.exit(llm_pid, :shutdown)
+              {conn, Process.get(:openai_usage), []}
+          end
+        end
     end
   end
 
