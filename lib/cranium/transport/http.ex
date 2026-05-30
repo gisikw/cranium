@@ -209,6 +209,14 @@ defmodule Cranium.Transport.HTTP do
       |> put_resp_header("x-accel-buffering", "no")
       |> send_chunked(200)
 
+    # Send current service status immediately so clients that connect
+    # after startup (the common case) don't miss the service_ready event.
+    version = Application.spec(:cranium, :vsn) |> to_string()
+    status_event = if Cranium.Drain.draining?(),
+      do: sse_event("service_draining", %{reason: "reconnect", version: version, stream_id: "", conversation_id: ""}),
+      else: sse_event("service_ready", %{version: version, stream_id: "", conversation_id: ""})
+    {:ok, conn} = chunk(conn, status_event)
+
     Cranium.Events.subscribe()
     multi_stream_sse_loop(conn)
   end
