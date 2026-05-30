@@ -105,6 +105,8 @@ defmodule Cranium.Backend.LLM.Anthropic do
            json: body,
            headers: headers,
            receive_timeout: 120_000,
+           connect_options: [protocols: [:http1]],
+           retry: false,
            into: stream_fn_with_error
          ) do
       {:ok, %{status: 200}} ->
