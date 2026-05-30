@@ -536,6 +536,8 @@ defmodule Cranium.Macro.Engine do
     end
   end
 
+  defp build_input_schema(%{input_schema: schema}) when is_map(schema), do: schema
+
   defp build_input_schema(_macro) do
     %{
       type: "object",

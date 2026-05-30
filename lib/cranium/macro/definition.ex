@@ -30,6 +30,7 @@ defmodule Cranium.Macro.Definition do
     tools: [],
     children: [],
     conditions: [],
+    input_schema: nil,
     state_schema: nil,
     tags: [],
     source: nil,
@@ -142,6 +143,7 @@ defmodule Cranium.Macro.Definition do
          tools: tools,
          children: children,
          conditions: conditions,
+         input_schema: json["input_schema"],
          state_schema: json["state_schema"],
          tags: json["tags"] || [],
          source: json["source"]

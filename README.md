@@ -208,6 +208,13 @@ A macro is defined by **six axes** and a **body type**:
     "tag": "glossary",
     "priority": 15
   },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "term": {"type": "string", "description": "The term to look up"}
+    },
+    "required": ["term"]
+  },
   "tags": ["optional", "searchable-tags"]
 }
 ```
@@ -223,6 +230,10 @@ Optional fields by axis configuration:
   `%{lookback}`.
 - `revision_config` — required when revision != never. Template vars:
   `%{definition}`, `%{messages}`.
+- `input_schema` — JSON Schema for tool input. When present, used verbatim for
+  the tool definition. When absent, prompt macros auto-derive from template vars,
+  script/sequence macros get a generic `input` string. Tool input keys are passed
+  to scripts as `MACRO_<KEY>` env vars.
 - `conditions` — list of `{description, section}` for lifecycle=condition macros.
 - `children` — nested macro definitions (lifecycle=parent, activated with parent).
 - `tools` — tool definitions exposed while macro is active.

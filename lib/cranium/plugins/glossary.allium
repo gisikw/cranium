@@ -114,11 +114,13 @@ rule InjectOnFirstMention {
 rule LookupGlossaryEntry {
     when: agent invokes glossary-lookup tool with term
 
+    let term = lowercase(input.term)
     let file = ~/Projects/hoard/macros/glossary/{term}.json
 
     ensures: full macro definition JSON returned as tool result
         when file exists
-    ensures: partial match attempted when exact match fails
+    ensures: case-insensitive partial match attempted when exact
+        match fails
     ensures: available entries listed when no match found
 
     @guidance
@@ -128,8 +130,11 @@ rule LookupGlossaryEntry {
         -- the agent can extract extended context from the
         -- prompt_body.text field.
         --
-        -- Tool input "term" is passed to the script as the
-        -- MACRO_TERM environment variable.
+        -- The macro declares input_schema with a required "term"
+        -- parameter, so the model sends {"term": "Zayna"} and
+        -- the executor exports it as MACRO_TERM. The script
+        -- lowercases the term for case-insensitive file matching
+        -- and falls back to find -iname for partial matches.
 }
 
 ------------------------------------------------------------

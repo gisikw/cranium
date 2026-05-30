@@ -492,6 +492,9 @@ entity MacroDefinition {
     -- Conditions (for lifecycle = condition)
     conditions: [ConditionDef]?
 
+    -- Tool input schema (optional — for explicit-trigger macros)
+    input_schema: Map?
+
     -- State shape (optional — for stateful macros)
     state_schema: Map?
 
@@ -528,6 +531,15 @@ entity MacroDefinition {
         -- source: Optional provenance. "manual" for hand-authored,
         --   "generated" for system-created, or a macro name for
         --   macros created by revision. Informational only.
+        --
+        -- input_schema: Optional JSON Schema for tool input when the
+        --   macro has trigger = explicit. When present, the harness
+        --   uses this schema verbatim for the tool definition exposed
+        --   to the model. When absent, prompt-body macros auto-derive
+        --   parameters from %{template_variables}, and script/sequence
+        --   macros get a generic single "input" string parameter.
+        --   Tool input keys are passed to scripts as MACRO_<KEY>
+        --   environment variables.
         --
         -- tags: Optional labels for organization and filtering.
         --   No semantic meaning to the harness — purely for human
@@ -730,7 +742,9 @@ rule ExecuteScriptBody {
         -- Environment variables follow a convention:
         --   MACRO_NAME, MACRO_TURN_COUNT, MACRO_CONVERSATION_ID,
         --   MACRO_EPOCH_ID, MACRO_ROOM_NAME
-        --   Plus any macro-specific state variables.
+        --   MACRO_STATE_<KEY> for macro-specific state variables.
+        --   MACRO_<KEY> for tool input parameters (from input_schema
+        --   or the generic "input" field). Keys are uppercased.
         --
         -- stdout is the script's output. For foreground disposition,
         -- it's shown to the user or injected into context. For
