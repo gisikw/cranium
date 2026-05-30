@@ -295,7 +295,13 @@ defmodule Cranium.Transport.OpenAI do
         await_exit(llm_pid)
         {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
 
-      {:llm_stop, {:error, _} = _err} ->
+      {:llm_stop, {:error, status, body}} ->
+        Logger.error("OpenAI: backend returned error status=#{status} body=#{inspect(body)}")
+        Process.demonitor(ref, [:flush])
+        {conn, Process.get(:openai_usage), []}
+
+      {:llm_stop, {:error, reason}} ->
+        Logger.error("OpenAI: backend error reason=#{inspect(reason)}")
         Process.demonitor(ref, [:flush])
         {conn, Process.get(:openai_usage), []}
 
@@ -388,7 +394,13 @@ defmodule Cranium.Transport.OpenAI do
         await_exit(llm_pid)
         {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}
 
-      {:llm_stop, {:error, _}} ->
+      {:llm_stop, {:error, status, body}} ->
+        Logger.error("OpenAI: backend returned error status=#{status} body=#{inspect(body)}")
+        Process.demonitor(ref, [:flush])
+        {acc |> Enum.reverse() |> Enum.join(), usage, []}
+
+      {:llm_stop, {:error, reason}} ->
+        Logger.error("OpenAI: backend error reason=#{inspect(reason)}")
         Process.demonitor(ref, [:flush])
         {acc |> Enum.reverse() |> Enum.join(), usage, []}
 
@@ -405,7 +417,7 @@ defmodule Cranium.Transport.OpenAI do
         {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}
 
       {:DOWN, ^ref, :process, ^llm_pid, reason} ->
-        Logger.error("OpenAI: LLM process crashed in buffered mode", reason: inspect(reason))
+        Logger.error("OpenAI: LLM process crashed in buffered mode: reason=#{inspect(reason)}")
         {acc |> Enum.reverse() |> Enum.join(), usage, []}
     after
       300_000 ->

@@ -47,7 +47,7 @@ defmodule Cranium.Backend.LLM.Anthropic do
   defp do_stream(caller, messages, opts) do
     api_key = Keyword.get(opts, :api_key) || api_key()
     model = Keyword.get(opts, :model) || model()
-    max_tokens = Keyword.get(opts, :max_tokens, @default_max_tokens)
+    max_tokens = Keyword.get(opts, :max_tokens) || @default_max_tokens
     system = Keyword.get(opts, :system)
     tools = Keyword.get(opts, :tools, [])
 
@@ -117,7 +117,7 @@ defmodule Cranium.Backend.LLM.Anthropic do
           |> IO.iodata_to_binary()
           |> try_decode_json()
 
-        Logger.error("Anthropic API error", status: status, body: inspect(error_body))
+        Logger.error("Anthropic API error: status=#{status} body=#{inspect(error_body)}")
         send(caller, {:llm_stop, {:error, status, error_body}})
 
       {:error, reason} ->
