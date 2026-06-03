@@ -67,6 +67,21 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:get_messages, conversation_id, opts})
   end
 
+  @doc """
+  Paginated message listing for API consumers.
+
+  Options:
+  - `:after` — `DateTime` cursor; only messages inserted after this time
+  - `:limit` — max messages to return (default 50, clamped 1..200)
+
+  Returns `{:ok, %{messages: [map()], has_more: boolean()}}`.
+  """
+  @spec list_messages(String.t(), keyword()) ::
+          {:ok, %{messages: [map()], has_more: boolean()}} | {:error, :db_error}
+  def list_messages(conversation_id, opts \\ []) do
+    GenServer.call(__MODULE__, {:list_messages, conversation_id, opts})
+  end
+
   # Handoff operations
 
   @spec save_handoff(String.t(), String.t()) :: :ok
@@ -278,6 +293,31 @@ defmodule Cranium.Store do
 
     result = Enum.map(messages, &message_to_map/1)
     {:reply, {:ok, result}, state}
+  end
+
+  defp do_handle_call({:list_messages, conversation_id, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
+    after_ts = Keyword.get(opts, :after)
+
+    # Fetch limit+1 to derive has_more without a count query
+    fetch = limit + 1
+
+    base = from(m in Message, where: m.conversation_id == ^conversation_id)
+
+    base =
+      case after_ts do
+        %DateTime{} = ts -> from(m in base, where: m.inserted_at > ^ts)
+        _ -> base
+      end
+
+    rows =
+      from(m in base, order_by: [asc: m.inserted_at, asc: m.id], limit: ^fetch)
+      |> Repo.all()
+
+    has_more = length(rows) > limit
+    messages = rows |> Enum.take(limit) |> Enum.map(&message_to_api_map/1)
+
+    {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
   end
 
   defp do_handle_call({:save_handoff, epoch_id, content}, _from, state) do
@@ -541,6 +581,17 @@ defmodule Cranium.Store do
 
   defp message_to_map(%{role: role, content: content}) do
     %{role: String.to_existing_atom(to_string(role)), content: content}
+  end
+
+  defp message_to_api_map(%Message{} = m) do
+    %{
+      id: m.id,
+      role: m.role,
+      text: m.content,
+      origin: m.origin,
+      created_at: m.inserted_at,
+      epoch_id: m.epoch_id
+    }
   end
 
   defp summary_to_map(%Summary{} = s) do

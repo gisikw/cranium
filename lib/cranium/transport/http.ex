@@ -432,6 +432,48 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  get "/v1/conversations/:id/messages" do
+    params = URI.decode_query(conn.query_string)
+
+    limit =
+      case params["limit"] do
+        nil -> 50
+        str -> str |> String.to_integer() |> min(200) |> max(1)
+      end
+
+    after_ts =
+      case params["after"] do
+        nil ->
+          nil
+
+        str ->
+          case DateTime.from_iso8601(str) do
+            {:ok, dt, _offset} -> dt
+            _ -> :invalid
+          end
+      end
+
+    if after_ts == :invalid do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "invalid 'after' timestamp"}))
+    else
+      opts = [limit: limit] ++ if(after_ts, do: [after: after_ts], else: [])
+
+      case Cranium.Store.list_messages(id, opts) do
+        {:ok, result} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, Jason.encode!(result))
+
+        {:error, _} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(500, Jason.encode!(%{"error" => "database error"}))
+      end
+    end
+  end
+
   post "/v1/clear" do
     conversation_id = conn.body_params["conversation_id"] || "default"
     continuation = conn.body_params["continuation"]
