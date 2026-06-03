@@ -185,7 +185,7 @@ defmodule Cranium.Transport.HTTP do
 
       _ ->
         # Stream in progress or not yet started — enter live loop
-        sse_loop(conn, id)
+        sse_loop(conn, id, nil)
     end
   end
 
@@ -198,7 +198,7 @@ defmodule Cranium.Transport.HTTP do
       |> send_chunked(200)
 
     Cranium.Events.subscribe({:conversation, id})
-    multi_stream_sse_loop(conn)
+    multi_stream_sse_loop(conn, %{})
   end
 
   get "/v1/events" do
@@ -218,7 +218,7 @@ defmodule Cranium.Transport.HTTP do
     {:ok, conn} = chunk(conn, status_event)
 
     Cranium.Events.subscribe()
-    multi_stream_sse_loop(conn)
+    multi_stream_sse_loop(conn, %{})
   end
 
   get "/v1/streams/:id/manifest" do
@@ -479,55 +479,56 @@ defmodule Cranium.Transport.HTTP do
 
   # --- SSE helpers ---
 
-  defp sse_loop(conn, stream_id) do
+  defp sse_loop(conn, stream_id, conversation_id) do
     receive do
       {:stream_start, ^stream_id, metadata} ->
         dispatch = Map.get(metadata, :dispatch)
+        conv_id = metadata[:conversation_id]
 
         data = %{
           stream_id: stream_id,
-          conversation_id: metadata[:conversation_id],
+          conversation_id: conv_id,
           harness: dispatch && dispatch.harness,
           model: dispatch && dispatch.model,
           renditions: dispatch && dispatch.renditions
         }
 
         {:ok, conn} = chunk(conn, sse_event("stream_start", data))
-        sse_loop(conn, stream_id)
+        sse_loop(conn, stream_id, conv_id)
 
       {:chunk, ^stream_id, text} when is_binary(text) ->
-        {:ok, conn} = chunk(conn, sse_event("chunk", %{stream_id: stream_id, content: text}))
-        sse_loop(conn, stream_id)
+        {:ok, conn} = chunk(conn, sse_event("chunk", %{stream_id: stream_id, conversation_id: conversation_id, content: text}))
+        sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:marker, marker}} ->
         {:ok, conn} =
           chunk(
             conn,
-            sse_event("cue", %{stream_id: stream_id, cue_type: "marker", data: marker})
+            sse_event("cue", %{stream_id: stream_id, conversation_id: conversation_id, cue_type: "marker", data: marker})
           )
 
-        sse_loop(conn, stream_id)
+        sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:tool_use, data}} ->
         {:ok, conn} =
-          chunk(conn, sse_event("tool_use", %{stream_id: stream_id, data: data}))
+          chunk(conn, sse_event("tool_use", %{stream_id: stream_id, conversation_id: conversation_id, data: data}))
 
-        sse_loop(conn, stream_id)
+        sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:tool_result, data}} ->
         {:ok, conn} =
-          chunk(conn, sse_event("tool_result", %{stream_id: stream_id, data: data}))
+          chunk(conn, sse_event("tool_result", %{stream_id: stream_id, conversation_id: conversation_id, data: data}))
 
-        sse_loop(conn, stream_id)
+        sse_loop(conn, stream_id, conversation_id)
 
       {:stream_end, ^stream_id} ->
-        chunk(conn, sse_event("stream_end", %{stream_id: stream_id}))
+        chunk(conn, sse_event("stream_end", %{stream_id: stream_id, conversation_id: conversation_id}))
         conn
     after
       30_000 ->
         # SSE keepalive comment (prevents proxy/LB timeouts)
         case chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> sse_loop(conn, stream_id)
+          {:ok, conn} -> sse_loop(conn, stream_id, conversation_id)
           {:error, _} -> conn
         end
     end
@@ -537,54 +538,63 @@ defmodule Cranium.Transport.HTTP do
   # Unlike sse_loop/2, this does not exit on stream_end — it survives across
   # multiple passes, relaying events from any stream that matches the
   # registered topic.
-  defp multi_stream_sse_loop(conn) do
+  defp multi_stream_sse_loop(conn, streams) do
     receive do
       {:stream_start, stream_id, metadata} ->
         dispatch = Map.get(metadata, :dispatch)
+        conv_id = metadata[:conversation_id]
 
         data = %{
           stream_id: stream_id,
-          conversation_id: metadata[:conversation_id],
+          conversation_id: conv_id,
           harness: dispatch && dispatch.harness,
           model: dispatch && dispatch.model,
           renditions: dispatch && dispatch.renditions
         }
 
+        streams = Map.put(streams, stream_id, conv_id)
+
         case chunk(conn, sse_event("stream_start", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, text} when is_binary(text) ->
-        case chunk(conn, sse_event("chunk", %{stream_id: stream_id, content: text})) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+        conv_id = Map.get(streams, stream_id)
+        case chunk(conn, sse_event("chunk", %{stream_id: stream_id, conversation_id: conv_id, content: text})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, {:marker, marker}} ->
+        conv_id = Map.get(streams, stream_id)
         case chunk(
                conn,
-               sse_event("cue", %{stream_id: stream_id, cue_type: "marker", data: marker})
+               sse_event("cue", %{stream_id: stream_id, conversation_id: conv_id, cue_type: "marker", data: marker})
              ) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, {:tool_use, data}} ->
-        case chunk(conn, sse_event("tool_use", %{stream_id: stream_id, data: data})) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+        conv_id = Map.get(streams, stream_id)
+        case chunk(conn, sse_event("tool_use", %{stream_id: stream_id, conversation_id: conv_id, data: data})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, {:tool_result, data}} ->
-        case chunk(conn, sse_event("tool_result", %{stream_id: stream_id, data: data})) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+        conv_id = Map.get(streams, stream_id)
+        case chunk(conn, sse_event("tool_result", %{stream_id: stream_id, conversation_id: conv_id, data: data})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:stream_end, stream_id} ->
-        case chunk(conn, sse_event("stream_end", %{stream_id: stream_id})) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+        conv_id = Map.get(streams, stream_id)
+        streams = Map.delete(streams, stream_id)
+        case chunk(conn, sse_event("stream_end", %{stream_id: stream_id, conversation_id: conv_id})) do
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
@@ -594,19 +604,19 @@ defmodule Cranium.Transport.HTTP do
         data = Map.put(meta, :conversation_id, conversation_id)
 
         case chunk(conn, sse_event("message_received", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:pass_complete, conversation_id, stream_id, meta} ->
         # Silent passes (e.g. orientation) are persisted but not broadcast to clients.
         if meta[:silent] do
-          multi_stream_sse_loop(conn)
+          multi_stream_sse_loop(conn, streams)
         else
           data = meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
 
           case chunk(conn, sse_event("pass_complete", data)) do
-            {:ok, conn} -> multi_stream_sse_loop(conn)
+            {:ok, conn} -> multi_stream_sse_loop(conn, streams)
             {:error, _} -> conn
           end
         end
@@ -615,7 +625,7 @@ defmodule Cranium.Transport.HTTP do
         data = Map.put(meta, :conversation_id, conversation_id)
 
         case chunk(conn, sse_event("epoch_started", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
@@ -623,7 +633,7 @@ defmodule Cranium.Transport.HTTP do
         data = Map.put(meta, :conversation_id, conversation_id)
 
         case chunk(conn, sse_event("epoch_cleared", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
@@ -631,7 +641,7 @@ defmodule Cranium.Transport.HTTP do
         data = Map.put(meta, :conversation_id, conversation_id)
 
         case chunk(conn, sse_event("handoff_complete", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
@@ -641,7 +651,7 @@ defmodule Cranium.Transport.HTTP do
         data = meta |> Map.put(:stream_id, "") |> Map.put(:conversation_id, "")
 
         case chunk(conn, sse_event("service_draining", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
@@ -649,13 +659,13 @@ defmodule Cranium.Transport.HTTP do
         data = meta |> Map.put(:stream_id, "") |> Map.put(:conversation_id, "")
 
         case chunk(conn, sse_event("service_ready", data)) do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
     after
       30_000 ->
         case chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> multi_stream_sse_loop(conn)
+          {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
     end
