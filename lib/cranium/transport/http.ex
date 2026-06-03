@@ -471,6 +471,18 @@ defmodule Cranium.Transport.HTTP do
     Cranium.Transport.Audio.transcriptions(conn)
   end
 
+  get "/health" do
+    if Cranium.Drain.draining?() do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(503, Jason.encode!(%{"status" => "draining"}))
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{"status" => "ok"}))
+    end
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")

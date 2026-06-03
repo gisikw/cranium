@@ -33,6 +33,10 @@
   ];
 
   health = {
-    type = "none";
+    type = "http";
+    endpoint = "http://127.0.0.1:${config.port or "4000"}/health";
+    grace = 3;
+    interval = 1;
+    stabilize = 2;
   };
 }

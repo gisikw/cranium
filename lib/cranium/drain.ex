@@ -17,6 +17,7 @@ defmodule Cranium.Drain do
 
   @drain_key {__MODULE__, :draining}
   @poll_interval_ms 500
+  @flush_delay_ms 2_000
 
   # --- Public API ---
 
@@ -49,7 +50,13 @@ defmodule Cranium.Drain do
     Logger.info("SIGTERM received — starting drain")
     :persistent_term.put(@drain_key, true)
     Cranium.Events.broadcast({:service_draining, %{reason: "sigterm"}})
-    send(self(), :poll_drain)
+
+    # Hold for @flush_delay_ms to ensure SSE clients receive the
+    # service_draining event before we begin tearing down the
+    # supervision tree.  Without this, System.stop/1 can shut down
+    # Transport (Bandit) before the SSE handler processes flush the
+    # event to the wire.
+    Process.send_after(self(), :poll_drain, @flush_delay_ms)
     {:noreply, state}
   end
 
