@@ -441,8 +441,8 @@ defmodule Cranium.Transport.HTTP do
         str -> str |> String.to_integer() |> min(200) |> max(1)
       end
 
-    after_ts =
-      case params["after"] do
+    before_ts =
+      case params["before"] do
         nil ->
           nil
 
@@ -453,12 +453,12 @@ defmodule Cranium.Transport.HTTP do
           end
       end
 
-    if after_ts == :invalid do
+    if before_ts == :invalid do
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{"error" => "invalid 'after' timestamp"}))
+      |> send_resp(400, Jason.encode!(%{"error" => "invalid 'before' timestamp"}))
     else
-      opts = [limit: limit] ++ if(after_ts, do: [after: after_ts], else: [])
+      opts = [limit: limit] ++ if(before_ts, do: [before: before_ts], else: [])
 
       case Cranium.Store.list_messages(id, opts) do
         {:ok, result} ->

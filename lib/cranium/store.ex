@@ -71,9 +71,10 @@ defmodule Cranium.Store do
   Paginated message listing for API consumers.
 
   Options:
-  - `:after` — `DateTime` cursor; only messages inserted after this time
+  - `:before` — `DateTime` cursor; only messages inserted before this time
   - `:limit` — max messages to return (default 50, clamped 1..200)
 
+  Returns messages in reverse chronological order (newest first).
   Returns `{:ok, %{messages: [map()], has_more: boolean()}}`.
   """
   @spec list_messages(String.t(), keyword()) ::
@@ -297,7 +298,7 @@ defmodule Cranium.Store do
 
   defp do_handle_call({:list_messages, conversation_id, opts}, _from, state) do
     limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
-    after_ts = Keyword.get(opts, :after)
+    before_ts = Keyword.get(opts, :before)
 
     # Fetch limit+1 to derive has_more without a count query
     fetch = limit + 1
@@ -305,13 +306,13 @@ defmodule Cranium.Store do
     base = from(m in Message, where: m.conversation_id == ^conversation_id)
 
     base =
-      case after_ts do
-        %DateTime{} = ts -> from(m in base, where: m.inserted_at > ^ts)
+      case before_ts do
+        %DateTime{} = ts -> from(m in base, where: m.inserted_at < ^ts)
         _ -> base
       end
 
     rows =
-      from(m in base, order_by: [asc: m.inserted_at, asc: m.id], limit: ^fetch)
+      from(m in base, order_by: [desc: m.inserted_at, desc: m.id], limit: ^fetch)
       |> Repo.all()
 
     has_more = length(rows) > limit
