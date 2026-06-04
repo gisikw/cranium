@@ -350,10 +350,22 @@ defmodule Cranium.Inference.Agent do
 
       {:cc_tool_use, tool_data} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_use, tool_data}})
+        # Accumulate for persistence (same content block format as muse path)
+        assistant_msg = %{
+          role: "assistant",
+          content: [%{type: "tool_use", id: tool_data.id, name: tool_data.name, input: tool_data.input}]
+        }
+        state = %{state | intermediate_messages: state.intermediate_messages ++ [assistant_msg]}
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_result, result_data}})
+        # Accumulate for persistence (same content block format as muse path)
+        user_msg = %{
+          role: "user",
+          content: [%{type: "tool_result", tool_use_id: result_data.tool_use_id, content: result_data.content}]
+        }
+        state = %{state | intermediate_messages: state.intermediate_messages ++ [user_msg]}
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
