@@ -350,12 +350,15 @@ defmodule Cranium.Inference.Agent do
 
       {:cc_tool_use, tool_data} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_use, tool_data}})
-        # Accumulate for persistence (same content block format as muse path)
-        assistant_msg = %{
-          role: "assistant",
-          content: [%{type: "tool_use", id: tool_data.id, name: tool_data.name, input: tool_data.input}]
+        # Drain accumulated text + tool_use into one assistant message (matches muse path)
+        text = state.partial_output |> Enum.reverse() |> Enum.join()
+        text_blocks = if text != "", do: [%{type: "text", text: text}], else: []
+        tool_block = %{type: "tool_use", id: tool_data.id, name: tool_data.name, input: tool_data.input}
+        assistant_msg = %{role: "assistant", content: text_blocks ++ [tool_block]}
+        state = %{state |
+          partial_output: [],
+          intermediate_messages: state.intermediate_messages ++ [assistant_msg]
         }
-        state = %{state | intermediate_messages: state.intermediate_messages ++ [assistant_msg]}
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
