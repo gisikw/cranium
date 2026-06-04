@@ -29,7 +29,7 @@ defmodule Cranium.Effects.PassReactorTest do
 
       # Verify assistant message was persisted
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
-      assert Enum.any?(messages, fn m -> m.role == :assistant and m.content == "hello world" end)
+      assert Enum.any?(messages, fn m -> m.role == :assistant and Cranium.Store.extract_text(m.content) == "hello world" end)
 
       # Verify epoch state was updated
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
@@ -111,7 +111,7 @@ defmodule Cranium.Effects.PassReactorTest do
 
       # Verify partial message was persisted
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
-      assert Enum.any?(messages, fn m -> m.role == :assistant and m.content == "partial output here" end)
+      assert Enum.any?(messages, fn m -> m.role == :assistant and Cranium.Store.extract_text(m.content) == "partial output here" end)
 
       # Verify interrupted_context was stored
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)

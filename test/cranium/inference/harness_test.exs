@@ -118,7 +118,7 @@ defmodule Cranium.Inference.HarnessTest do
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
       assert length(messages) >= 2
       assert Enum.any?(messages, fn m -> m.role == :user end)
-      assert Enum.any?(messages, fn m -> m.role == :assistant and m.content == "hello from harness" end)
+      assert Enum.any?(messages, fn m -> m.role == :assistant and Cranium.Store.extract_text(m.content) == "hello from harness" end)
     end
 
     test "handles cancellation and stores interrupted context" do

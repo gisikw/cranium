@@ -5,6 +5,8 @@ defmodule CraniumTest.StoreTest do
 
   # Store is started by the application supervisor; DataCase handles DB sandbox.
 
+  defp text_block(text), do: [%{"type" => "text", "text" => text}]
+
   describe "append_message/get_messages" do
     setup do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-msg")
@@ -12,34 +14,34 @@ defmodule CraniumTest.StoreTest do
     end
 
     test "inserts messages and retrieves them in insertion order", %{epoch_id: epoch_id} do
-      :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "hello"})
+      :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("hello")})
 
       :ok =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
           role: :assistant,
-          content: "hi there"
+          content: text_block("hi there")
         })
 
       :ok =
-        Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "how are you?"})
+        Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("how are you?")})
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg")
 
       assert length(messages) == 3
       assert Enum.map(messages, & &1.role) == [:user, :assistant, :user]
-      assert Enum.map(messages, & &1.content) == ["hello", "hi there", "how are you?"]
+      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == ["hello", "hi there", "how are you?"]
     end
 
     test "respects the limit option, returning most recent", %{epoch_id: epoch_id} do
       for i <- 1..10 do
         :ok =
-          Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: "msg #{i}"})
+          Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("msg #{i}")})
       end
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg", limit: 3)
 
       assert length(messages) == 3
-      assert Enum.map(messages, & &1.content) == ["msg 8", "msg 9", "msg 10"]
+      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == ["msg 8", "msg 9", "msg 10"]
     end
 
     test "returns empty list when no messages exist" do
@@ -51,16 +53,16 @@ defmodule CraniumTest.StoreTest do
       {:ok, epoch_a} = Cranium.Store.create_epoch("conv-a")
       {:ok, epoch_b} = Cranium.Store.create_epoch("conv-b")
 
-      :ok = Cranium.Store.append_message("conv-a", epoch_a, %{role: :user, content: "alpha"})
-      :ok = Cranium.Store.append_message("conv-b", epoch_b, %{role: :user, content: "bravo"})
+      :ok = Cranium.Store.append_message("conv-a", epoch_a, %{role: :user, content: text_block("alpha")})
+      :ok = Cranium.Store.append_message("conv-b", epoch_b, %{role: :user, content: text_block("bravo")})
 
       {:ok, a_msgs} = Cranium.Store.get_messages("conv-a")
       {:ok, b_msgs} = Cranium.Store.get_messages("conv-b")
 
       assert length(a_msgs) == 1
-      assert hd(a_msgs).content == "alpha"
+      assert Cranium.Store.extract_text(hd(a_msgs).content) == "alpha"
       assert length(b_msgs) == 1
-      assert hd(b_msgs).content == "bravo"
+      assert Cranium.Store.extract_text(hd(b_msgs).content) == "bravo"
     end
   end
 
@@ -136,11 +138,11 @@ defmodule CraniumTest.StoreTest do
   describe "get_last_message_at/1" do
     test "returns the timestamp of the most recent message" do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-ts")
-      :ok = Cranium.Store.append_message("conv-ts", epoch_id, %{role: :user, content: "first"})
+      :ok = Cranium.Store.append_message("conv-ts", epoch_id, %{role: :user, content: text_block("first")})
       Process.sleep(10)
 
       :ok =
-        Cranium.Store.append_message("conv-ts", epoch_id, %{role: :assistant, content: "second"})
+        Cranium.Store.append_message("conv-ts", epoch_id, %{role: :assistant, content: text_block("second")})
 
       {:ok, ts} = Cranium.Store.get_last_message_at(epoch_id)
       assert %DateTime{} = ts

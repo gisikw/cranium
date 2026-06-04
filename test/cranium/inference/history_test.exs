@@ -5,6 +5,8 @@ defmodule Cranium.Inference.HistoryTest do
 
   @moduletag :capture_log
 
+  defp text_block(text), do: [%{"type" => "text", "text" => text}]
+
   describe "contribute/2" do
     test "returns current message when no history exists" do
       conversation_id = "test-history-#{System.unique_integer([:positive])}"
@@ -24,12 +26,12 @@ defmodule Cranium.Inference.HistoryTest do
 
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :user,
-        content: "first message"
+        content: text_block("first message")
       })
 
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :assistant,
-        content: "first reply"
+        content: text_block("first reply")
       })
 
       messages = History.contribute(conversation_id,
@@ -39,8 +41,8 @@ defmodule Cranium.Inference.HistoryTest do
       )
 
       assert length(messages) == 3
-      assert Enum.at(messages, 0) == %{"role" => "user", "content" => "first message"}
-      assert Enum.at(messages, 1) == %{"role" => "assistant", "content" => "first reply"}
+      assert Enum.at(messages, 0) == %{"role" => "user", "content" => text_block("first message")}
+      assert Enum.at(messages, 1) == %{"role" => "assistant", "content" => text_block("first reply")}
       assert Enum.at(messages, 2) == %{"role" => "user", "content" => "second message"}
     end
 
