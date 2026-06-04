@@ -147,14 +147,17 @@ defmodule Cranium.Inference.Agent do
 
     # Start the LLM backend stream — skip tool definitions for managed-loop backends
     # or when tools are explicitly disabled (e.g. orientation passes).
-    # For CC: orientation gets read-only tools; for API/Ollama, tools are omitted entirely.
+    # Orientation gets read-only tools: CC via --tools whitelist, muse via
+    # filtered tool definitions (full list minus clear_context).
     tools_disabled = context[:tools_disabled] == true
 
     tools =
       cond do
         tools_disabled and state.llm_backend.manages_tool_loop?() ->
           "Read,Glob,Grep,WebFetch,WebSearch,Task"
-        tools_disabled -> []
+        tools_disabled ->
+          Cranium.Inference.Agent.ToolRouter.tool_definitions(state.conversation_id)
+          |> Enum.reject(&(&1[:name] == "clear_context"))
         state.llm_backend.manages_tool_loop?() -> []
         true -> Cranium.Inference.Agent.ToolRouter.tool_definitions(state.conversation_id)
       end
