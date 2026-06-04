@@ -262,8 +262,7 @@ defmodule Cranium.Store do
       epoch_id: epoch_id,
       role: to_string(message[:role] || "user"),
       content: message[:content] || [],
-      origin: message[:origin],
-      tool_uses: message[:tool_uses]
+      origin: message[:origin]
     })
     |> Repo.insert!()
 
@@ -586,7 +585,7 @@ defmodule Cranium.Store do
   end
 
   defp message_to_api_map(%Message{} = m) do
-    base = %{
+    %{
       id: m.id,
       role: m.role,
       content: m.content,
@@ -595,11 +594,6 @@ defmodule Cranium.Store do
       created_at: m.inserted_at,
       epoch_id: m.epoch_id
     }
-
-    case m.tool_uses do
-      [_ | _] = list -> Map.put(base, :tool_uses, list)
-      _ -> base
-    end
   end
 
   @doc "Extract concatenated text from content blocks."

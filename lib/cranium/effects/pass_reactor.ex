@@ -36,11 +36,6 @@ defmodule Cranium.Effects.PassReactor do
       ) do
     unless payload[:ephemeral] do
       if payload.output != "" do
-        tool_uses = case payload[:tool_uses] do
-          [_ | _] = list -> list
-          _ -> nil
-        end
-
         # Persist intermediate messages (assistant + tool_result pairs from tool loop)
         for msg <- (payload[:intermediate_messages] || []) do
           Cranium.Store.append_message(cid, payload.epoch_id, %{
@@ -52,8 +47,7 @@ defmodule Cranium.Effects.PassReactor do
         # Persist final assistant message as content blocks
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: :assistant,
-          content: [%{"type" => "text", "text" => payload.output}],
-          tool_uses: tool_uses
+          content: [%{"type" => "text", "text" => payload.output}]
         })
       else
         Logger.warning("Inference completed with empty output",

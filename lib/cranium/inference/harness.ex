@@ -166,7 +166,6 @@ defmodule Cranium.Inference.Harness do
         reason: :complete,
         epoch_id: turn.epoch_id,
         output: output,
-        tool_uses: agent_result[:tool_uses] || [],
         intermediate_messages: agent_result[:intermediate_messages] || [],
         saturation: saturation,
         turn_count: new_count,
