@@ -39,7 +39,8 @@ defmodule Cranium.Effects.PassReactor do
       for msg <- (payload[:intermediate_messages] || []) do
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: msg[:role] || msg["role"],
-          content: msg[:content] || msg["content"]
+          content: msg[:content] || msg["content"],
+          origin: payload[:origin]
         })
       end
 
@@ -47,7 +48,8 @@ defmodule Cranium.Effects.PassReactor do
         # Persist final assistant message as content blocks
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: :assistant,
-          content: [%{"type" => "text", "text" => payload.output}]
+          content: [%{"type" => "text", "text" => payload.output}],
+          origin: payload[:origin]
         })
       else
         if (payload[:intermediate_messages] || []) == [] do

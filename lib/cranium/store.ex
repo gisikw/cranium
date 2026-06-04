@@ -303,7 +303,11 @@ defmodule Cranium.Store do
     # Fetch limit+1 to derive has_more without a count query
     fetch = limit + 1
 
-    base = from(m in Message, where: m.conversation_id == ^conversation_id)
+    # Exclude orientation messages — those are private to the model
+    base = from(m in Message,
+      where: m.conversation_id == ^conversation_id,
+      where: m.origin != "orientation" or is_nil(m.origin)
+    )
 
     base =
       case before_ts do
