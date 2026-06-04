@@ -413,7 +413,7 @@ defmodule Cranium.Inference.TurnAssembler do
     unless ephemeral do
       Cranium.Store.append_message(header.conversation_id, epoch_id, %{
         role: :user,
-        content: enriched_text,
+        content: [%{"type" => "text", "text" => enriched_text}],
         origin: header.origin
       })
     end

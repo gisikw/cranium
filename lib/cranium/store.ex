@@ -261,8 +261,9 @@ defmodule Cranium.Store do
       conversation_id: conversation_id,
       epoch_id: epoch_id,
       role: to_string(message[:role] || "user"),
-      content: message[:content] || "",
-      origin: message[:origin]
+      content: message[:content] || [],
+      origin: message[:origin],
+      tool_uses: message[:tool_uses]
     })
     |> Repo.insert!()
 
@@ -585,15 +586,32 @@ defmodule Cranium.Store do
   end
 
   defp message_to_api_map(%Message{} = m) do
-    %{
+    base = %{
       id: m.id,
       role: m.role,
-      text: m.content,
+      content: m.content,
+      text: extract_text(m.content),
       origin: m.origin,
       created_at: m.inserted_at,
       epoch_id: m.epoch_id
     }
+
+    case m.tool_uses do
+      [_ | _] = list -> Map.put(base, :tool_uses, list)
+      _ -> base
+    end
   end
+
+  @doc "Extract concatenated text from content blocks."
+  @spec extract_text(list() | binary() | nil) :: String.t()
+  def extract_text(blocks) when is_list(blocks) do
+    blocks
+    |> Enum.filter(&(is_map(&1) and (&1["type"] == "text" or &1[:type] == "text")))
+    |> Enum.map_join("", &(&1["text"] || &1[:text] || ""))
+  end
+
+  def extract_text(text) when is_binary(text), do: text
+  def extract_text(_), do: ""
 
   defp summary_to_map(%Summary{} = s) do
     %{

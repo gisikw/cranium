@@ -116,7 +116,7 @@ defmodule Cranium.Transport.OpenAI do
 
     client_system =
       system_msgs
-      |> Enum.map(fn msg -> msg["content"] || msg[:content] || "" end)
+      |> Enum.map(fn msg -> Cranium.Store.extract_text(msg["content"] || msg[:content]) end)
       |> Enum.join("\n\n")
 
     {client_system, other_msgs}

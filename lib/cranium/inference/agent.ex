@@ -60,6 +60,8 @@ defmodule Cranium.Inference.Agent do
     field :messages, list(), default: []
     field :tool_calls_pending, list(), default: []
     field :partial_output, list(), default: []
+    field :tool_uses, list(), default: []
+    field :intermediate_messages, list(), default: []
     field :usage, map(), default: %{input_tokens: 0, output_tokens: 0}
     # For CC path: tracks pending clear_context call (nil or continuation string)
     field :pending_clear, String.t() | nil, default: nil
@@ -128,6 +130,8 @@ defmodule Cranium.Inference.Agent do
         stream_id: stream_id,
         messages: messages,
         partial_output: [],
+        tool_uses: [],
+        intermediate_messages: [],
         usage: %{input_tokens: 0, output_tokens: 0}
     }
 
@@ -222,6 +226,8 @@ defmodule Cranium.Inference.Agent do
           stream_id: stream_id,
           status: :complete,
           output: final_state.partial_output |> Enum.reverse() |> Enum.join(),
+          tool_uses: Enum.reverse(final_state.tool_uses),
+          intermediate_messages: final_state.intermediate_messages,
           usage: final_state.usage,
           cc_session_id: final_state.cc_session_id
         }
@@ -347,7 +353,8 @@ defmodule Cranium.Inference.Agent do
 
       {:cc_tool_use, tool_data} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_use, tool_data}})
-        receive_loop(state, stream_id, llm_pid, ref, opts)
+        summary = summarize_tool_use(tool_data[:name] || tool_data["name"], tool_data[:input] || tool_data["input"])
+        receive_loop(%{state | tool_uses: [summary | state.tool_uses]}, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, {:tool_result, result_data}})
@@ -487,6 +494,14 @@ defmodule Cranium.Inference.Agent do
           }
         end)
 
+      # Accumulate tool use summaries (skip markers — they don't emit tool_use events)
+      new_summaries =
+        tool_calls
+        |> Enum.reject(fn tc ->
+          match?({:marker, _, _}, ToolRouter.route(tc, state.conversation_id))
+        end)
+        |> Enum.map(fn tc -> summarize_tool_use(tc.name, tc.input) end)
+
       # Build assistant content blocks (text + tool_use)
       assistant_content = build_assistant_content(state.partial_output, tool_calls)
 
@@ -494,8 +509,16 @@ defmodule Cranium.Inference.Agent do
       assistant_msg = %{role: "assistant", content: assistant_content}
       updated_messages = state.messages ++ [assistant_msg | tool_results]
 
+      # Accumulate intermediate messages for persistence
+      intermediate = [assistant_msg | tool_results]
+
       # Clear pending state and re-enter inference
-      state = %{state | partial_output: [], tool_calls_pending: []}
+      state = %{state |
+        partial_output: [],
+        tool_calls_pending: [],
+        tool_uses: state.tool_uses ++ new_summaries,
+        intermediate_messages: state.intermediate_messages ++ intermediate
+      }
       run_inference(state, stream_id, updated_messages, opts)
     end
   end
@@ -657,4 +680,23 @@ defmodule Cranium.Inference.Agent do
   defp backend_module do
     Application.get_env(:cranium, :backends)[:llm] || Cranium.Backend.LLM.Anthropic
   end
+
+  # Extract a human-readable detail string from tool input for display purposes.
+  defp summarize_tool_use(name, input) when is_map(input) do
+    detail =
+      case name do
+        n when n in ~w(Read Write Edit Glob NotebookEdit) -> input["file_path"] || input[:file_path]
+        "Grep" -> input["pattern"] || input[:pattern]
+        "Bash" -> input["command"] || input[:command]
+        "WebFetch" -> input["url"] || input[:url]
+        "WebSearch" -> input["query"] || input[:query]
+        "Task" -> input["description"] || input[:description]
+        "TodoWrite" -> nil
+        _ -> nil
+      end
+
+    %{"name" => to_string(name), "detail" => detail}
+  end
+
+  defp summarize_tool_use(name, _input), do: %{"name" => to_string(name), "detail" => nil}
 end

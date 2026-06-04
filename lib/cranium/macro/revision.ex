@@ -73,7 +73,7 @@ defmodule Cranium.Macro.Revision do
         messages
         |> Enum.map_join("\n", fn msg ->
           role = msg[:role] || msg["role"] || "unknown"
-          content = msg[:content] || msg["content"] || ""
+          content = Cranium.Store.extract_text(msg[:content] || msg["content"])
           "#{role}: #{content}"
         end)
 
