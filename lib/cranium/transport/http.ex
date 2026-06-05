@@ -531,8 +531,8 @@ defmodule Cranium.Transport.HTTP do
     Cranium.Transport.Diagnostics.index(conn)
   end
 
-  get "/auth/openai" do
-    Cranium.Transport.Diagnostics.auth_openai(conn)
+  post "/auth/openai/token" do
+    Cranium.Transport.Diagnostics.auth_import(conn)
   end
 
   get "/auth/openai/status" do

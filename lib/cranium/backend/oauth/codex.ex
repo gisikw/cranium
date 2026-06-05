@@ -69,6 +69,15 @@ defmodule Cranium.Backend.OAuth.Codex do
   end
 
   @doc """
+  Import tokens from an external source (e.g. Codex CLI auth.json).
+  Accepts a map with at least `"access_token"`. Optionally includes
+  `"refresh_token"`, `"account_id"`, `"expires_at"`, `"expires_in"`.
+  """
+  def import_tokens(token_data) when is_map(token_data) do
+    GenServer.call(__MODULE__, {:import_tokens, token_data})
+  end
+
+  @doc """
   Check if authenticated.
   """
   def authenticated? do
@@ -140,6 +149,20 @@ defmodule Cranium.Backend.OAuth.Codex do
 
       {:error, reason} ->
         Logger.error("OAuth.Codex: device flow failed: #{inspect(reason)}")
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:import_tokens, data}, _from, state) do
+    case parse_imported_tokens(data) do
+      {:ok, tokens} ->
+        state = apply_tokens(state, tokens)
+        persist_tokens(state)
+        state = maybe_schedule_refresh(state)
+        Logger.info("OAuth.Codex: tokens imported for account #{state.account_id}")
+        {:reply, :ok, state}
+
+      {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
@@ -325,6 +348,40 @@ defmodule Cranium.Backend.OAuth.Codex do
   end
 
   defp parse_token_response(_), do: {:error, :missing_access_token}
+
+  # --- Import (external tokens) ---
+
+  defp parse_imported_tokens(%{"access_token" => access_token} = data) do
+    expires_at =
+      cond do
+        is_integer(data["expires_at"]) ->
+          DateTime.from_unix!(data["expires_at"])
+
+        is_binary(data["expires_at"]) ->
+          case DateTime.from_iso8601(data["expires_at"]) do
+            {:ok, dt, _} -> dt
+            _ -> DateTime.add(DateTime.utc_now(), 3600, :second)
+          end
+
+        is_integer(data["expires_in"]) ->
+          DateTime.add(DateTime.utc_now(), data["expires_in"], :second)
+
+        true ->
+          DateTime.add(DateTime.utc_now(), 3600, :second)
+      end
+
+    account_id = data["account_id"] || extract_account_id(access_token)
+
+    {:ok,
+     %{
+       access_token: access_token,
+       refresh_token: data["refresh_token"],
+       account_id: account_id,
+       expires_at: expires_at
+     }}
+  end
+
+  defp parse_imported_tokens(_), do: {:error, :missing_access_token}
 
   # --- JWT Account ID ---
 

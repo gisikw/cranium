@@ -25,24 +25,24 @@ defmodule Cranium.Transport.Diagnostics do
   end
 
   @doc """
-  Initiate the device code flow. Shows a page with the code to enter.
+  Import tokens posted from the diagnostics page textarea.
   """
-  def auth_openai(conn) do
-    case Codex.start_device_flow() do
-      {:ok, %{user_code: code, verification_uri: uri}} ->
+  def auth_import(conn) do
+    case Codex.import_tokens(conn.body_params) do
+      :ok ->
         conn
-        |> Plug.Conn.put_resp_content_type("text/html")
-        |> Plug.Conn.send_resp(200, device_code_html(code, uri))
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(%{ok: true}))
 
       {:error, reason} ->
         conn
-        |> Plug.Conn.put_resp_content_type("text/html")
-        |> Plug.Conn.send_resp(500, error_html("Failed to start device flow: #{inspect(reason)}"))
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(400, Jason.encode!(%{error: to_string(reason)}))
     end
   end
 
   @doc """
-  JSON status endpoint for polling from the device code page.
+  JSON status endpoint for polling OAuth state.
   """
   def auth_status(conn) do
     status = Codex.status()
@@ -76,6 +76,20 @@ defmodule Cranium.Transport.Diagnostics do
       end)
       |> Enum.join("\n")
 
+    import_section =
+      """
+      <p style="margin-top:12px;color:#888;font-size:0.9em">Run on a device with <a href="https://github.com/openai/codex" style="color:#6a6">Codex CLI</a>:</p>
+      <pre style="background:#252525;padding:8px 12px;border-radius:4px;overflow-x:auto;user-select:all;font-size:0.85em">cat ~/.codex/auth.json</pre>
+      <textarea id="tokens" rows="4" style="width:100%;box-sizing:border-box;background:#252525;color:#e0e0e0;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;font-size:0.8em;resize:vertical;margin-top:8px" placeholder="Paste token JSON here..."></textarea>
+      <div style="margin-top:8px">
+        <button onclick="importTokens()" class="btn">Import</button>
+        <span id="import-status" style="margin-left:12px;font-size:0.9em"></span>
+      </div>
+      <script>
+      function importTokens(){var r=document.getElementById('tokens').value.trim();if(!r)return;var s=document.getElementById('import-status');s.textContent='Importing...';s.style.color='#888';try{var d=JSON.parse(r)}catch(e){s.textContent='Invalid JSON';s.style.color='#c44';return}fetch('/auth/openai/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(function(r){return r.json()}).then(function(d){if(d.ok){s.textContent='Done!';s.style.color='#4a4';setTimeout(function(){location.reload()},1200)}else{s.textContent='Error: '+(d.error||'unknown');s.style.color='#c44'}}).catch(function(){s.textContent='Request failed';s.style.color='#c44'})}
+      </script>
+      """
+
     """
     <!doctype html>
     <html>
@@ -92,7 +106,7 @@ defmodule Cranium.Transport.Diagnostics do
         td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #2a2a2a; }
         th { color: #888; font-weight: normal; }
         code { background: #252525; padding: 1px 4px; border-radius: 3px; }
-        .btn { display: inline-block; padding: 8px 16px; background: #2d5a27; color: #e0e0e0; text-decoration: none; border-radius: 4px; font-size: 0.9em; margin-top: 8px; }
+        .btn { display: inline-block; padding: 8px 16px; background: #2d5a27; color: #e0e0e0; text-decoration: none; border-radius: 4px; font-size: 0.9em; border: none; cursor: pointer; }
         .btn:hover { background: #3a7a30; }
       </style>
     </head>
@@ -108,48 +122,7 @@ defmodule Cranium.Transport.Diagnostics do
 
       <h2>OpenAI OAuth</h2>
       <p>#{oauth_badge}#{expires_info}</p>
-      <a class="btn" href="/auth/openai">Sign in with OpenAI</a>
-    </body>
-    </html>
-    """
-  end
-
-  defp device_code_html(user_code, verification_uri) do
-    """
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>cranium — sign in</title>
-      <style>
-        body { font-family: system-ui, sans-serif; max-width: 400px; margin: 60px auto; padding: 0 20px; text-align: center; color: #e0e0e0; background: #1a1a1a; }
-        .code { font-size: 2em; font-family: monospace; letter-spacing: 0.15em; background: #252525; padding: 12px 24px; border-radius: 8px; display: inline-block; margin: 16px 0; color: #fff; user-select: all; }
-        a { color: #6a6; }
-        .status { color: #888; font-size: 0.9em; margin-top: 20px; }
-        .done { color: #4a4; }
-      </style>
-    </head>
-    <body>
-      <h2>Sign in with OpenAI</h2>
-      <p>Go to <a href="#{esc(verification_uri)}" target="_blank">#{esc(verification_uri)}</a> and enter this code:</p>
-      <div class="code">#{esc(user_code)}</div>
-      <p class="status" id="status">Waiting for authorization...</p>
-      <p><a href="/">Back to diagnostics</a></p>
-      <script>
-        (function() {
-          var poll = setInterval(function() {
-            fetch('/auth/openai/status').then(function(r) { return r.json(); }).then(function(s) {
-              if (s.authenticated) {
-                clearInterval(poll);
-                document.getElementById('status').className = 'done';
-                document.getElementById('status').textContent = 'Authenticated! Redirecting...';
-                setTimeout(function() { window.location.href = '/'; }, 1500);
-              }
-            }).catch(function() {});
-          }, 3000);
-        })();
-      </script>
+      #{import_section}
     </body>
     </html>
     """
