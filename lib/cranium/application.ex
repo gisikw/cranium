@@ -61,6 +61,9 @@ defmodule Cranium.Application do
       # Profile configuration — must start before Inference (TurnAssembler depends on it)
       Cranium.Config,
 
+      # OAuth token manager for OpenAI Codex (ChatGPT subscription auth)
+      Cranium.Backend.OAuth.Codex,
+
       # Macro registry — loads macro definitions from disk, indexed in ETS
       Cranium.Macro.Registry,
 

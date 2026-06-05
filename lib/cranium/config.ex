@@ -258,6 +258,7 @@ defmodule Cranium.Config do
             "anthropic" -> :anthropic
             "ollama" -> :ollama
             "openai_compat" -> :openai_compat
+            "openai_responses" -> :openai_responses
             "mock" -> :mock
             other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'"
           end
@@ -361,6 +362,7 @@ defmodule Cranium.Config do
   defp backend_module(:anthropic), do: Cranium.Backend.LLM.Anthropic
   defp backend_module(:ollama), do: Cranium.Backend.LLM.Ollama
   defp backend_module(:openai_compat), do: Cranium.Backend.LLM.OpenAICompat
+  defp backend_module(:openai_responses), do: Cranium.Backend.LLM.OpenAIResponses
   # Dynamic construction avoids compile-time xref warning — Mock only exists in test env.
   defp backend_module(:mock), do: Module.concat([Cranium.Backend.LLM, Mock])
 end

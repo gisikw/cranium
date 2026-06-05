@@ -525,6 +525,20 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  # --- Diagnostics & OAuth ---
+
+  get "/" do
+    Cranium.Transport.Diagnostics.index(conn)
+  end
+
+  get "/auth/openai" do
+    Cranium.Transport.Diagnostics.auth_openai(conn)
+  end
+
+  get "/auth/openai/callback" do
+    Cranium.Transport.Diagnostics.auth_callback(conn)
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")
