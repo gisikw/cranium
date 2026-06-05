@@ -7,12 +7,15 @@ defmodule Cranium.Backend.OAuth.CodexTest do
   # These tests exercise the public API against the live GenServer.
 
   describe "status/0" do
-    test "returns status map" do
+    test "returns status map with device flow fields" do
       status = Codex.status()
       assert is_map(status)
       assert Map.has_key?(status, :authenticated)
       assert Map.has_key?(status, :account_id)
       assert Map.has_key?(status, :expires_at)
+      assert Map.has_key?(status, :device_pending)
+      assert Map.has_key?(status, :user_code)
+      assert Map.has_key?(status, :verification_uri)
     end
   end
 
@@ -30,26 +33,17 @@ defmodule Cranium.Backend.OAuth.CodexTest do
     end
   end
 
-  describe "start_auth_flow/1" do
-    test "returns authorization URL" do
-      {:ok, url} = Codex.start_auth_flow("http://localhost:4000/auth/openai/callback")
+  describe "start_device_flow/0" do
+    test "returns user code and verification URI" do
+      case Codex.start_device_flow() do
+        {:ok, %{user_code: code, verification_uri: uri}} ->
+          assert is_binary(code)
+          assert is_binary(uri)
 
-      assert String.starts_with?(url, "https://auth.openai.com/oauth/authorize")
-      assert url =~ "client_id="
-      assert url =~ "code_challenge="
-      assert url =~ "redirect_uri="
-      assert url =~ "codex_cli_simplified_flow=true"
-    end
-  end
-
-  describe "exchange_code/2" do
-    test "returns error with invalid code" do
-      # First start a flow so there's a pending verifier
-      Codex.start_auth_flow("http://localhost:4000/callback")
-
-      # Then try exchanging a bogus code — will fail at the HTTP level
-      result = Codex.exchange_code("bogus_code", "http://localhost:4000/callback")
-      assert {:error, _} = result
+        {:error, reason} ->
+          # May fail in CI/test if OpenAI endpoint unreachable — that's acceptable
+          assert reason != nil
+      end
     end
   end
 end

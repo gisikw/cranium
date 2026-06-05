@@ -1,19 +1,20 @@
 defmodule Cranium.Backend.OAuth.Codex do
   @moduledoc """
-  OAuth 2.0 PKCE token manager for OpenAI Codex (ChatGPT subscription).
+  OAuth 2.0 token manager for OpenAI Codex (ChatGPT subscription).
 
-  Manages the full OAuth lifecycle: browser-based authorization, token
-  exchange, persistence, and automatic refresh. Used by the OpenAI
-  Responses backend when `auth: oauth` is configured.
+  Uses the device code flow — no redirect URI needed. The user visits a
+  URL and enters a code from any device, while cranium polls in the
+  background until authorization completes.
 
   ## Flow
 
-  1. User visits `/auth/openai` → `start_auth_flow/1` generates PKCE
-     verifier and returns the authorization URL
-  2. After OpenAI login, callback hits `/auth/openai/callback` →
-     `exchange_code/2` swaps the code for tokens
-  3. Tokens are persisted to disk and auto-refreshed before expiry
-  4. Backend calls `get_headers/0` to get Authorization + Account-Id headers
+  1. User clicks "Sign in with OpenAI" on the diagnostics page
+  2. `start_device_flow/0` POSTs to OpenAI's device endpoint, gets a
+     user_code + verification_uri
+  3. Diagnostics page shows "Go to [url], enter [code]"
+  4. GenServer polls token endpoint in background until user completes auth
+  5. Tokens are persisted to disk and auto-refreshed before expiry
+  6. Backend calls `get_headers/0` to get Authorization + Account-Id headers
   """
 
   use GenServer
@@ -21,10 +22,11 @@ defmodule Cranium.Backend.OAuth.Codex do
   require Logger
 
   @client_id "app_EMoamEEZ73f0CkXaXp7hrann"
-  @auth_url "https://auth.openai.com/oauth/authorize"
+  @device_url "https://auth.openai.com/codex/device"
   @token_url "https://auth.openai.com/oauth/token"
   @scope "openid profile email offline_access"
   @token_filename "openai_oauth.json"
+  @device_grant_type "urn:ietf:params:oauth:grant-type:device_code"
 
   # Refresh 5 minutes before expiry
   @refresh_buffer_seconds 300
@@ -35,8 +37,13 @@ defmodule Cranium.Backend.OAuth.Codex do
     :account_id,
     :expires_at,
     :refresh_timer,
-    :pending_verifier,
-    :token_path
+    :token_path,
+    # Device flow state (transient, while waiting for user to authorize)
+    :device_code,
+    :user_code,
+    :verification_uri,
+    :device_poll_timer,
+    :device_poll_interval
   ]
 
   # --- Public API ---
@@ -54,18 +61,11 @@ defmodule Cranium.Backend.OAuth.Codex do
   end
 
   @doc """
-  Start the OAuth PKCE flow. Returns `{:ok, authorize_url}`.
-  The `redirect_uri` should be the full callback URL.
+  Start the device code flow. Returns `{:ok, %{user_code, verification_uri}}`
+  or `{:error, reason}`. The GenServer will poll in the background.
   """
-  def start_auth_flow(redirect_uri) do
-    GenServer.call(__MODULE__, {:start_auth_flow, redirect_uri})
-  end
-
-  @doc """
-  Exchange an authorization code for tokens. Called from the callback handler.
-  """
-  def exchange_code(code, redirect_uri) do
-    GenServer.call(__MODULE__, {:exchange_code, code, redirect_uri}, 30_000)
+  def start_device_flow do
+    GenServer.call(__MODULE__, :start_device_flow, 15_000)
   end
 
   @doc """
@@ -76,7 +76,8 @@ defmodule Cranium.Backend.OAuth.Codex do
   end
 
   @doc """
-  Get current status for the diagnostics page.
+  Get current status for the diagnostics page. Includes device flow state
+  if one is in progress.
   """
   def status do
     GenServer.call(__MODULE__, :status)
@@ -117,47 +118,29 @@ defmodule Cranium.Backend.OAuth.Codex do
     end
   end
 
-  def handle_call({:start_auth_flow, redirect_uri}, _from, state) do
-    verifier = generate_code_verifier()
-    challenge = generate_code_challenge(verifier)
+  def handle_call(:start_device_flow, _from, state) do
+    # Cancel any existing device poll
+    if state.device_poll_timer, do: Process.cancel_timer(state.device_poll_timer)
 
-    params =
-      URI.encode_query(%{
-        "client_id" => @client_id,
-        "redirect_uri" => redirect_uri,
-        "response_type" => "code",
-        "scope" => @scope,
-        "code_challenge" => challenge,
-        "code_challenge_method" => "S256",
-        "id_token_add_organizations" => "true",
-        "codex_cli_simplified_flow" => "true"
-      })
+    case request_device_code() do
+      {:ok, %{device_code: device_code, user_code: user_code, verification_uri: uri, interval: interval}} ->
+        timer = Process.send_after(self(), :device_poll, interval * 1000)
 
-    url = "#{@auth_url}?#{params}"
-    state = %{state | pending_verifier: verifier}
-    {:reply, {:ok, url}, state}
-  end
+        state = %{
+          state
+          | device_code: device_code,
+            user_code: user_code,
+            verification_uri: uri,
+            device_poll_timer: timer,
+            device_poll_interval: interval
+        }
 
-  def handle_call({:exchange_code, code, redirect_uri}, _from, state) do
-    case state.pending_verifier do
-      nil ->
-        {:reply, {:error, :no_pending_flow}, state}
+        Logger.info("OAuth.Codex: device flow started — code #{user_code}")
+        {:reply, {:ok, %{user_code: user_code, verification_uri: uri}}, state}
 
-      verifier ->
-        case do_exchange_code(code, redirect_uri, verifier) do
-          {:ok, tokens} ->
-            state = %{state | pending_verifier: nil}
-            state = apply_tokens(state, tokens)
-            persist_tokens(state)
-            state = maybe_schedule_refresh(state)
-            Logger.info("OAuth.Codex: authenticated for account #{state.account_id}")
-            {:reply, {:ok, :authenticated}, state}
-
-          {:error, reason} ->
-            state = %{state | pending_verifier: nil}
-            Logger.error("OAuth.Codex: code exchange failed: #{inspect(reason)}")
-            {:reply, {:error, reason}, state}
-        end
+      {:error, reason} ->
+        Logger.error("OAuth.Codex: device flow failed: #{inspect(reason)}")
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -169,13 +152,41 @@ defmodule Cranium.Backend.OAuth.Codex do
     status = %{
       authenticated: state.access_token != nil && !token_expired?(state),
       account_id: state.account_id,
-      expires_at: state.expires_at
+      expires_at: state.expires_at,
+      device_pending: state.device_code != nil,
+      user_code: state.user_code,
+      verification_uri: state.verification_uri
     }
 
     {:reply, status, state}
   end
 
   @impl true
+  def handle_info(:device_poll, state) do
+    case poll_device_token(state.device_code) do
+      {:ok, tokens} ->
+        state = apply_tokens(state, tokens)
+        state = clear_device_state(state)
+        persist_tokens(state)
+        state = maybe_schedule_refresh(state)
+        Logger.info("OAuth.Codex: device flow completed for account #{state.account_id}")
+        {:noreply, state}
+
+      {:pending} ->
+        timer = Process.send_after(self(), :device_poll, state.device_poll_interval * 1000)
+        {:noreply, %{state | device_poll_timer: timer}}
+
+      {:slow_down} ->
+        new_interval = state.device_poll_interval * 2
+        timer = Process.send_after(self(), :device_poll, new_interval * 1000)
+        {:noreply, %{state | device_poll_timer: timer, device_poll_interval: new_interval}}
+
+      {:error, reason} ->
+        Logger.error("OAuth.Codex: device poll failed: #{inspect(reason)}")
+        {:noreply, clear_device_state(state)}
+    end
+  end
+
   def handle_info(:refresh_token, state) do
     case do_refresh_token(state.refresh_token) do
       {:ok, tokens} ->
@@ -191,16 +202,58 @@ defmodule Cranium.Backend.OAuth.Codex do
     end
   end
 
-  # --- Token Exchange ---
+  # --- Device Code Flow ---
 
-  defp do_exchange_code(code, redirect_uri, verifier) do
+  defp request_device_code do
     body =
       URI.encode_query(%{
-        "grant_type" => "authorization_code",
-        "code" => code,
-        "redirect_uri" => redirect_uri,
         "client_id" => @client_id,
-        "code_verifier" => verifier
+        "scope" => @scope
+      })
+
+    headers = [{"content-type", "application/x-www-form-urlencoded"}]
+
+    # The /codex/device endpoint redirects POST→GET. Use GET with query params
+    # and let Req follow the full redirect chain.
+    url = @device_url <> "?" <> body
+
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: 200, body: body}} ->
+        parse_device_response(body)
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:device_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_device_response(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, parsed} -> parse_device_response(parsed)
+      {:error, _} -> {:error, :invalid_json}
+    end
+  end
+
+  defp parse_device_response(%{"device_code" => dc, "user_code" => uc} = body) do
+    {:ok,
+     %{
+       device_code: dc,
+       user_code: uc,
+       verification_uri: body["verification_uri"] || body["verification_url"] || "https://chatgpt.com/codex/device",
+       interval: body["interval"] || 5
+     }}
+  end
+
+  defp parse_device_response(_), do: {:error, :missing_device_code}
+
+  defp poll_device_token(device_code) do
+    body =
+      URI.encode_query(%{
+        "grant_type" => @device_grant_type,
+        "device_code" => device_code,
+        "client_id" => @client_id
       })
 
     headers = [{"content-type", "application/x-www-form-urlencoded"}]
@@ -209,13 +262,22 @@ defmodule Cranium.Backend.OAuth.Codex do
       {:ok, %{status: 200, body: body}} ->
         parse_token_response(body)
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:token_error, status, body}}
+      {:ok, %{status: _status, body: body}} ->
+        parsed = if is_binary(body), do: Jason.decode(body) |> elem(1), else: body
+        error = if is_map(parsed), do: parsed["error"], else: nil
+
+        case error do
+          "authorization_pending" -> {:pending}
+          "slow_down" -> {:slow_down}
+          _ -> {:error, {:token_error, parsed}}
+        end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  # --- Token Refresh ---
 
   defp do_refresh_token(nil), do: {:error, :no_refresh_token}
 
@@ -281,19 +343,7 @@ defmodule Cranium.Backend.OAuth.Codex do
     _ -> nil
   end
 
-  # --- PKCE ---
-
-  defp generate_code_verifier do
-    :crypto.strong_rand_bytes(32)
-    |> Base.url_encode64(padding: false)
-  end
-
-  defp generate_code_challenge(verifier) do
-    :crypto.hash(:sha256, verifier)
-    |> Base.url_encode64(padding: false)
-  end
-
-  # --- Token State ---
+  # --- State Helpers ---
 
   defp apply_tokens(state, tokens) do
     %{
@@ -302,6 +352,19 @@ defmodule Cranium.Backend.OAuth.Codex do
         refresh_token: tokens[:refresh_token] || state.refresh_token,
         account_id: tokens[:account_id] || state.account_id,
         expires_at: tokens[:expires_at] || state.expires_at
+    }
+  end
+
+  defp clear_device_state(state) do
+    if state.device_poll_timer, do: Process.cancel_timer(state.device_poll_timer)
+
+    %{
+      state
+      | device_code: nil,
+        user_code: nil,
+        verification_uri: nil,
+        device_poll_timer: nil,
+        device_poll_interval: nil
     }
   end
 

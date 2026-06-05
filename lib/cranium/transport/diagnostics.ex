@@ -3,8 +3,8 @@ defmodule Cranium.Transport.Diagnostics do
   Diagnostics page and OAuth route handlers.
 
   Renders a sparse HTML diagnostics page at `/` showing service status,
-  active profiles, and OpenAI OAuth status. Handles the OAuth PKCE
-  redirect and callback routes for Codex authentication.
+  active profiles, and OpenAI OAuth status. Uses device code flow for
+  authentication — no redirect URI needed.
   """
 
   alias Cranium.Backend.OAuth.Codex
@@ -25,56 +25,31 @@ defmodule Cranium.Transport.Diagnostics do
   end
 
   @doc """
-  Initiate the OpenAI OAuth PKCE flow. Redirects to OpenAI.
+  Initiate the device code flow. Shows a page with the code to enter.
   """
   def auth_openai(conn) do
-    callback_url = build_callback_url(conn)
-
-    case Codex.start_auth_flow(callback_url) do
-      {:ok, authorize_url} ->
+    case Codex.start_device_flow() do
+      {:ok, %{user_code: code, verification_uri: uri}} ->
         conn
-        |> Plug.Conn.put_resp_header("location", authorize_url)
-        |> Plug.Conn.send_resp(302, "")
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(200, device_code_html(code, uri))
 
       {:error, reason} ->
         conn
         |> Plug.Conn.put_resp_content_type("text/html")
-        |> Plug.Conn.send_resp(500, error_html("Failed to start OAuth flow: #{inspect(reason)}"))
+        |> Plug.Conn.send_resp(500, error_html("Failed to start device flow: #{inspect(reason)}"))
     end
   end
 
   @doc """
-  Handle the OAuth callback from OpenAI.
+  JSON status endpoint for polling from the device code page.
   """
-  def auth_callback(conn) do
-    params = URI.decode_query(conn.query_string)
-    code = params["code"]
-    callback_url = build_callback_url(conn)
+  def auth_status(conn) do
+    status = Codex.status()
 
-    cond do
-      params["error"] ->
-        conn
-        |> Plug.Conn.put_resp_content_type("text/html")
-        |> Plug.Conn.send_resp(400, error_html("OAuth error: #{params["error_description"] || params["error"]}"))
-
-      code == nil ->
-        conn
-        |> Plug.Conn.put_resp_content_type("text/html")
-        |> Plug.Conn.send_resp(400, error_html("Missing authorization code"))
-
-      true ->
-        case Codex.exchange_code(code, callback_url) do
-          {:ok, :authenticated} ->
-            conn
-            |> Plug.Conn.put_resp_content_type("text/html")
-            |> Plug.Conn.send_resp(200, success_html())
-
-          {:error, reason} ->
-            conn
-            |> Plug.Conn.put_resp_content_type("text/html")
-            |> Plug.Conn.send_resp(500, error_html("Token exchange failed: #{inspect(reason)}"))
-        end
-    end
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(200, Jason.encode!(status))
   end
 
   # --- HTML Rendering ---
@@ -82,7 +57,7 @@ defmodule Cranium.Transport.Diagnostics do
   defp render_page(version, profiles, oauth_status) do
     oauth_badge =
       if oauth_status.authenticated do
-        "<span style=\"color:#4a4\">authenticated</span> &middot; #{oauth_status.account_id || "unknown"}"
+        "<span style=\"color:#4a4\">authenticated</span> &middot; #{esc(to_string(oauth_status.account_id || "unknown"))}"
       else
         "<span style=\"color:#a44\">not authenticated</span>"
       end
@@ -139,19 +114,42 @@ defmodule Cranium.Transport.Diagnostics do
     """
   end
 
-  defp success_html do
+  defp device_code_html(user_code, verification_uri) do
     """
     <!doctype html>
     <html>
     <head>
       <meta charset="utf-8">
-      <title>cranium — authenticated</title>
-      <style>body { font-family: system-ui; max-width: 400px; margin: 80px auto; text-align: center; color: #e0e0e0; background: #1a1a1a; }</style>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>cranium — sign in</title>
+      <style>
+        body { font-family: system-ui, sans-serif; max-width: 400px; margin: 60px auto; padding: 0 20px; text-align: center; color: #e0e0e0; background: #1a1a1a; }
+        .code { font-size: 2em; font-family: monospace; letter-spacing: 0.15em; background: #252525; padding: 12px 24px; border-radius: 8px; display: inline-block; margin: 16px 0; color: #fff; user-select: all; }
+        a { color: #6a6; }
+        .status { color: #888; font-size: 0.9em; margin-top: 20px; }
+        .done { color: #4a4; }
+      </style>
     </head>
     <body>
-      <h2>Authenticated</h2>
-      <p>OpenAI OAuth tokens saved. You can close this tab.</p>
-      <p><a href="/" style="color: #6a6;">Back to diagnostics</a></p>
+      <h2>Sign in with OpenAI</h2>
+      <p>Go to <a href="#{esc(verification_uri)}" target="_blank">#{esc(verification_uri)}</a> and enter this code:</p>
+      <div class="code">#{esc(user_code)}</div>
+      <p class="status" id="status">Waiting for authorization...</p>
+      <p><a href="/">Back to diagnostics</a></p>
+      <script>
+        (function() {
+          var poll = setInterval(function() {
+            fetch('/auth/openai/status').then(function(r) { return r.json(); }).then(function(s) {
+              if (s.authenticated) {
+                clearInterval(poll);
+                document.getElementById('status').className = 'done';
+                document.getElementById('status').textContent = 'Authenticated! Redirecting...';
+                setTimeout(function() { window.location.href = '/'; }, 1500);
+              }
+            }).catch(function() {});
+          }, 3000);
+        })();
+      </script>
     </body>
     </html>
     """
@@ -188,31 +186,6 @@ defmodule Cranium.Transport.Diagnostics do
           {name, "unknown", "unknown"}
       end
     end)
-  end
-
-  defp build_callback_url(conn) do
-    scheme = get_scheme(conn)
-    host = get_host(conn)
-    "#{scheme}://#{host}/auth/openai/callback"
-  end
-
-  defp get_scheme(conn) do
-    # Respect X-Forwarded-Proto from reverse proxy
-    case Plug.Conn.get_req_header(conn, "x-forwarded-proto") do
-      [proto | _] -> proto
-      [] -> to_string(conn.scheme)
-    end
-  end
-
-  defp get_host(conn) do
-    case Plug.Conn.get_req_header(conn, "x-forwarded-host") do
-      [host | _] -> host
-      [] ->
-        case Plug.Conn.get_req_header(conn, "host") do
-          [host | _] -> host
-          [] -> "#{conn.host}:#{conn.port}"
-        end
-    end
   end
 
   defp esc(str) do

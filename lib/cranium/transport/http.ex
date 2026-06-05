@@ -535,8 +535,8 @@ defmodule Cranium.Transport.HTTP do
     Cranium.Transport.Diagnostics.auth_openai(conn)
   end
 
-  get "/auth/openai/callback" do
-    Cranium.Transport.Diagnostics.auth_callback(conn)
+  get "/auth/openai/status" do
+    Cranium.Transport.Diagnostics.auth_status(conn)
   end
 
   match _ do
