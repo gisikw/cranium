@@ -351,6 +351,11 @@ defmodule Cranium.Backend.OAuth.Codex do
 
   # --- Import (external tokens) ---
 
+  # Unwrap Codex CLI's nested format: {"tokens": {"access_token": ...}}
+  defp parse_imported_tokens(%{"tokens" => %{"access_token" => _} = inner}) do
+    parse_imported_tokens(inner)
+  end
+
   defp parse_imported_tokens(%{"access_token" => access_token} = data) do
     expires_at =
       cond do
