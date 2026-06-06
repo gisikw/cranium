@@ -189,7 +189,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
                  type: "function",
                  name: "read",
                  description: "Read a file",
-                 parameters: %{type: "object", properties: %{path: %{type: "string"}}}
+                 parameters: %{type: "object", properties: %{path: %{type: "string"}}},
+                 strict: false
                }
              ]
     end
