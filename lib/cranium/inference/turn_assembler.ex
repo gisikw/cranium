@@ -66,7 +66,8 @@ defmodule Cranium.Inference.TurnAssembler do
        pending: %{},
        take_index: %{},
        active_pass: nil,
-       queue: :queue.new()
+       queue: :queue.new(),
+       orientation_epoch_id: nil
      }}
   end
 
@@ -219,7 +220,10 @@ defmodule Cranium.Inference.TurnAssembler do
 
     # Waking room: on fresh epoch, dispatch an orientation pass first and
     # queue the user's pass behind it via existing backpressure.
-    if is_fresh and not ephemeral and header.origin != "orientation" do
+    # Skip if we already attempted orientation for this epoch (prevents retry loop
+    # when orientation fails — e.g. context_length_exceeded).
+    already_tried = state.orientation_epoch_id == epoch_ctx.epoch_id
+    if is_fresh and not ephemeral and header.origin != "orientation" and not already_tried do
       dispatch_orientation(state, header, input, epoch_ctx)
     else
       do_assemble_and_dispatch(state, header, input, epoch_ctx)
@@ -504,7 +508,7 @@ defmodule Cranium.Inference.TurnAssembler do
     }
 
     # Enqueue the user's original pass — it will dispatch after orientation completes
-    state = %{state | queue: :queue.in({header, input}, state.queue)}
+    state = %{state | queue: :queue.in({header, input}, state.queue), orientation_epoch_id: epoch_ctx.epoch_id}
 
     # Dispatch orientation through the normal assembly pipeline
     do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
