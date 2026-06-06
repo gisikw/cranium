@@ -31,7 +31,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Messages do
       desc = tool[:description] || tool["description"]
       schema = tool[:input_schema] || tool["input_schema"]
 
-      %{type: "function", name: name, description: desc, parameters: schema}
+      %{type: "function", name: name, description: desc, parameters: schema, strict: false}
     end)
   end
 
