@@ -123,7 +123,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
               # We have everything — emit directly
               input = parse_arguments(arguments)
               send(caller, {:llm_tool_use, %{id: call_id, name: name, input: input}})
-              Map.put(tool_acc, idx, :emitted)
+              tool_acc |> Map.put(idx, :emitted) |> mark_had_tool_calls()
             else
               # Store partial info — need name from output_item.done
               Map.put(tool_acc, idx, %{call_id: call_id, name: nil, arguments: arguments})
@@ -142,7 +142,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
         case Map.pop(tool_acc, idx) do
           {:emitted, new_acc} ->
             # Already emitted in args.done handler
-            new_acc
+            mark_had_tool_calls(new_acc)
 
           {%{call_id: call_id, name: acc_name, arguments: args_json}, new_acc} ->
             # Use name from accumulator, fall back to item
@@ -150,7 +150,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
             call_id = call_id || item["call_id"] || item["id"] || "unknown_#{idx}"
             input = parse_arguments(args_json)
             send(caller, {:llm_tool_use, %{id: call_id, name: name, input: input}})
-            new_acc
+            mark_had_tool_calls(new_acc)
 
           {nil, _} ->
             # No accumulator — extract everything from the done item
@@ -161,11 +161,11 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
 
             if name do
               send(caller, {:llm_tool_use, %{id: call_id, name: name, input: input}})
+              mark_had_tool_calls(tool_acc)
             else
               Logger.warning("OpenAIResponses output_item.done: no name for function_call idx=#{idx}")
+              tool_acc
             end
-
-            tool_acc
         end
 
       _ ->
@@ -207,7 +207,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
 
         has_function_calls =
           Enum.any?(output, fn item -> item["type"] == "function_call" end) or
-          pending_tool_calls != []
+          pending_tool_calls != [] or
+          Map.get(tool_acc, :_had_tool_calls, false)
 
         Logger.info(
           "OpenAIResponses completed: status=#{status} output_items=#{length(output)} " <>
@@ -256,6 +257,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
   def dispatch_event(_caller, _event, tool_acc), do: tool_acc
 
   # --- Helpers ---
+
+  defp mark_had_tool_calls(tool_acc), do: Map.put(tool_acc, :_had_tool_calls, true)
 
   defp parse_arguments(args_json) when is_binary(args_json) do
     case Jason.decode(args_json) do

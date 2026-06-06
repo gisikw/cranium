@@ -76,7 +76,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.EventsTest do
 
       new_acc = Events.dispatch_event(self(), event, acc)
       assert_received {:llm_tool_use, %{id: "call_abc", name: "read", input: %{"path" => "/foo"}}}
-      assert new_acc == %{}
+      assert new_acc == %{_had_tool_calls: true}
     end
 
     test "handles malformed arguments JSON gracefully" do
