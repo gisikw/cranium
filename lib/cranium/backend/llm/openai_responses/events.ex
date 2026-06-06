@@ -122,6 +122,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
           "types=#{inspect(Enum.map(output, & &1["type"]))} tool_acc_keys=#{inspect(Map.keys(tool_acc))}"
         )
 
+        Logger.info("OpenAIResponses completed response keys: #{inspect(Map.keys(response))}")
+
         has_function_calls =
           Enum.any?(output, fn item -> item["type"] == "function_call" end)
 
@@ -159,7 +161,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
 
   # Catch-all: log and ignore other event types (reasoning, audio, MCP, etc.)
   def dispatch_event(_caller, %{event: event_type} = event, tool_acc) do
-    Logger.info("OpenAIResponses unhandled event: type=#{event_type} data=#{String.slice(event[:data] || "", 0..200)}")
+    Logger.info("OpenAIResponses unhandled event: type=#{event_type} data=#{String.slice(event[:data] || "", 0..1000)}")
     tool_acc
   end
 
