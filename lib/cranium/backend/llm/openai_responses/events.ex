@@ -159,7 +159,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
 
   # Catch-all: log and ignore other event types (reasoning, audio, MCP, etc.)
   def dispatch_event(_caller, %{event: event_type} = event, tool_acc) do
-    Logger.debug("OpenAIResponses unhandled event: type=#{event_type} data=#{String.slice(event[:data] || "", 0..200)}")
+    Logger.info("OpenAIResponses unhandled event: type=#{event_type} data=#{String.slice(event[:data] || "", 0..200)}")
     tool_acc
   end
 

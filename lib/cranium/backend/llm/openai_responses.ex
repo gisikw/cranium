@@ -80,8 +80,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses do
       translated = body[:tools] || []
       tool_names = Enum.map(translated, & &1[:name])
       first_tool = List.first(translated)
-      Logger.debug("OpenAIResponses tools: names=#{inspect(tool_names)}")
-      Logger.debug("OpenAIResponses first_tool: #{inspect(first_tool)}")
+      Logger.info("OpenAIResponses tools: names=#{inspect(tool_names)}")
+      Logger.info("OpenAIResponses first_tool: #{inspect(first_tool)}")
     end
 
     url = String.trim_trailing(endpoint, "/") <> "/responses"
