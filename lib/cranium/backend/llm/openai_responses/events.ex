@@ -64,8 +64,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
           tool_acc
         end
 
-      {:ok, decoded} ->
-        Logger.info("OpenAIResponses output_item.added: non-function_call item, keys=#{inspect(Map.keys(decoded))}")
+      {:ok, _} ->
         tool_acc
 
       _ ->
@@ -82,7 +81,6 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
             Map.put(tool_acc, idx, %{entry | arguments: existing <> delta})
 
           nil ->
-            Logger.info("OpenAIResponses args.delta: no accumulator for output_index=#{idx}")
             tool_acc
         end
 
@@ -110,13 +108,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
             Map.put(tool_acc, idx, %{entry | arguments: arguments})
 
           nil ->
-            # No accumulator — Codex skipped output_item.added
-            # Store what we have; we'll need to resolve the name somehow
-            Logger.info(
-              "OpenAIResponses args.done: no accumulator for idx=#{idx}, " <>
-              "item_id=#{item_id} name=#{inspect(name)} keys=#{inspect(Map.keys(decoded))}"
-            )
-
+            # No accumulator — Codex may have skipped output_item.added
             call_id = item_id || "unknown_#{idx}"
 
             if name do
@@ -195,8 +187,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
             _ -> false
           end)
 
-        for {idx, %{call_id: call_id, name: name, arguments: args_json}} <- pending_tool_calls do
-          Logger.info("OpenAIResponses completed: emitting pending tool call idx=#{idx} name=#{name}")
+        for {_idx, %{call_id: call_id, name: name, arguments: args_json}} <- pending_tool_calls do
           input = parse_arguments(args_json)
           send(caller, {:llm_tool_use, %{id: call_id, name: name, input: input}})
         end
@@ -210,13 +201,10 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
           pending_tool_calls != [] or
           Map.get(tool_acc, :_had_tool_calls, false)
 
-        Logger.info(
-          "OpenAIResponses completed: status=#{status} output_items=#{length(output)} " <>
-          "types=#{inspect(Enum.map(output, & &1["type"]))} tool_acc_keys=#{inspect(Map.keys(tool_acc))} " <>
-          "pending_emitted=#{length(pending_tool_calls)}"
-        )
-
         stop_reason = if has_function_calls, do: "tool_use", else: "end_turn"
+
+        Logger.info("OpenAIResponses completed: status=#{status} stop=#{stop_reason}")
+
         send(caller, {:llm_stop, stop_reason})
 
       _ ->
@@ -248,11 +236,8 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
     tool_acc
   end
 
-  # Catch-all: log and ignore other event types (reasoning, audio, MCP, etc.)
-  def dispatch_event(_caller, %{event: event_type} = event, tool_acc) do
-    Logger.info("OpenAIResponses unhandled event: type=#{event_type} data=#{String.slice(event[:data] || "", 0..1000)}")
-    tool_acc
-  end
+  # Catch-all: ignore other event types (reasoning, audio, MCP, etc.)
+  def dispatch_event(_caller, %{event: _event_type}, tool_acc), do: tool_acc
 
   def dispatch_event(_caller, _event, tool_acc), do: tool_acc
 

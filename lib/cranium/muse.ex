@@ -66,8 +66,6 @@ defmodule Cranium.Muse do
     payload = Jason.encode!(%{tool: name, input: input})
     posture = Map.get(tool_config, :posture, :sandbox)
 
-    Logger.info("Muse exec: tool=#{name} posture=#{posture} working_dir=#{inspect(working_dir)}")
-
     args =
       case posture do
         :permissive ->
