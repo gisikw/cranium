@@ -70,6 +70,19 @@ profiles:
     stt_url: http://localhost:8801/v1/audio/transcriptions
     stt_language: en
 
+  test-identity-list:
+    backend: mock
+    model: test-model
+    identity:
+      - test/fixtures/test-identity.txt
+      - test/fixtures/test-identity-2.txt
+
+  test-tools-prompt:
+    backend: mock
+    model: test-model
+    identity: test/fixtures/test-identity.txt
+    tools_prompt: true
+
 ollama_url: http://localhost:11434
 
 room_defaults:

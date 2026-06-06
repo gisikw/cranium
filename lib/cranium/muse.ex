@@ -48,6 +48,31 @@ defmodule Cranium.Muse do
     :ok
   end
 
+  @spec load_tools_prompt!() :: :ok
+  def load_tools_prompt! do
+    content =
+      case run([@binary, "--tools-prompt"]) do
+        {:ok, output} when output != "" ->
+          Logger.info("Loaded tools prompt from muse", size: byte_size(output))
+          output
+
+        {:ok, _} ->
+          nil
+
+        {:error, reason} ->
+          Logger.info("muse --tools-prompt: not available", reason: inspect(reason))
+          nil
+      end
+
+    Application.put_env(:cranium, :muse_tools_prompt, content)
+    :ok
+  end
+
+  @spec tools_prompt() :: String.t() | nil
+  def tools_prompt do
+    Application.get_env(:cranium, :muse_tools_prompt)
+  end
+
   @spec tool_definitions() :: list(map())
   def tool_definitions do
     Application.get_env(:cranium, :muse_tools, [])

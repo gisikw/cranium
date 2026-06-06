@@ -35,7 +35,8 @@ defmodule Cranium.Config do
       :name,
       :backend,
       :model,
-      :identity_path,
+      identity_paths: [],
+      tools_prompt: false,
       thinking: nil,
       context_window: nil,
       saturation_warn: nil,
@@ -62,7 +63,8 @@ defmodule Cranium.Config do
             name: String.t(),
             backend: :claudecode | :anthropic | :ollama | :openai_compat,
             model: String.t() | nil,
-            identity_path: String.t() | nil,
+            identity_paths: [String.t()],
+            tools_prompt: boolean(),
             thinking: boolean() | nil,
             context_window: pos_integer() | nil,
             saturation_warn: number() | nil,
@@ -90,7 +92,7 @@ defmodule Cranium.Config do
   def resolve_profile(name) do
     case :ets.lookup(@table, {:profile, name}) do
       [{_, %Profile{} = profile}] ->
-        identity = if profile.identity_path, do: read_identity(profile.identity_path), else: nil
+        identity = read_identity_paths(profile.identity_paths)
 
         {:ok,
          %{
@@ -99,6 +101,7 @@ defmodule Cranium.Config do
            backend: profile.backend,
            model: profile.model,
            identity: identity,
+           tools_prompt: profile.tools_prompt,
            thinking: profile.thinking,
            context_window: profile.context_window,
            saturation_warn: profile.saturation_warn,
@@ -304,11 +307,14 @@ defmodule Cranium.Config do
             _ -> nil
           end
 
+        identity_paths = normalize_identity_paths(config["identity"])
+
         profile = %Profile{
           name: name,
           backend: backend,
           model: config["model"],
-          identity_path: config["identity"],
+          identity_paths: identity_paths,
+          tools_prompt: config["tools_prompt"] == true,
           thinking: thinking,
           context_window: config["context_window"],
           saturation_warn: config["saturation_warn"],
@@ -359,6 +365,25 @@ defmodule Cranium.Config do
     end
 
     Logger.info("Config: loaded #{map_size(profiles)} profiles (default: #{default_name})")
+  end
+
+  defp normalize_identity_paths(nil), do: []
+  defp normalize_identity_paths(path) when is_binary(path), do: [path]
+  defp normalize_identity_paths(paths) when is_list(paths), do: paths
+  defp normalize_identity_paths(_), do: []
+
+  defp read_identity_paths([]), do: nil
+
+  defp read_identity_paths(paths) do
+    contents =
+      paths
+      |> Enum.map(&read_identity/1)
+      |> Enum.reject(&is_nil/1)
+
+    case contents do
+      [] -> nil
+      parts -> Enum.join(parts, "\n\n")
+    end
   end
 
   defp parse_plugins(nil), do: []

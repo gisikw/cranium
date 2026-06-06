@@ -89,8 +89,9 @@ defmodule Cranium.Application do
     # Register built-in tools
     Cranium.Inference.Agent.ToolRouter.register("subagent", Cranium.Inference.Agent.Tools.Subagent)
 
-    # Load external tool definitions from the muse kernel
+    # Load external tool definitions and prompt from the muse kernel
     Cranium.Muse.load_tools!()
+    Cranium.Muse.load_tools_prompt!()
 
     result = Supervisor.start_link(children, opts)
 

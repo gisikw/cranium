@@ -34,6 +34,21 @@ defmodule Cranium.ConfigTest do
       assert {:ok, resolved} = Config.resolve_profile("test-with-identity")
       assert resolved.identity == "You are a test identity."
     end
+
+    test "resolves identity from list of files" do
+      assert {:ok, resolved} = Config.resolve_profile("test-identity-list")
+      assert resolved.identity == "You are a test identity.\n\nYou have a second identity layer."
+    end
+
+    test "resolves tools_prompt flag" do
+      assert {:ok, resolved} = Config.resolve_profile("test-tools-prompt")
+      assert resolved.tools_prompt == true
+    end
+
+    test "tools_prompt defaults to false" do
+      assert {:ok, resolved} = Config.resolve_profile("test")
+      assert resolved.tools_prompt == false
+    end
   end
 
   describe "default_profile_name/0" do

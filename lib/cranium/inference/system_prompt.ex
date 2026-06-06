@@ -29,6 +29,7 @@ defmodule Cranium.Inference.SystemPrompt do
 
   - `:is_fresh` — boolean, whether this is the first turn (invalidates + re-resolves handoff cache)
   - `:identity` — optional override string (replaces cached identity for this call)
+  - `:tools_prompt` — optional string, tool guidance to inject between identity and handoff
   """
   @spec contribute(String.t(), keyword()) :: String.t()
   def contribute(conversation_id, opts \\ []) do
@@ -46,6 +47,7 @@ defmodule Cranium.Inference.SystemPrompt do
   def handle_call({:contribute, conversation_id, opts}, _from, state) do
     is_fresh = Keyword.get(opts, :is_fresh, false)
     identity = Keyword.get(opts, :identity) || ""
+    tools_prompt = Keyword.get(opts, :tools_prompt)
 
     # is_fresh means new epoch — invalidate any stale cache before lookup
     handoffs =
@@ -69,11 +71,23 @@ defmodule Cranium.Inference.SystemPrompt do
           {cached, handoffs}
       end
 
-    system_prompt =
-      case handoff do
-        nil -> identity
-        content -> identity <> "\n\n<room-handoff>\n" <> content <> "\n</room-handoff>"
+    # Compose: identity + tools_prompt + handoff
+    parts = [identity]
+
+    parts =
+      if is_binary(tools_prompt) and tools_prompt != "" do
+        parts ++ [tools_prompt]
+      else
+        parts
       end
+
+    parts =
+      case handoff do
+        nil -> parts
+        content -> parts ++ ["<room-handoff>\n" <> content <> "\n</room-handoff>"]
+      end
+
+    system_prompt = Enum.join(parts, "\n\n")
 
     {:reply, system_prompt, %{state | handoffs: handoffs}}
   end

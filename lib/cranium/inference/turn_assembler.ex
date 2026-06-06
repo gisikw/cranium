@@ -260,7 +260,7 @@ defmodule Cranium.Inference.TurnAssembler do
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile} =
+    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile, tools_prompt_content} =
       resolve_profile(header)
 
     # 4. Resolve routing context
@@ -338,7 +338,8 @@ defmodule Cranium.Inference.TurnAssembler do
       Cranium.Inference.SystemPrompt.contribute(
         header.conversation_id,
         is_fresh: is_fresh,
-        identity: identity
+        identity: identity,
+        tools_prompt: tools_prompt_content
       )
 
     # 5c. Dispatch before_context_build hook to plugins
@@ -556,8 +557,14 @@ defmodule Cranium.Inference.TurnAssembler do
       tool_ro: resolved[:tool_ro] || []
     }
 
-    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile}
+    # Resolve tools_prompt content if the profile has it enabled
+    tools_prompt_content = resolve_tools_prompt(resolved[:tools_prompt])
+
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile, tools_prompt_content}
   end
+
+  defp resolve_tools_prompt(true), do: Cranium.Muse.tools_prompt()
+  defp resolve_tools_prompt(_), do: nil
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)
 end

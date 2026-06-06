@@ -116,5 +116,49 @@ defmodule Cranium.Inference.SystemPromptTest do
       result2 = SystemPrompt.contribute(cid, is_fresh: false, identity: "Base.")
       assert result1 == result2
     end
+
+    test "injects tools_prompt between identity and handoff", %{conversation_id: cid} do
+      {:ok, epoch_id} = Cranium.Store.create_epoch(cid)
+      Cranium.Store.save_handoff(epoch_id, "Handoff content.")
+
+      result = SystemPrompt.contribute(cid,
+        is_fresh: true,
+        identity: "Identity.",
+        tools_prompt: "# Tool Guidance\nUse Read instead of cat."
+      )
+
+      assert result =~ "Identity."
+      assert result =~ "# Tool Guidance"
+      assert result =~ "<room-handoff>"
+
+      # Verify ordering: identity before tools_prompt before handoff
+      identity_pos = :binary.match(result, "Identity.") |> elem(0)
+      tools_pos = :binary.match(result, "# Tool Guidance") |> elem(0)
+      handoff_pos = :binary.match(result, "<room-handoff>") |> elem(0)
+      assert identity_pos < tools_pos
+      assert tools_pos < handoff_pos
+    end
+
+    test "tools_prompt without handoff", %{conversation_id: cid} do
+      result = SystemPrompt.contribute(cid,
+        is_fresh: true,
+        identity: "Identity.",
+        tools_prompt: "Tool guidance."
+      )
+
+      assert result =~ "Identity."
+      assert result =~ "Tool guidance."
+      refute result =~ "<room-handoff>"
+    end
+
+    test "nil tools_prompt is skipped", %{conversation_id: cid} do
+      result = SystemPrompt.contribute(cid,
+        is_fresh: true,
+        identity: "Identity.",
+        tools_prompt: nil
+      )
+
+      assert result == "Identity."
+    end
   end
 end
