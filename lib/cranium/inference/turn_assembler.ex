@@ -550,7 +550,10 @@ defmodule Cranium.Inference.TurnAssembler do
       backend: resolved.backend,
       model: model,
       backend_config: resolved[:backend_config] || %{},
-      plugins: resolved[:plugins] || []
+      plugins: resolved[:plugins] || [],
+      tool_posture: resolved[:tool_posture] || :sandbox,
+      tool_rw: resolved[:tool_rw] || [],
+      tool_ro: resolved[:tool_ro] || []
     }
 
     {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile}
