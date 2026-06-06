@@ -115,6 +115,12 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
 
         # Determine stop reason from output items
         output = response["output"] || []
+        status = response["status"]
+
+        Logger.info(
+          "OpenAIResponses completed: status=#{status} output_items=#{length(output)} " <>
+          "types=#{inspect(Enum.map(output, & &1["type"]))} tool_acc_keys=#{inspect(Map.keys(tool_acc))}"
+        )
 
         has_function_calls =
           Enum.any?(output, fn item -> item["type"] == "function_call" end)
@@ -133,8 +139,12 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Events do
   def dispatch_event(caller, %{event: "response.failed", data: data}, tool_acc) do
     reason =
       case Jason.decode(data) do
-        {:ok, %{"response" => %{"error" => error}}} -> error
-        _ -> "unknown error"
+        {:ok, %{"response" => %{"error" => error} = resp}} ->
+          Logger.error("OpenAIResponses failed: status=#{resp["status"]} error=#{inspect(error)}")
+          error
+        _ ->
+          Logger.error("OpenAIResponses failed: raw=#{String.slice(data, 0..500)}")
+          "unknown error"
       end
 
     send(caller, {:llm_stop, {:error, :response_failed, reason}})
