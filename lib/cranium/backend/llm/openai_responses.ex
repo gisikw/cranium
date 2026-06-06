@@ -66,7 +66,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses do
     body =
       %{model: model, input: input, stream: true, store: false}
       |> maybe_add(:instructions, instructions)
-      |> maybe_add(:max_output_tokens, max_tokens)
+      |> maybe_add_unless_oauth(:max_output_tokens, max_tokens, auth_mode)
       |> maybe_add_tools(tools)
 
     headers = build_headers(auth_mode, api_key)
@@ -140,6 +140,10 @@ defmodule Cranium.Backend.LLM.OpenAIResponses do
   defp maybe_add(map, _key, nil), do: map
   defp maybe_add(map, _key, ""), do: map
   defp maybe_add(map, key, value), do: Map.put(map, key, value)
+
+  # Codex endpoint rejects max_output_tokens
+  defp maybe_add_unless_oauth(map, _key, _value, "oauth"), do: map
+  defp maybe_add_unless_oauth(map, key, value, _auth), do: maybe_add(map, key, value)
 
   defp maybe_add_tools(body, tools) when is_list(tools) and tools != [] do
     Map.put(body, :tools, Messages.translate_tools(tools))
