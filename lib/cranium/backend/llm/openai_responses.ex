@@ -75,6 +75,15 @@ defmodule Cranium.Backend.LLM.OpenAIResponses do
       "OpenAIResponses request: endpoint=#{endpoint} model=#{model} input_items=#{length(input)} tools=#{length(tools)}"
     )
 
+    # Debug: log first tool definition and tool names
+    if tools != [] do
+      translated = body[:tools] || []
+      tool_names = Enum.map(translated, & &1[:name])
+      first_tool = List.first(translated)
+      Logger.debug("OpenAIResponses tools: names=#{inspect(tool_names)}")
+      Logger.debug("OpenAIResponses first_tool: #{inspect(first_tool)}")
+    end
+
     url = String.trim_trailing(endpoint, "/") <> "/responses"
 
     sse_state = SSE.new()
