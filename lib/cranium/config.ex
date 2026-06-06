@@ -138,12 +138,26 @@ defmodule Cranium.Config do
     |> Enum.sort()
   end
 
-  @doc "Look up the default profile name for a room. Returns nil if no room default is set."
+  @doc """
+  Look up the default profile name for a room.
+
+  Resolution order:
+  1. Explicit room_defaults mapping from config YAML
+  2. Convention: rooms named `cdebug-<profile>` route to `<profile>`
+  3. nil (falls through to global default)
+  """
   @spec room_default_profile(String.t()) :: String.t() | nil
   def room_default_profile(room_name) do
     case :ets.lookup(@table, {:room_default, room_name}) do
-      [{_, profile_name}] -> profile_name
-      [] -> nil
+      [{_, profile_name}] ->
+        profile_name
+
+      [] ->
+        # Convention: cdebug-<profile> rooms route to the named profile
+        case room_name do
+          "cdebug-" <> profile_name when profile_name != "" -> profile_name
+          _ -> nil
+        end
     end
   end
 
