@@ -67,7 +67,7 @@ defmodule Cranium.Inference.Landscape do
   end
 
   @doc """
-  List all known rooms as `[%{id: String.t(), name: String.t(), description: String.t()}]`.
+  List all known rooms as `[%{id, name, description, last_activity_at}]`.
 
   Returns every conversation the Landscape knows about (DB + hoard), suitable
   for a room picker UI. Rooms configured in `room_defaults` appear even if
@@ -141,7 +141,12 @@ defmodule Cranium.Inference.Landscape do
       |> Enum.reject(fn e -> MapSet.member?(exclude_set, e.conversation_id) end)
       |> Enum.sort_by(& &1.last_message_ts, {:desc, DateTime})
       |> Enum.map(fn e ->
-        %{id: e.conversation_id, name: e.room_name, description: e.summary}
+        %{
+          id: e.conversation_id,
+          name: e.room_name,
+          description: e.summary,
+          last_activity_at: DateTime.to_iso8601(e.last_message_ts)
+        }
       end)
 
     # Merge in room_defaults entries that have no history yet
@@ -153,7 +158,7 @@ defmodule Cranium.Inference.Landscape do
         MapSet.member?(known_ids, room) or MapSet.member?(exclude_set, room)
       end)
       |> Enum.map(fn {room, _profile} ->
-        %{id: room, name: room, description: nil}
+        %{id: room, name: room, description: nil, last_activity_at: nil}
       end)
 
     {:reply, known_rooms ++ stub_rooms, state}

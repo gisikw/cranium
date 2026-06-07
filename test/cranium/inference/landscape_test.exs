@@ -268,6 +268,7 @@ defmodule Cranium.Inference.LandscapeTest do
       assert first.id == "fort-nix"
       assert first.name == "fort-nix"
       assert first.description == "Working on NixOS infra"
+      assert first.last_activity_at != nil
       assert second.id == "nerve"
     end
 
@@ -330,9 +331,10 @@ defmodule Cranium.Inference.LandscapeTest do
       assert "cranium" in ids
       assert "new-room" in ids
 
-      # The stub room has nil description
+      # The stub room has nil description and nil last_activity_at
       stub = Enum.find(rooms, &(&1.id == "new-room"))
       assert stub.description == nil
+      assert stub.last_activity_at == nil
     end
 
     test "room_defaults entries respect exclude list", %{tmp_dir: dir} do
