@@ -8,10 +8,14 @@ defmodule Cranium.Inference.Agent.Tools.Bash do
   require Logger
 
   @impl true
-  def execute(%{"command" => command}, _opts) do
+  def execute(%{"command" => command}, opts) do
     Logger.info("Bash tool: #{command}")
 
-    case System.cmd("sh", ["-c", command], stderr_to_stdout: true) do
+    cmd_opts = [stderr_to_stdout: true]
+    depth = Keyword.get(opts, :depth)
+    cmd_opts = if depth, do: Keyword.put(cmd_opts, :env, [{"MUSE_ROOM_DEPTH", to_string(depth)}]), else: cmd_opts
+
+    case System.cmd("sh", ["-c", command], cmd_opts) do
       {output, 0} -> {:ok, output}
       {output, code} -> {:ok, "exit code #{code}\n#{output}"}
     end

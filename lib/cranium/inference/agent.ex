@@ -177,7 +177,8 @@ defmodule Cranium.Inference.Agent do
       effort_level: if("audio" in disposition, do: "low"),
       tool_posture: context[:tool_posture] || :sandbox,
       tool_rw: context[:tool_rw] || [],
-      tool_ro: context[:tool_ro] || []
+      tool_ro: context[:tool_ro] || [],
+      depth: context[:depth]
     ]
 
     result = run_inference(state, stream_id, messages, opts)
@@ -542,7 +543,8 @@ defmodule Cranium.Inference.Agent do
         tool_config = %{
           posture: Keyword.get(opts, :tool_posture, :sandbox),
           rw: Keyword.get(opts, :tool_rw, []),
-          ro: Keyword.get(opts, :tool_ro, [])
+          ro: Keyword.get(opts, :tool_ro, []),
+          depth: Keyword.get(opts, :depth)
         }
         Logger.info("Executing muse tool: #{name}", stage: :agent, working_dir: working_dir, posture: tool_config.posture)
 
@@ -623,8 +625,10 @@ defmodule Cranium.Inference.Agent do
       {:execute, module, input} ->
         emit_tool_use(stream_id, conversation_id, tool_call, tool_call.name, input)
 
+        execute_opts = [depth: Keyword.get(opts, :depth)]
+
         result =
-          case ToolExecutor.execute(module, input) do
+          case ToolExecutor.execute(module, input, execute_opts) do
             {:ok, text} -> ToolExecutor.truncate_result(text)
             {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
           end

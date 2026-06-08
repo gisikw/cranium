@@ -20,7 +20,8 @@ defmodule Cranium.Messages do
       :model,
       :profile,
       :ephemeral,
-      :disposition
+      :disposition,
+      :depth
     ]
   end
 

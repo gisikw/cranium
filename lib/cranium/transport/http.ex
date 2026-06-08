@@ -91,6 +91,7 @@ defmodule Cranium.Transport.HTTP do
     model = conn.body_params["model"]
     profile = conn.body_params["profile"]
     ephemeral = conn.body_params["ephemeral"] == true
+    depth = conn.body_params["depth"]
 
     stream_id = Cranium.Stage.new_stream_id()
     Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
@@ -109,7 +110,8 @@ defmodule Cranium.Transport.HTTP do
       model: model,
       profile: profile,
       ephemeral: ephemeral,
-      disposition: disposition
+      disposition: disposition,
+      depth: depth
     }
 
     cond do

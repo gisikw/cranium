@@ -468,7 +468,8 @@ defmodule Cranium.Inference.TurnAssembler do
       tools_disabled: header.origin == "orientation",
       tool_posture: profile.tool_posture,
       tool_rw: profile.tool_rw,
-      tool_ro: profile.tool_ro
+      tool_ro: profile.tool_ro,
+      depth: header.depth
     }
 
     case Registry.lookup(@registry, {header.conversation_id, :harness}) do
