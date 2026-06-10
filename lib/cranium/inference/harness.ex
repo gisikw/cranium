@@ -160,6 +160,9 @@ defmodule Cranium.Inference.Harness do
     new_count = (turn[:turn_count] || 0) + 1
     cc_session_id = agent_result[:cc_session_id] || turn[:cc_session_id]
 
+    # Enrich usage with model identifier for transcript export attribution
+    usage = if turn[:model], do: Map.put(usage, :model, turn[:model]), else: usage
+
     # Emit pass_complete — Persistence.Effects handles Store mutations + pass_done
     Cranium.Events.broadcast(stream_id, cid,
       {:pass_complete, cid, stream_id, %{
@@ -173,7 +176,8 @@ defmodule Cranium.Inference.Harness do
         profile: turn[:profile],
         origin: turn[:origin],
         ephemeral: ephemeral,
-        silent: turn[:silent] == true
+        silent: turn[:silent] == true,
+        usage: usage
       }})
 
     # Bridge: TTS cache cleanup

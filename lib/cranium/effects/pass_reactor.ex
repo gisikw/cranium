@@ -49,7 +49,8 @@ defmodule Cranium.Effects.PassReactor do
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: :assistant,
           content: [%{"type" => "text", "text" => payload.output}],
-          origin: payload[:origin]
+          origin: payload[:origin],
+          usage: payload[:usage]
         })
       else
         if (payload[:intermediate_messages] || []) == [] do

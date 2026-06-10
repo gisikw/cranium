@@ -488,6 +488,57 @@ defmodule Cranium.Transport.HTTP do
     |> send_resp(200, Jason.encode!(%{"status" => "cleared"}))
   end
 
+  get "/v1/transcripts" do
+    params = URI.decode_query(conn.query_string)
+
+    limit =
+      case params["limit"] do
+        nil -> 1000
+        str -> str |> String.to_integer() |> min(5000) |> max(1)
+      end
+
+    since =
+      case params["since"] do
+        nil -> nil
+        str ->
+          case DateTime.from_iso8601(str) do
+            {:ok, dt, _offset} -> dt
+            _ -> :invalid
+          end
+      end
+
+    room = params["room"]
+
+    if since == :invalid do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "invalid 'since' timestamp"}))
+    else
+      opts = [limit: limit] ++
+        if(since, do: [since: since], else: []) ++
+        if(room, do: [room: room], else: [])
+
+      case Cranium.Store.list_transcripts(opts) do
+        {:ok, records} ->
+          ndjson = records
+            |> Enum.map(&Jason.encode!/1)
+            |> Enum.join("\n")
+
+          # Trailing newline for well-formed NDJSON
+          body = if ndjson == "", do: "", else: ndjson <> "\n"
+
+          conn
+          |> put_resp_content_type("application/x-ndjson")
+          |> send_resp(200, body)
+
+        {:error, _} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(500, Jason.encode!(%{"error" => "database error"}))
+      end
+    end
+  end
+
   get "/v1/rooms" do
     excluded = Application.get_env(:cranium, :excluded_rooms, [])
     rooms = Cranium.Inference.Landscape.list_rooms(exclude: excluded)

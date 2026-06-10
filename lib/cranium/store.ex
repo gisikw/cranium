@@ -192,6 +192,23 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, :list_conversation_ids)
   end
 
+  @doc """
+  Transcript export for external consumers (e.g. tiamat).
+
+  Returns messages in ascending `inserted_at` order, formatted for JSONL export.
+  Excludes orientation messages. Flattens tool_calls from content blocks and
+  extracts model/token counts from the usage JSONB.
+
+  Options:
+  - `:since` — `DateTime`; only messages inserted after this time (required for incremental pulls)
+  - `:limit` — max messages to return (default 1000, clamped 1..5000)
+  - `:room` — optional conversation_id filter
+  """
+  @spec list_transcripts(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_transcripts(opts \\ []) do
+    GenServer.call(__MODULE__, {:list_transcripts, opts}, 30_000)
+  end
+
   # --- GenServer Implementation ---
 
   @impl true
@@ -262,7 +279,8 @@ defmodule Cranium.Store do
       epoch_id: epoch_id,
       role: to_string(message[:role] || "user"),
       content: message[:content] || [],
-      origin: message[:origin]
+      origin: message[:origin],
+      usage: message[:usage]
     })
     |> Repo.insert!()
 
@@ -525,6 +543,30 @@ defmodule Cranium.Store do
     {:reply, :ok, state}
   end
 
+  defp do_handle_call({:list_transcripts, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 1000) |> min(5000) |> max(1)
+    since = Keyword.get(opts, :since)
+    room = Keyword.get(opts, :room)
+
+    base = from(m in Message,
+      where: m.origin != "orientation" or is_nil(m.origin),
+      order_by: [asc: m.inserted_at, asc: m.id],
+      limit: ^limit
+    )
+
+    base = if since, do: from(m in base, where: m.inserted_at > ^since), else: base
+    base = if room, do: from(m in base, where: m.conversation_id == ^room), else: base
+
+    messages = Repo.all(base)
+
+    # Build a lookup of tool_use_id → tool_result from adjacent user messages.
+    # Tool results follow their tool_use assistant messages sequentially.
+    tool_results = build_tool_result_index(messages)
+
+    records = Enum.map(messages, fn m -> message_to_transcript(m, tool_results) end)
+    {:reply, {:ok, records}, state}
+  end
+
   defp do_handle_call({:clear_epoch, conversation_id, continuation}, _from, state) do
     result =
       from(e in Epoch,
@@ -589,7 +631,7 @@ defmodule Cranium.Store do
   end
 
   defp message_to_api_map(%Message{} = m) do
-    %{
+    base = %{
       id: m.id,
       role: m.role,
       content: m.content,
@@ -598,6 +640,8 @@ defmodule Cranium.Store do
       created_at: m.inserted_at,
       epoch_id: m.epoch_id
     }
+
+    if m.usage, do: Map.put(base, :usage, m.usage), else: base
   end
 
   @doc "Extract concatenated text from content blocks."
@@ -617,5 +661,93 @@ defmodule Cranium.Store do
       content: s.content,
       updated_at: s.updated_at
     }
+  end
+
+  # --- Transcript helpers ---
+
+  defp message_to_transcript(%Message{} = m, tool_results) do
+    usage = m.usage || %{}
+
+    tool_calls = extract_tool_calls(m.content, tool_results)
+
+    base = %{
+      id: m.id,
+      conversation_id: m.conversation_id,
+      epoch_id: m.epoch_id,
+      timestamp: DateTime.to_iso8601(m.inserted_at),
+      role: m.role,
+      content: extract_text(m.content)
+    }
+
+    # Only include model and token counts for assistant messages with usage
+    base = if usage["model"] || usage[:model],
+      do: Map.put(base, :model, usage["model"] || usage[:model]),
+      else: base
+
+    base = if usage["input_tokens"] || usage[:input_tokens],
+      do: base
+        |> Map.put(:tokens_in, usage["input_tokens"] || usage[:input_tokens])
+        |> Map.put(:tokens_out, usage["output_tokens"] || usage[:output_tokens]),
+      else: base
+
+    if tool_calls != [], do: Map.put(base, :tool_calls, tool_calls), else: base
+  end
+
+  # Build a map of tool_use_id → tool_result content from user messages
+  defp build_tool_result_index(messages) do
+    Enum.reduce(messages, %{}, fn m, acc ->
+      if m.role == "user" do
+        Enum.reduce(m.content || [], acc, fn block, inner_acc ->
+          type = block["type"] || block[:type]
+          tool_use_id = block["tool_use_id"] || block[:tool_use_id]
+
+          if type == "tool_result" && tool_use_id do
+            Map.put(inner_acc, tool_use_id, block)
+          else
+            inner_acc
+          end
+        end)
+      else
+        acc
+      end
+    end)
+  end
+
+  # Extract tool_use blocks from assistant message content, correlate with results
+  defp extract_tool_calls(content, tool_results) when is_list(content) do
+    content
+    |> Enum.filter(fn block ->
+      (block["type"] || block[:type]) == "tool_use"
+    end)
+    |> Enum.map(fn block ->
+      id = block["id"] || block[:id]
+      name = block["name"] || block[:name]
+      result = Map.get(tool_results, id)
+
+      success = tool_call_success?(result)
+      entry = %{name: name, success: success}
+
+      if !success && result do
+        result_content = result["content"] || result[:content] || ""
+        snippet = result_content |> to_string() |> String.slice(0, 200)
+        Map.put(entry, :error_snippet, snippet)
+      else
+        entry
+      end
+    end)
+  end
+
+  defp extract_tool_calls(_, _), do: []
+
+  defp tool_call_success?(nil), do: true
+  defp tool_call_success?(result) do
+    is_error = result["is_error"] || result[:is_error]
+    content = to_string(result["content"] || result[:content] || "")
+
+    cond do
+      is_error == true -> false
+      String.contains?(content, "error") -> false
+      true -> true
+    end
   end
 end
