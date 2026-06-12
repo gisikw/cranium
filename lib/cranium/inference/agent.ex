@@ -260,6 +260,14 @@ defmodule Cranium.Inference.Agent do
     {:noreply, %{state | status: :cancelled}}
   end
 
+  # Late-arriving LLM messages that land after the receive loop exits.
+  # Safe to ignore — usage is already captured during inference.
+  @impl true
+  def handle_info({:llm_usage, _}, state), do: {:noreply, state}
+  def handle_info({:llm_text, _}, state), do: {:noreply, state}
+  def handle_info({:llm_stop, _}, state), do: {:noreply, state}
+  def handle_info({:llm_tool_use, _}, state), do: {:noreply, state}
+
   # --- Inference Loop ---
 
   defp run_inference(state, stream_id, messages, opts) do
