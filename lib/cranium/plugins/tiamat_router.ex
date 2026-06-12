@@ -186,7 +186,11 @@ defmodule Cranium.Plugins.TiamatRouter do
   defp call_route(endpoint, payload, timeout) do
     url = endpoint <> "/route"
 
-    case Req.post(url, json: payload, receive_timeout: timeout, connect_timeout: timeout) do
+    case Req.post(url,
+           json: payload,
+           receive_timeout: timeout,
+           connect_options: [timeout: timeout]
+         ) do
       {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
