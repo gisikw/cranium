@@ -45,6 +45,25 @@ profiles:
               evaluator_config:
                 threshold: 5
 
+  # Tiamat-routed: delegates model selection to Tiamat's Thompson Sampling
+  # endpoint. Maps Tiamat arm IDs to local cranium profiles.
+  exo-routed:
+    backend: anthropic
+    model: claude-opus-4-6
+    identity: /path/to/identity.md
+    plugins:
+      - module: Cranium.Plugins.TiamatRouter
+        config:
+          endpoint: http://tiamat.local:8900
+          timeout: 3000
+          recent_turns: 5
+          interactive: true
+          arm_profiles:
+            opus-api: exo-api
+            sonnet-api: exo-sonnet
+            gpt-sub: exo-gpt
+            qwen-local: exo-local
+
   # OpenAI-compatible endpoint (llama.cpp, vLLM, etc.)
   qwen-local:
     backend: openai_compat
