@@ -563,7 +563,21 @@ defmodule Cranium.Store do
     # Tool results follow their tool_use assistant messages sequentially.
     tool_results = build_tool_result_index(messages)
 
-    records = Enum.map(messages, fn m -> message_to_transcript(m, tool_results) end)
+    # Compute turn_count per row: each non-tool-result user message starts a
+    # new turn within its (conversation_id, epoch_id). All rows between two
+    # user-turn boundaries share the same turn_count. This is the join key
+    # for tiamat's decision log — do not reconstruct from seq or timestamps.
+    turn_counts = compute_turn_counts(messages)
+
+    records =
+      messages
+      |> Enum.with_index()
+      |> Enum.map(fn {m, idx} ->
+        m
+        |> message_to_transcript(tool_results)
+        |> Map.put(:turn_count, Map.get(turn_counts, idx, 0))
+      end)
+
     {:reply, {:ok, records}, state}
   end
 
@@ -692,6 +706,36 @@ defmodule Cranium.Store do
 
     if tool_calls != [], do: Map.put(base, :tool_calls, tool_calls), else: base
   end
+
+  # Compute turn_count for each message index. A "turn" starts at each
+  # non-tool-result user message within a (conversation_id, epoch_id) group.
+  # Tool-result user messages and assistant messages inherit the current
+  # turn's count. Counter resets when the group key changes.
+  #
+  # 0-based to match epoch_ctx.turn_count (what TiamatRouter sends).
+  # The join predicate is: tiamat.turn_count == transcript.turn_count.
+  defp compute_turn_counts(messages) do
+    {counts, _, _} =
+      Enum.reduce(Enum.with_index(messages), {%{}, %{}, -1}, fn {m, idx}, {acc, prev_key, tc} ->
+        key = {m.conversation_id, m.epoch_id}
+        tc = if key != prev_key, do: -1, else: tc
+
+        is_user_turn = m.role == "user" && !is_tool_result_message?(m)
+        tc = if is_user_turn, do: tc + 1, else: tc
+
+        {Map.put(acc, idx, tc), key, tc}
+      end)
+
+    counts
+  end
+
+  defp is_tool_result_message?(%{content: content}) when is_list(content) do
+    Enum.any?(content, fn block ->
+      (block["type"] || block[:type]) == "tool_result"
+    end)
+  end
+
+  defp is_tool_result_message?(_), do: false
 
   # Build a map of tool_use_id → tool_result content from user messages
   defp build_tool_result_index(messages) do

@@ -82,15 +82,23 @@ defmodule Cranium.Plugins.TiamatRouter do
   def after_resolve_profile(context, state) do
     turns = fetch_recent_turns(context.conversation_id, state.recent_turns)
 
-    # Join predicate for tiamat decision ↔ cranium transcript:
-    #   decision.(conversation_id, epoch_id, turn_count)
-    #     == transcript.(conversation_id, epoch_id, ???)
-    # turn_count is the turn about to be routed. The resulting assistant
-    # message lands at a seq determined by inserted_at ordering in
-    # /v1/transcripts — seq != turn_count because tool-loop intermediate
-    # messages inflate seq. Exact mapping verified in smoke test; tiamat
-    # should join on (conversation_id, epoch_id, turn_count) against its
-    # own decision log, not against transcript seq directly.
+    # Join predicate (verified via smoke test 2026-06-12):
+    #
+    #   tiamat.decision.(conversation_id, epoch_id, turn_count)
+    #     == transcript.(conversation_id, epoch_id, turn_count)
+    #
+    # Both are 0-based: epoch_ctx.turn_count starts at 0 for the first
+    # turn; /v1/transcripts computes turn_count the same way (0-based,
+    # increments on each non-tool-result user message).
+    #
+    # A decision with turn_count=N covers all transcript rows where
+    # turn_count=N within the same (conversation_id, epoch_id). Simple
+    # turns produce 2 rows (user + assistant); tool-call turns expand
+    # with intermediate tool_use/tool_result pairs, all sharing the
+    # same turn_count.
+    #
+    # Note: ensemble_selections.turn_count stores N+1 (post-increment
+    # from pass_complete). Tiamat and transcripts both use N.
     payload = %{
       turns: turns,
       arms: state.tiamat_arms,
