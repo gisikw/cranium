@@ -54,15 +54,23 @@ profiles:
     plugins:
       - module: Cranium.Plugins.TiamatRouter
         config:
-          endpoint: http://tiamat.local:8900
+          endpoint: https://tiamat.gisi.network
           timeout: 3000
           recent_turns: 5
           interactive: true
-          arm_profiles:
-            opus-api: exo-api
-            sonnet-api: exo-sonnet
-            gpt-sub: exo-gpt
-            qwen-local: exo-local
+          arms:
+            - id: opus-api
+              model: claude-opus-4-6
+              deployment: anthropic-api
+              input_per_m_token: 15
+              output_per_m_token: 75
+              profile: exo-api
+            - id: qwen-local
+              model: qwen3.6-27b
+              deployment: ratched-ollama
+              input_per_m_token: 0
+              output_per_m_token: 0
+              profile: exo-local
 
   # OpenAI-compatible endpoint (llama.cpp, vLLM, etc.)
   qwen-local:

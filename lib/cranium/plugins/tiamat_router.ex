@@ -5,8 +5,8 @@ defmodule Cranium.Plugins.TiamatRouter do
 
   Tiamat embeds recent conversation turns, retrieves quality observations
   from similar past episodes, and samples a model via Thompson Sampling
-  with cost and latency penalties. Cranium maps the chosen arm back to a
-  local profile for inference.
+  with cost and latency penalties. Cranium owns the arm roster and maps
+  the chosen arm back to a local profile for inference.
 
   ## Configuration
 
@@ -15,15 +15,26 @@ defmodule Cranium.Plugins.TiamatRouter do
       plugins:
         - module: Cranium.Plugins.TiamatRouter
           config:
-            endpoint: http://tiamat.local:8900
+            endpoint: https://tiamat.gisi.network
             timeout: 3000
             recent_turns: 5
             interactive: true
-            arm_profiles:
-              opus-api: exo-api
-              sonnet-api: exo-sonnet
-              gpt-sub: exo-gpt
-              qwen-local: exo-local
+            arms:
+              - id: opus-api
+                model: claude-opus-4-6
+                deployment: anthropic-api
+                input_per_m_token: 15
+                output_per_m_token: 75
+                profile: exo-api
+              - id: qwen-local
+                model: qwen3.6-27b
+                deployment: ratched-ollama
+                input_per_m_token: 0
+                output_per_m_token: 0
+                profile: exo-local
+
+  Each arm carries both tiamat-facing fields (id, model, deployment,
+  pricing) and a `profile` that maps back to a cranium profile name.
 
   ## Fallback
 
@@ -48,18 +59,21 @@ defmodule Cranium.Plugins.TiamatRouter do
         :ignore
 
       endpoint ->
-        arm_profiles = config["arm_profiles"] || %{}
+        raw_arms = config["arms"] || []
 
-        if map_size(arm_profiles) == 0 do
-          Logger.warning("TiamatRouter: no arm_profiles mapped, ignoring")
+        if raw_arms == [] do
+          Logger.warning("TiamatRouter: no arms configured, ignoring")
           :ignore
         else
+          {tiamat_arms, profile_map} = parse_arms(raw_arms)
+
           state = %{
             endpoint: String.trim_trailing(endpoint, "/"),
             timeout: config["timeout"] || @default_timeout,
             recent_turns: config["recent_turns"] || @default_recent_turns,
             interactive: config["interactive"] != false,
-            arm_profiles: arm_profiles,
+            tiamat_arms: tiamat_arms,
+            profile_map: profile_map,
             last_decision: nil
           }
 
@@ -74,6 +88,7 @@ defmodule Cranium.Plugins.TiamatRouter do
 
     payload = %{
       turns: turns,
+      arms: state.tiamat_arms,
       episode_id: context.epoch_id,
       interactive: state.interactive,
       expected_input_tokens: estimate_input_tokens(turns),
@@ -84,7 +99,7 @@ defmodule Cranium.Plugins.TiamatRouter do
       {:ok, %{"chosen_arm" => arm, "decision_id" => decision_id} = resp} ->
         model = resp["model"] || ""
 
-        case Map.get(state.arm_profiles, arm) do
+        case Map.get(state.profile_map, arm) do
           nil ->
             Logger.warning("TiamatRouter: unknown arm #{arm}, keeping base profile")
             {:ok, context, state}
@@ -155,6 +170,27 @@ defmodule Cranium.Plugins.TiamatRouter do
   end
 
   # --- Private ---
+
+  defp parse_arms(raw_arms) do
+    Enum.reduce(raw_arms, {[], %{}}, fn arm, {tiamat_acc, profile_acc} ->
+      tiamat_arm = %{
+        id: arm["id"],
+        model: arm["model"],
+        deployment: arm["deployment"],
+        input_per_m_token: arm["input_per_m_token"] || 0,
+        output_per_m_token: arm["output_per_m_token"] || 0
+      }
+
+      profile_map =
+        case arm["profile"] do
+          nil -> profile_acc
+          profile -> Map.put(profile_acc, arm["id"], profile)
+        end
+
+      {[tiamat_arm | tiamat_acc], profile_map}
+    end)
+    |> then(fn {arms, profiles} -> {Enum.reverse(arms), profiles} end)
+  end
 
   defp fetch_recent_turns(conversation_id, count) do
     case Cranium.Store.get_messages(conversation_id, limit: count) do
