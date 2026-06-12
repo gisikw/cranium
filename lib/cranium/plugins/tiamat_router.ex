@@ -20,21 +20,18 @@ defmodule Cranium.Plugins.TiamatRouter do
             recent_turns: 5
             interactive: true
             arms:
-              - id: opus-api
+              - profile: exo-api
                 model: claude-opus-4-6
-                deployment: anthropic-api
                 input_per_m_token: 15
                 output_per_m_token: 75
-                profile: exo-api
-              - id: qwen-local
+              - profile: exo-local
                 model: qwen3.6-27b
-                deployment: ratched-ollama
                 input_per_m_token: 0
                 output_per_m_token: 0
-                profile: exo-local
 
-  Each arm carries both tiamat-facing fields (id, model, deployment,
-  pricing) and a `profile` that maps back to a cranium profile name.
+  The arm `id` sent to tiamat is the cranium profile name. The
+  `chosen_arm` returned maps directly back to a profile — no
+  separate mapping needed.
 
   ## Fallback
 
@@ -65,7 +62,7 @@ defmodule Cranium.Plugins.TiamatRouter do
           Logger.warning("TiamatRouter: no arms configured, ignoring")
           :ignore
         else
-          {tiamat_arms, profile_map} = parse_arms(raw_arms)
+          tiamat_arms = parse_arms(raw_arms)
 
           state = %{
             endpoint: String.trim_trailing(endpoint, "/"),
@@ -73,7 +70,6 @@ defmodule Cranium.Plugins.TiamatRouter do
             recent_turns: config["recent_turns"] || @default_recent_turns,
             interactive: config["interactive"] != false,
             tiamat_arms: tiamat_arms,
-            profile_map: profile_map,
             last_decision: nil
           }
 
@@ -99,45 +95,38 @@ defmodule Cranium.Plugins.TiamatRouter do
       {:ok, %{"chosen_arm" => arm, "decision_id" => decision_id} = resp} ->
         model = resp["model"] || ""
 
-        case Map.get(state.profile_map, arm) do
-          nil ->
-            Logger.warning("TiamatRouter: unknown arm #{arm}, keeping base profile")
-            {:ok, context, state}
+        final_context =
+          if arm == context.profile_name do
+            context
+          else
+            case swap_profile(context, arm) do
+              {:ok, new_context} ->
+                new_context
 
-          target_profile ->
-            final_context =
-              if target_profile == context.profile_name do
+              {:error, reason} ->
+                Logger.warning(
+                  "TiamatRouter: profile swap failed",
+                  target: arm,
+                  reason: inspect(reason)
+                )
+
                 context
-              else
-                case swap_profile(context, target_profile) do
-                  {:ok, new_context} ->
-                    new_context
+            end
+          end
 
-                  {:error, reason} ->
-                    Logger.warning(
-                      "TiamatRouter: profile swap failed",
-                      target: target_profile,
-                      reason: inspect(reason)
-                    )
-
-                    context
-                end
-              end
-
-            state = %{
-              state
-              | last_decision: %{
-                  decision_id: decision_id,
-                  chosen_arm: arm,
-                  tiamat_model: model,
-                  profile: final_context.profile_name,
-                  model: final_context.model,
-                  backend: to_string(final_context.backend)
-                }
+        state = %{
+          state
+          | last_decision: %{
+              decision_id: decision_id,
+              chosen_arm: arm,
+              tiamat_model: model,
+              profile: final_context.profile_name,
+              model: final_context.model,
+              backend: to_string(final_context.backend)
             }
+        }
 
-            {:ok, final_context, state}
-        end
+        {:ok, final_context, state}
 
       {:error, reason} ->
         Logger.warning("TiamatRouter: route call failed, keeping base profile",
@@ -172,24 +161,14 @@ defmodule Cranium.Plugins.TiamatRouter do
   # --- Private ---
 
   defp parse_arms(raw_arms) do
-    Enum.reduce(raw_arms, {[], %{}}, fn arm, {tiamat_acc, profile_acc} ->
-      tiamat_arm = %{
-        id: arm["id"],
+    Enum.map(raw_arms, fn arm ->
+      %{
+        id: arm["profile"],
         model: arm["model"],
-        deployment: arm["deployment"],
         input_per_m_token: arm["input_per_m_token"] || 0,
         output_per_m_token: arm["output_per_m_token"] || 0
       }
-
-      profile_map =
-        case arm["profile"] do
-          nil -> profile_acc
-          profile -> Map.put(profile_acc, arm["id"], profile)
-        end
-
-      {[tiamat_arm | tiamat_acc], profile_map}
     end)
-    |> then(fn {arms, profiles} -> {Enum.reverse(arms), profiles} end)
   end
 
   defp fetch_recent_turns(conversation_id, count) do

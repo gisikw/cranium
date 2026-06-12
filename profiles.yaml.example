@@ -59,18 +59,14 @@ profiles:
           recent_turns: 5
           interactive: true
           arms:
-            - id: opus-api
+            - profile: exo-api
               model: claude-opus-4-6
-              deployment: anthropic-api
               input_per_m_token: 15
               output_per_m_token: 75
-              profile: exo-api
-            - id: qwen-local
+            - profile: exo-local
               model: qwen3.6-27b
-              deployment: ratched-ollama
               input_per_m_token: 0
               output_per_m_token: 0
-              profile: exo-local
 
   # OpenAI-compatible endpoint (llama.cpp, vLLM, etc.)
   qwen-local:
