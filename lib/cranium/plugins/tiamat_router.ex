@@ -82,10 +82,21 @@ defmodule Cranium.Plugins.TiamatRouter do
   def after_resolve_profile(context, state) do
     turns = fetch_recent_turns(context.conversation_id, state.recent_turns)
 
+    # Join predicate for tiamat decision ↔ cranium transcript:
+    #   decision.(conversation_id, epoch_id, turn_count)
+    #     == transcript.(conversation_id, epoch_id, ???)
+    # turn_count is the turn about to be routed. The resulting assistant
+    # message lands at a seq determined by inserted_at ordering in
+    # /v1/transcripts — seq != turn_count because tool-loop intermediate
+    # messages inflate seq. Exact mapping verified in smoke test; tiamat
+    # should join on (conversation_id, epoch_id, turn_count) against its
+    # own decision log, not against transcript seq directly.
     payload = %{
       turns: turns,
       arms: state.tiamat_arms,
       episode_id: context.epoch_id,
+      conversation_id: context.conversation_id,
+      turn_count: context.turn_count,
       interactive: state.interactive,
       expected_input_tokens: estimate_input_tokens(turns),
       expected_output_tokens: 2000
