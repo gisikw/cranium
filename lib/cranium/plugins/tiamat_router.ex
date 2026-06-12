@@ -241,13 +241,11 @@ defmodule Cranium.Plugins.TiamatRouter do
   end
 
   defp encode_decision(decision) do
-    [
-      %{
-        "source" => "tiamat",
-        "decision_id" => decision.decision_id,
-        "chosen_arm" => decision.chosen_arm,
-        "tiamat_model" => decision.tiamat_model
-      }
-    ]
+    %{
+      "source" => "tiamat",
+      "decision_id" => decision.decision_id,
+      "chosen_arm" => decision.chosen_arm,
+      "tiamat_model" => decision.tiamat_model
+    }
   end
 end
