@@ -123,14 +123,14 @@ defmodule Cranium.Inference.Agent.ToolRouter do
         properties: %{
           continuation: %{
             type: "string",
-            description: "Optional instruction to execute after context is cleared and handoff completes. Keep this BRIEF (1-2 sentences) — a detailed handoff document from the outgoing session is automatically injected into the new session, so do NOT repeat conversation context here. Use this only to guide the resumption tone or next action (e.g., 'continue the conversation' or 'pick up where we left off on the work topic')."
+            description:
+              "Optional instruction to execute after context is cleared and handoff completes. Keep this BRIEF (1-2 sentences) — a detailed handoff document from the outgoing session is automatically injected into the new session, so do NOT repeat conversation context here. Use this only to guide the resumption tone or next action (e.g., 'continue the conversation' or 'pick up where we left off on the work topic')."
           }
         }
       }
     }
 
     muse_defs = Cranium.Muse.tool_definitions()
-    builtin_defs = [clear_def | muse_defs]
 
     plugin_defs =
       if conversation_id do
@@ -157,7 +157,71 @@ defmodule Cranium.Inference.Agent.ToolRouter do
         []
       end
 
-    builtin_defs ++ plugin_defs ++ macro_defs ++ search_defs
+    async_defs =
+      (muse_defs ++ plugin_defs ++ macro_defs ++ search_defs)
+      |> Enum.map(&add_async_mode/1)
+
+    [clear_def | async_defs]
+  end
+
+  def async_mode(%{input: input}) when is_map(input) do
+    case Map.get(input, "cranium_async_mode") || Map.get(input, :cranium_async_mode) do
+      nil -> nil
+      "" -> nil
+      mode -> mode
+    end
+  end
+
+  def async_mode(_), do: nil
+
+  def strip_async_mode(%{input: input} = tool_call) when is_map(input) do
+    %{tool_call | input: strip_async_mode(input)}
+  end
+
+  def strip_async_mode(input) when is_map(input) do
+    input
+    |> Map.delete("cranium_async_mode")
+    |> Map.delete(:cranium_async_mode)
+  end
+
+  def strip_async_mode(input), do: input
+
+  def async_executable_route?({:muse, _, _}), do: true
+  def async_executable_route?({:plugin, _, _}), do: true
+  def async_executable_route?({:macro, _, _}), do: true
+  def async_executable_route?({:execute, _, _}), do: true
+  def async_executable_route?(_), do: false
+
+  defp add_async_mode(%{input_schema: schema} = defn),
+    do: %{defn | input_schema: add_async_schema(schema)}
+
+  defp add_async_mode(%{"input_schema" => schema} = defn),
+    do: %{defn | "input_schema" => add_async_schema(schema)}
+
+  defp add_async_mode(defn), do: defn
+
+  defp add_async_schema(schema) when is_map(schema) do
+    props = Map.get(schema, :properties) || Map.get(schema, "properties") || %{}
+
+    async_prop = %{
+      type: "string",
+      enum: ["single_pass"],
+      description:
+        "Optional cranium orchestration field. Set to single_pass to run this tool in the background, receive an immediate ack with async_task_id, and have the result injected before the current pass completes. Cranium strips this field before invoking the underlying tool."
+    }
+
+    schema
+    |> put_schema_key(:properties, Map.put(props, :cranium_async_mode, async_prop))
+  end
+
+  defp add_async_schema(schema), do: schema
+
+  defp put_schema_key(schema, key, value) do
+    cond do
+      Map.has_key?(schema, key) -> Map.put(schema, key, value)
+      Map.has_key?(schema, Atom.to_string(key)) -> Map.put(schema, Atom.to_string(key), value)
+      true -> Map.put(schema, key, value)
+    end
   end
 
   defp find_handler(name, input) do
