@@ -66,6 +66,9 @@ config {
     backend_exit_timeout_ms: Integer = 5000
     backend_kill_escalation_ms: Integer = 2000
     cc_port_timeout_minutes: Integer = 15
+    max_async_tasks_per_pass: Integer = 5
+    async_cancel_grace_ms: Integer = 2000
+    async_result_preview_max_bytes: Integer = 1000
     segment_first_threshold_words: Integer = 30
     segment_subsequent_threshold_words: Integer = 100
     speech_rate_wps: Float = 2.3
@@ -94,7 +97,7 @@ value TextChunk {
 }
 
 value CueChunk {
-    cue_type: marker | tool_use | tool_result
+    cue_type: marker | tool_use | tool_result | async_task
     data: Map
 
     @guidance
@@ -102,18 +105,92 @@ value CueChunk {
         -- Markers (show, show_code, play_audio) carry SCTE-style timing
         -- information — the model's natural placement IS the timing data.
         -- Tool use/result cues are informational, for firehose consumers.
+        -- Async task cues report background task lifecycle events without
+        -- streaming the full task result as ordinary assistant text.
 }
 
 value ToolCall {
     id: String
     name: String
     input: Map
+    cranium_async_mode: AsyncToolMode?
+
+    @guidance
+        -- cranium_async_mode is a reserved orchestration field injected
+        -- into eligible tool schemas by cranium. It is consumed by the
+        -- Agent before dispatch and is never forwarded to the underlying
+        -- tool implementation. In provider payloads it appears as a
+        -- top-level field inside the tool input object; behaviorally it
+        -- belongs to the ToolCall.
+        --
+        -- Absent/null means ordinary synchronous execution.
 }
 
 value ToolResult {
     tool_use_id: String
     content: String
     is_error: Boolean
+}
+
+value AsyncToolAck {
+    status: accepted
+    execution: async
+    async_mode: AsyncToolMode
+    async_task_id: String
+    message: String
+
+    @guidance
+        -- The immediate ack is the provider-native tool_result paired
+        -- with the original tool_use. It satisfies provider adjacency
+        -- requirements while clearly telling the model that real tool
+        -- output is pending. The async_task_id is model-visible even
+        -- before explicit job-control tools exist; it gives the model
+        -- a stable referent and exposes desire paths for future inspect,
+        -- cancel, and stdout-peek affordances.
+}
+
+value AsyncToolResultInjection {
+    async_task_id: String
+    tool_call_id: String
+    tool_name: String
+    status: AsyncToolStatus
+    content: String
+
+    @guidance
+        -- Late async results are not provider-native tool_result blocks.
+        -- The original tool_result slot was consumed by AsyncToolAck.
+        -- Results are injected as model-readable synthetic context:
+        --
+        -- <async-tool-result async_task_id="..." tool_call_id="..." tool_name="..." status="succeeded">
+        -- ...actual result...
+        -- </async-tool-result>
+}
+
+value AsyncTaskCue {
+    event_type: started | completed | failed | cancelled | killed | abandoned
+    async_task_id: String
+    tool_call_id: String
+    tool_name: String
+    async_mode: AsyncToolMode
+    status: AsyncToolStatus
+    preview: String?
+
+    @guidance
+        -- Async task cues give clients immediate lifecycle observability.
+        -- Terminal cues include only a small preview/error preview. The
+        -- full task result is not streamed raw to clients; it is delivered
+        -- to the model through AsyncToolResultInjection at a safe injection
+        -- point, and the model may then respond to it.
+}
+
+value SafeInjectionPoint {
+    reason: after_tool_batch | before_provisional_end_turn | async_barrier_result_ready
+
+    @guidance
+        -- A provider-grammar-safe place to append synthetic async result
+        -- context. Safe points occur only when no backend stream is active
+        -- and no provider-native tool_use is waiting for its required
+        -- tool_result. Async result injection never happens mid-stream.
 }
 
 value ToolRoute {
@@ -168,16 +245,51 @@ enum BackendType {
         -- ollama: Ollama /api/chat, Agent manages tool loop.
 }
 
+enum AsyncToolMode {
+    single_pass
+
+    @guidance
+        -- Absent/null means synchronous execution.
+        -- single_pass means: return an immediate ack, execute the tool
+        -- in the background, inject the result before this pass is allowed
+        -- to complete, and re-enter inference so the model can respond
+        -- before PassComplete.
+        --
+        -- Future values may include next_turn, fire_and_forget, or
+        -- prefix_next_turn. Unsupported modes return a tool error rather
+        -- than silently falling back.
+}
+
+enum AsyncToolStatus {
+    running
+    succeeded
+    failed
+    cancelled
+    killed
+    abandoned
+
+    @guidance
+        -- running: background work has been accepted and started.
+        -- succeeded/failed: the tool completed normally or with an error.
+        -- cancelled: the task acknowledged cancellation.
+        -- killed: cranium terminated an owned worker/process.
+        -- abandoned: cranium proceeded after bounded cancellation cleanup
+        -- without being able to prove the underlying work stopped.
+}
+
 enum AgentStatus {
     idle
     inferring
     tool_use
+    awaiting_async_tools
     cancelled
 
     @guidance
         -- idle: awaiting work or completed.
         -- inferring: in receive_loop waiting for LLM stream.
         -- tool_use: executing tools between inference rounds (API/Ollama only).
+        -- awaiting_async_tools: model reached provisional end_turn while
+        -- single_pass async work from the same pass remains outstanding.
         -- cancelled: received cancel signal, exiting.
 }
 
@@ -207,6 +319,8 @@ entity Agent {
     cc_session_id: String?
     messages: [FormattedMessage]
     tool_calls_pending: [ToolCall]
+    async_tasks_outstanding: [AsyncToolTask]
+    async_results_pending: [AsyncToolResultInjection]
     partial_output: String
     usage: Usage?
     pending_clear: String?
@@ -215,9 +329,13 @@ entity Agent {
         idle -> inferring
         inferring -> idle
         inferring -> tool_use
+        inferring -> awaiting_async_tools
         inferring -> cancelled
         tool_use -> inferring
+        tool_use -> awaiting_async_tools
         tool_use -> cancelled
+        awaiting_async_tools -> inferring
+        awaiting_async_tools -> cancelled
         terminal: cancelled
     }
 
@@ -262,6 +380,38 @@ entity ToolRouter {
         -- Tool definitions include: clear_context (builtin) + all muse
         -- tools (loaded from muse binary at boot). Marker tools are NOT
         -- in the definition list — they're exposed to CC via MCP only.
+        --
+        -- For async-capable backends, cranium augments eligible executable
+        -- tool definitions with the reserved cranium_async_mode enum field.
+        -- Marker tools and clear_context are not async-eligible.
+}
+
+entity AsyncToolTask {
+    id: String
+    tool_call: ToolCall
+    conversation_id: String
+    pass_id: String
+    stream_id: String
+    mode: AsyncToolMode
+    status: AsyncToolStatus
+    result: ToolResult?
+    started_at: Timestamp
+    completed_at: Timestamp? when status = succeeded | failed | cancelled | killed | abandoned
+
+    transitions status {
+        running -> succeeded
+        running -> failed
+        running -> cancelled
+        running -> killed
+        running -> abandoned
+        terminal: succeeded, failed, cancelled, killed, abandoned
+    }
+
+    @guidance
+        -- A single-pass background tool execution owned by the active
+        -- Agent/pass. It is a general primitive for executable tools, not
+        -- a subagent-specific special case. Single-pass tasks are in-memory
+        -- pass-scoped work units, not durable jobs.
 }
 
 ------------------------------------------------------------
@@ -416,17 +566,36 @@ rule InferenceStopEndTurn {
     -- Check for deferred clear
     ensures: Cranium.clear_epoch(conversation_id, continuation)
         when agent.pending_clear is not nil
+
+    -- If single-pass async work remains, end_turn is provisional
+    ensures: agent.status = awaiting_async_tools
+        when agent.pending_clear is nil
+        and (agent.async_tasks_outstanding is not empty
+             or agent.async_results_pending is not empty)
+    ensures: HoldPassForOutstandingAsyncTasks(agent)
+        when agent.pending_clear is nil
+        and (agent.async_tasks_outstanding is not empty
+             or agent.async_results_pending is not empty)
+
+    -- Otherwise, normal completion
     ensures: agent.status = idle
         when agent.pending_clear is nil
+        and agent.async_tasks_outstanding is empty
+        and agent.async_results_pending is empty
 
     ensures: StreamEvent(stream_id, StreamEnd) broadcast
         when agent.pending_clear is nil
+        and agent.async_tasks_outstanding is empty
+        and agent.async_results_pending is empty
 
     @guidance
-        -- Normal completion. The Agent returns its accumulated output
-        -- and usage to the Harness. If a clear was deferred, the epoch
-        -- clears before returning (stream_end is NOT emitted — the
-        -- conversation-lifecycle spec handles the boundary).
+        -- Normal completion only happens when no deferred clear and no
+        -- single-pass async work remain. If a clear was deferred, the
+        -- epoch clears before returning (stream_end is NOT emitted — the
+        -- conversation-lifecycle spec handles the boundary). If async work
+        -- remains, the model's end_turn is provisional; cranium waits for
+        -- result injection and a post-result inference opportunity before
+        -- PassComplete.
 }
 
 rule InferenceStopToolUse {
@@ -479,6 +648,206 @@ rule ExecuteToolBatch {
         -- If clear_context appeared in the batch, it acts as a terminal:
         -- all other tools execute first (their results are discarded from
         -- the perspective of the next epoch), then the epoch clears.
+        --
+        -- Async-flagged executable tools do not block this batch. They
+        -- return an immediate AsyncToolAck as their provider-native
+        -- tool_result, continue in the background, and deliver their real
+        -- result through later safe-point injection.
+}
+
+-- == Async Tool Calls ==
+
+rule RejectUnsupportedAsyncMode {
+    when: ExecuteToolBatch(agent)
+
+    requires: tool_call.cranium_async_mode is unsupported
+
+    ensures: no AsyncToolTask is created
+    ensures: ToolResult(
+        tool_use_id: tool_call.id,
+        content: "unsupported cranium_async_mode",
+        is_error: true
+    ) appended for the call
+
+    @guidance
+        -- Unsupported future modes are visible tool errors. Cranium does
+        -- not silently treat them as synchronous or as single_pass.
+}
+
+rule RejectAsyncForIneligibleTool {
+    when: ExecuteToolBatch(agent)
+
+    requires: tool_call.cranium_async_mode = single_pass
+    requires: ToolRouter.route(tool_call).kind = clear
+        or ToolRouter.route(tool_call).kind = marker
+        or ToolRouter.route(tool_call).kind = unknown
+
+    ensures: no AsyncToolTask is created
+    ensures: ToolResult(
+        tool_use_id: tool_call.id,
+        content: "tool does not support cranium_async_mode",
+        is_error: true
+    ) appended for the call
+
+    @guidance
+        -- clear_context is epoch control, not a background work unit.
+        -- Marker tools are positional cues; making them async destroys
+        -- their meaning. Unknown tools fail as ordinary unknown tools.
+        -- Normal executable routes (muse, plugin, registered execute)
+        -- are async-eligible by default.
+}
+
+rule RejectAsyncTaskWhenPassLimitReached {
+    when: ExecuteToolBatch(agent)
+
+    requires: tool_call.cranium_async_mode = single_pass
+    requires: executable route for tool_call
+    requires: agent.async_tasks_outstanding.count >= config.max_async_tasks_per_pass
+
+    ensures: no AsyncToolTask is created
+    ensures: ToolResult(
+        tool_use_id: tool_call.id,
+        content: "async task limit reached for this pass",
+        is_error: true
+    ) appended for the call
+
+    @guidance
+        -- The async primitive enables fan-out, but not unbounded fan-out.
+        -- The model receives an ordinary tool error and can retry
+        -- synchronously, wait for prior async results, or narrow the work.
+}
+
+rule StartSinglePassAsyncToolTask {
+    when: ExecuteToolBatch(agent)
+
+    requires: tool_call.cranium_async_mode = single_pass
+    requires: executable route for tool_call
+    requires: agent.async_tasks_outstanding.count < config.max_async_tasks_per_pass
+
+    ensures: tool_call.input forwarded to underlying tool without cranium_async_mode
+    ensures: task: AsyncToolTask.created(
+        tool_call: tool_call,
+        conversation_id: agent.conversation_id,
+        pass_id: current pass_id,
+        stream_id: agent.stream_id,
+        mode: single_pass,
+        status: running,
+        started_at: now
+    )
+    ensures: task added to agent.async_tasks_outstanding
+    ensures: StreamEvent(agent.stream_id, CueChunk(async_task, AsyncTaskCue(
+        event_type: started,
+        async_task_id: task.id,
+        tool_call_id: tool_call.id,
+        tool_name: tool_call.name,
+        async_mode: single_pass,
+        status: running
+    ))) broadcast
+    ensures: ToolResult(
+        tool_use_id: tool_call.id,
+        content: AsyncToolAck(
+            status: accepted,
+            execution: async,
+            async_mode: single_pass,
+            async_task_id: task.id,
+            message: "Tool call accepted for background execution. The result will be injected before this pass completes."
+        ),
+        is_error: false
+    ) appended immediately
+
+    @guidance
+        -- The ack is the formal provider tool_result for the original
+        -- tool_use. It closes the provider-required adjacency pair so
+        -- the model can continue while the background task runs.
+}
+
+rule CompleteAsyncToolTask {
+    when: task: AsyncToolTask.status transitions_to succeeded | failed | cancelled | killed | abandoned
+
+    ensures: task.result added to agent.async_results_pending
+        when task.status = succeeded or task.status = failed
+    ensures: StreamEvent(task.stream_id, CueChunk(async_task, AsyncTaskCue(
+        event_type: event_type_for(task.status),
+        async_task_id: task.id,
+        tool_call_id: task.tool_call.id,
+        tool_name: task.tool_call.name,
+        async_mode: task.mode,
+        status: task.status,
+        preview: truncate(task.result.content, config.async_result_preview_max_bytes)
+    ))) broadcast
+
+    @guidance
+        -- Terminal lifecycle cues are useful to clients immediately.
+        -- The full result is not streamed raw. Successful and failed
+        -- tool outputs become pending model injections. Cancelled, killed,
+        -- and abandoned tasks are terminal cleanup states and do not
+        -- inject late result content into the model.
+}
+
+rule InjectReadyAsyncResults {
+    when: SafeInjectionPoint(agent)
+
+    let ready_results = agent.async_results_pending where not injected
+
+    requires: ready_results is not empty
+
+    ensures: ready_results injected as synthetic user/context messages
+        ordered by original tool call order when multiple are injected together
+    ensures: no ready async result waits for older unresolved async tasks
+    ensures: backend.stream_chat re-entered with updated messages
+
+    @guidance
+        -- Async result delivery is opportunistic, not globally ordered.
+        -- If several results are queued at the same safe point, oldest
+        -- original tool call first. But a completed later task may be
+        -- injected before an older task that is still running. The XML
+        -- wrapper carries async_task_id/tool_call_id/tool_name so the
+        -- model can correlate results regardless of arrival order.
+}
+
+rule HoldPassForOutstandingAsyncTasks {
+    when: backend emits stop with reason = end_turn
+
+    requires: agent.async_tasks_outstanding is not empty
+        or agent.async_results_pending is not empty
+
+    ensures: agent.status = awaiting_async_tools
+    ensures: pass is not completed
+    ensures: resolved async results are injected at next SafeInjectionPoint(agent)
+    ensures: backend.stream_chat re-entered after the final async result injection
+    ensures: pass may complete only after the model has had a post-result inference opportunity
+
+    @guidance
+        -- The model's end_turn is provisional while single-pass async work
+        -- from the same pass is outstanding. Cranium withholds PassComplete
+        -- until async work settles and the model has had a chance to react
+        -- to the completed results inside the same pass.
+}
+
+rule CancelOutstandingAsyncTasks {
+    when: CancelInference(conversation_id)
+        or Cranium.clear_epoch(conversation_id, ...)
+
+    requires: agent.async_tasks_outstanding is not empty
+
+    ensures: each outstanding single_pass async task receives cancellation request
+    ensures: pass cancellation or clear waits up to config.async_cancel_grace_ms
+        for async task cancellation acknowledgement
+    ensures: task.status = cancelled
+        when task acknowledges cancellation within grace period
+    ensures: task.status = killed
+        when cranium terminates the owned worker or process
+    ensures: task.status = abandoned
+        when task does not acknowledge cancellation within grace period
+        and cranium cannot safely prove the work has stopped
+    ensures: no late result from cancelled, killed, or abandoned single_pass task
+        is injected into a successor pass or epoch
+
+    @guidance
+        -- single_pass async work belongs to the pass that spawned it.
+        -- Normal pass completion waits for its result. Explicit cancel/clear
+        -- is stronger: cranium attempts cleanup, waits briefly, then proceeds
+        -- with the cancellation/clear boundary. Late results are discarded.
 }
 
 -- == Tool Execution ==
@@ -577,6 +946,51 @@ rule AwaitBackendExit {
         -- Critical for the CC backend where two concurrent claude processes
         -- on the same session would corrupt state. The escalation path:
         -- wait → shutdown → kill ensures the process eventually terminates.
+}
+
+-- == Async Tool Invariants ==
+
+invariant ReservedAsyncFieldIsNotForwarded {
+    for call in ToolCalls where call.cranium_async_mode is not nil:
+        underlying tool receives input without cranium_async_mode
+
+    @guidance
+        -- cranium_async_mode is orchestration metadata, not part of the
+        -- underlying tool contract.
+}
+
+invariant AsyncResultsOnlyInjectAtSafePoints {
+    for result in AsyncToolResultInjections:
+        result injected only when SafeInjectionPoint(agent)
+
+    @guidance
+        -- Safe points are: after a formal provider tool_result batch is
+        -- closed; after provisional end_turn before pass completion; and
+        -- while the async completion barrier is waiting and a result has
+        -- resolved. Injection is forbidden while backend streaming is active.
+}
+
+invariant ProviderToolAdjacencyPreserved {
+    for call in ToolCalls:
+        if backend requires adjacent tool_result:
+            no AsyncToolResultInjection appears between call.tool_use
+            and its required ToolResult
+
+    @guidance
+        -- The immediate AsyncToolAck is the required provider tool_result
+        -- for an async call. Late async results are synthetic context and
+        -- must never split provider-native tool_use/tool_result pairs.
+}
+
+invariant SinglePassAsyncTasksAreNotDurable {
+    for task in AsyncToolTasks where task.mode = single_pass:
+        task is scoped to the active Agent and Pass
+        task is not recovered after Agent or node restart
+        no result from unrecovered task is injected into a later pass or epoch
+
+    @guidance
+        -- single_pass is not a durable job queue. Durable jobs and model
+        -- job-control tools are a separate future capability.
 }
 
 -- == Output Segmentation ==
