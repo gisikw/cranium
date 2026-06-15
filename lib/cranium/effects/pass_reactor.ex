@@ -36,7 +36,7 @@ defmodule Cranium.Effects.PassReactor do
       ) do
     unless payload[:ephemeral] do
       # Persist intermediate messages (assistant + tool_result pairs from tool loop)
-      for msg <- (payload[:intermediate_messages] || []) do
+      for msg <- payload[:intermediate_messages] || [] do
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: msg[:role] || msg["role"],
           content: msg[:content] || msg["content"],
@@ -55,7 +55,9 @@ defmodule Cranium.Effects.PassReactor do
       else
         if (payload[:intermediate_messages] || []) == [] do
           Logger.warning("Inference completed with empty output",
-            conversation_id: cid, stage: :effects)
+            conversation_id: cid,
+            stage: :effects
+          )
         end
       end
 
@@ -83,7 +85,10 @@ defmodule Cranium.Effects.PassReactor do
           turn_count: payload.turn_count
         }
 
-        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(cid, after_pass_context)
+        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(
+          cid,
+          after_pass_context
+        )
 
         # Dispatch sidecar evaluations for active macros
         Cranium.Macro.Engine.after_pass(after_pass_context)
@@ -137,7 +142,32 @@ defmodule Cranium.Effects.PassReactor do
         state
       ) do
     unless payload[:ephemeral] do
-      Cranium.Store.update_epoch(payload[:epoch_id], %{status: "active"})
+      for msg <- payload[:intermediate_messages] || [] do
+        Cranium.Store.append_message(cid, payload.epoch_id, %{
+          role: msg[:role] || msg["role"],
+          content: msg[:content] || msg["content"],
+          origin: payload[:origin]
+        })
+      end
+
+      output = payload[:output] || ""
+
+      if output != "" do
+        Cranium.Store.append_message(cid, payload.epoch_id, %{
+          role: :assistant,
+          content: [%{"type" => "text", "text" => output}],
+          origin: payload[:origin],
+          usage: payload[:usage]
+        })
+      end
+
+      interrupted = build_error_interrupted_context(output, payload[:error])
+
+      Cranium.Store.update_epoch(payload[:epoch_id], %{
+        status: "active",
+        cc_session_id: payload[:cc_session_id],
+        interrupted_context: interrupted
+      })
     end
 
     signal_pass_done(cid, stream_id)
@@ -155,6 +185,19 @@ defmodule Cranium.Effects.PassReactor do
   end
 
   # --- Helpers ---
+
+  defp build_error_interrupted_context(output, error) do
+    details =
+      cond do
+        output != "" -> output
+        is_binary(error) and error != "" -> "Inference failed before final output: #{error}"
+        true -> "Inference failed before final output."
+      end
+
+    if String.length(details) > 2000,
+      do: String.slice(details, 0, 2000) <> "\n\n[...output truncated...]",
+      else: details
+  end
 
   defp signal_pass_done(conversation_id, stream_id) do
     case Registry.lookup(@registry, {conversation_id, :turn_assembler}) do

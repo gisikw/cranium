@@ -75,7 +75,9 @@ defmodule Cranium.Inference.Harness do
 
     silent = turn[:silent] == true
 
-    Logger.info("Harness: starting inference pass=#{turn[:pass_id]} stream=#{stream_id}#{if silent, do: " (silent)"}")
+    Logger.info(
+      "Harness: starting inference pass=#{turn[:pass_id]} stream=#{stream_id}#{if silent, do: " (silent)"}"
+    )
 
     # Subscribe OutputSegmenter to the raw stream before inference starts.
     # Silent passes (e.g. orientation) skip this — their output is persisted
@@ -151,7 +153,11 @@ defmodule Cranium.Inference.Harness do
 
   # --- Post-inference: emit events + bridge calls ---
 
-  defp handle_inference_result({:ok, %{output: output, usage: usage} = agent_result}, turn, _state) do
+  defp handle_inference_result(
+         {:ok, %{output: output, usage: usage} = agent_result},
+         turn,
+         _state
+       ) do
     cid = turn.conversation_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
@@ -164,21 +170,25 @@ defmodule Cranium.Inference.Harness do
     usage = if turn[:model], do: Map.put(usage, :model, turn[:model]), else: usage
 
     # Emit pass_complete — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Events.broadcast(stream_id, cid,
-      {:pass_complete, cid, stream_id, %{
-        reason: :complete,
-        epoch_id: turn.epoch_id,
-        output: output,
-        intermediate_messages: agent_result[:intermediate_messages] || [],
-        saturation: saturation,
-        turn_count: new_count,
-        cc_session_id: cc_session_id,
-        profile: turn[:profile],
-        origin: turn[:origin],
-        ephemeral: ephemeral,
-        silent: turn[:silent] == true,
-        usage: usage
-      }})
+    Cranium.Events.broadcast(
+      stream_id,
+      cid,
+      {:pass_complete, cid, stream_id,
+       %{
+         reason: :complete,
+         epoch_id: turn.epoch_id,
+         output: output,
+         intermediate_messages: agent_result[:intermediate_messages] || [],
+         saturation: saturation,
+         turn_count: new_count,
+         cc_session_id: cc_session_id,
+         profile: turn[:profile],
+         origin: turn[:origin],
+         ephemeral: ephemeral,
+         silent: turn[:silent] == true,
+         usage: usage
+       }}
+    )
 
     # Bridge: TTS cache cleanup
     Cranium.Media.TTS.Cache.schedule_cleanup(stream_id)
@@ -192,30 +202,52 @@ defmodule Cranium.Inference.Harness do
     cc_session_id = partial[:cc_session_id] || turn[:cc_session_id]
 
     # Emit pass_complete (cancelled) — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Events.broadcast(stream_id, cid,
-      {:pass_complete, cid, stream_id, %{
-        reason: :cancelled,
-        epoch_id: turn.epoch_id,
-        output: output,
-        cc_session_id: cc_session_id,
-        profile: turn[:profile],
-        ephemeral: ephemeral
-      }})
-
+    Cranium.Events.broadcast(
+      stream_id,
+      cid,
+      {:pass_complete, cid, stream_id,
+       %{
+         reason: :cancelled,
+         epoch_id: turn.epoch_id,
+         output: output,
+         cc_session_id: cc_session_id,
+         profile: turn[:profile],
+         ephemeral: ephemeral
+       }}
+    )
   end
 
-  defp handle_inference_result({:error, _reason}, turn, _state) do
+  defp handle_inference_result({:error, reason, partial}, turn, _state) do
+    handle_error_result(reason, partial, turn)
+  end
+
+  defp handle_inference_result({:error, reason}, turn, _state) do
+    handle_error_result(reason, %{}, turn)
+  end
+
+  defp handle_error_result(reason, partial, turn) do
     cid = turn.conversation_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
 
     # Emit pass_complete (error) — Persistence.Effects handles Store mutations + pass_done
-    Cranium.Events.broadcast(stream_id, cid,
-      {:pass_complete, cid, stream_id, %{
-        reason: :error,
-        epoch_id: turn.epoch_id,
-        ephemeral: ephemeral
-      }})
+    Cranium.Events.broadcast(
+      stream_id,
+      cid,
+      {:pass_complete, cid, stream_id,
+       %{
+         reason: :error,
+         error: inspect(reason),
+         epoch_id: turn.epoch_id,
+         output: partial[:output] || "",
+         intermediate_messages: partial[:intermediate_messages] || [],
+         cc_session_id: partial[:cc_session_id] || turn[:cc_session_id],
+         usage: partial[:usage] || %{},
+         profile: turn[:profile],
+         origin: turn[:origin],
+         ephemeral: ephemeral
+       }}
+    )
   end
 
   # --- Helpers ---

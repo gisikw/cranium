@@ -12,7 +12,8 @@ defmodule Cranium.Inference.HarnessTest do
     stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
 
     # Clean up any leftover conversation supervisors
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Inference.ConversationDynamicSupervisor) do
+    for {_, pid, _, _} <-
+          DynamicSupervisor.which_children(Cranium.Inference.ConversationDynamicSupervisor) do
       DynamicSupervisor.terminate_child(Cranium.Inference.ConversationDynamicSupervisor, pid)
     end
 
@@ -32,7 +33,10 @@ defmodule Cranium.Inference.HarnessTest do
     end
 
     test "returns 0.5 at midpoint" do
-      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) == 0.5
+      assert Cranium.Inference.Harness.compute_saturation(%{
+               input_tokens: 99_000,
+               output_tokens: 1_000
+             }) == 0.5
     end
 
     test "clamps to 1.0 over limit" do
@@ -98,10 +102,16 @@ defmodule Cranium.Inference.HarnessTest do
       }
 
       Cranium.Events.broadcast({:pass_header, header})
-      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}})
+
+      Cranium.Events.broadcast(
+        {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}}
+      )
 
       # Wait for pass_complete (enriched payload from Harness)
-      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 2, reason: :complete}}, 5000
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id,
+                      %{saturation: sat, turn_count: 2, reason: :complete}},
+                     5000
+
       assert sat == 0.5
 
       # Flush Effects to ensure async Store mutations complete
@@ -118,7 +128,11 @@ defmodule Cranium.Inference.HarnessTest do
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
       assert length(messages) >= 2
       assert Enum.any?(messages, fn m -> m.role == :user end)
-      assert Enum.any?(messages, fn m -> m.role == :assistant and Cranium.Store.extract_text(m.content) == "hello from harness" end)
+
+      assert Enum.any?(messages, fn m ->
+               m.role == :assistant and
+                 Cranium.Store.extract_text(m.content) == "hello from harness"
+             end)
     end
 
     test "handles cancellation and stores interrupted context" do
@@ -160,7 +174,10 @@ defmodule Cranium.Inference.HarnessTest do
       }
 
       Cranium.Events.broadcast({:pass_header, header})
-      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "cancel me"}})
+
+      Cranium.Events.broadcast(
+        {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "cancel me"}}
+      )
 
       # Wait for inference to start, then cancel
       assert_receive :inference_started, 5000
@@ -177,6 +194,65 @@ defmodule Cranium.Inference.HarnessTest do
       # Verify interrupted_context was stored (by Persistence.Effects)
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
       assert epoch.interrupted_context == "partial output"
+    end
+
+    test "error passes preserve partial output as interrupted context" do
+      conversation_id = "test-error-partial-#{System.unique_integer([:positive])}"
+      pass_id = "pass-#{System.unique_integer([:positive])}"
+      stream_id = "stream-#{System.unique_integer([:positive])}"
+      seed_epoch(conversation_id)
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "partial before socket closed"})
+            send(caller, {:llm_stop, {:error, %Req.TransportError{reason: :closed}}})
+          end)
+
+        {:ok, pid}
+      end)
+
+      Cranium.Events.subscribe({:conversation, conversation_id})
+      {:ok, _} = Cranium.Inference.Conversation.start_or_get(conversation_id)
+
+      header = %Cranium.Messages.PassHeader{
+        pass_id: pass_id,
+        conversation_id: conversation_id,
+        stream_id: stream_id,
+        model: nil,
+        disposition: ["text"],
+        ephemeral: false,
+        system: nil,
+        origin: "test"
+      }
+
+      Cranium.Events.broadcast({:pass_header, header})
+
+      Cranium.Events.broadcast(
+        {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "fail visibly"}}
+      )
+
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id,
+                      %{reason: :error, output: "partial before socket closed", error: error}},
+                     5000
+
+      assert error =~ "Req.TransportError"
+
+      flush_effects()
+
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.status == "active"
+      assert epoch.interrupted_context == "partial before socket closed"
+
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+
+      assert Enum.any?(messages, fn m ->
+               m.role == :assistant and
+                 Cranium.Store.extract_text(m.content) == "partial before socket closed"
+             end)
     end
 
     test "backpressure queues second pass until first completes" do
@@ -218,7 +294,10 @@ defmodule Cranium.Inference.HarnessTest do
         }
 
         Cranium.Events.broadcast({:pass_header, header})
-        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "msg #{i}"}})
+
+        Cranium.Events.broadcast(
+          {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "msg #{i}"}}
+        )
       end
 
       # Both passes should complete (second queued, dispatched after first)
