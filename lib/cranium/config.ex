@@ -48,6 +48,9 @@ defmodule Cranium.Config do
       tool_posture: :sandbox,
       tool_rw: [],
       tool_ro: [],
+      capabilities: %{},
+      image_input: false,
+      vision: false,
       # Audio config (optional — profiles without these use backend defaults)
       voice: nil,
       speed: nil,
@@ -113,6 +116,9 @@ defmodule Cranium.Config do
            tool_posture: profile.tool_posture,
            tool_rw: profile.tool_rw,
            tool_ro: profile.tool_ro,
+           capabilities: profile.capabilities,
+           image_input: profile.image_input,
+           vision: profile.vision,
            voice: profile.voice,
            speed: profile.speed,
            response_format: profile.response_format,
@@ -308,6 +314,7 @@ defmodule Cranium.Config do
           end
 
         identity_paths = normalize_identity_paths(config["identity"])
+        capabilities = normalize_capabilities(config)
 
         profile = %Profile{
           name: name,
@@ -326,6 +333,9 @@ defmodule Cranium.Config do
           tool_posture: tool_posture,
           tool_rw: config["tool_rw"] || [],
           tool_ro: config["tool_ro"] || [],
+          capabilities: capabilities,
+          image_input: capabilities["image_input"] == true,
+          vision: capabilities["image_input"] == true,
           voice: config["voice"],
           speed: speed,
           response_format: config["response_format"],
@@ -352,7 +362,9 @@ defmodule Cranium.Config do
     if is_map(room_defaults) do
       for {room, profile_name} <- room_defaults do
         unless Map.has_key?(profiles, profile_name) do
-          Logger.warning("Config: room_defaults '#{room}' references unknown profile '#{profile_name}', ignoring")
+          Logger.warning(
+            "Config: room_defaults '#{room}' references unknown profile '#{profile_name}', ignoring"
+          )
         end
 
         :ets.insert(@table, {{:room_default, room}, profile_name})
@@ -372,6 +384,18 @@ defmodule Cranium.Config do
   defp normalize_identity_paths(paths) when is_list(paths), do: paths
   defp normalize_identity_paths(_), do: []
 
+  defp normalize_capabilities(config) do
+    raw = config["capabilities"] || %{}
+
+    image_input =
+      raw["image_input"] == true or
+        raw[:image_input] == true or
+        config["image_input"] == true or
+        config["vision"] == true
+
+    Map.put(raw, "image_input", image_input)
+  end
+
   defp read_identity_paths([]), do: nil
 
   defp read_identity_paths(paths) do
@@ -387,6 +411,7 @@ defmodule Cranium.Config do
   end
 
   defp parse_plugins(nil), do: []
+
   defp parse_plugins(list) when is_list(list) do
     Enum.map(list, fn entry ->
       module_str = entry["module"] || raise "Cranium.Config: plugin entry missing 'module'"
@@ -395,6 +420,7 @@ defmodule Cranium.Config do
       %{module: module, config: config}
     end)
   end
+
   defp parse_plugins(_), do: []
 
   defp backend_module(:claudecode), do: Cranium.Backend.LLM.ClaudeCode

@@ -73,11 +73,17 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Messages do
         %{type: "function_call_output", call_id: call_id, output: stringify(content)}
       end)
 
-    text = flatten_text(other)
+    content_parts = input_content_parts(other)
 
-    case text do
-      "" -> outputs
-      t -> outputs ++ [%{role: "user", content: t}]
+    cond do
+      content_parts == [] ->
+        outputs
+
+      Enum.any?(other, &Cranium.ImageInput.image_block?/1) ->
+        outputs ++ [%{role: "user", content: content_parts}]
+
+      true ->
+        outputs ++ [%{role: "user", content: flatten_text(other)}]
     end
   end
 
@@ -137,6 +143,38 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.Messages do
     end)
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n")
+  end
+
+  defp input_content_parts(blocks) do
+    blocks
+    |> Enum.flat_map(fn
+      %{text: t} when is_binary(t) ->
+        [%{type: "input_text", text: t}]
+
+      %{"text" => t} when is_binary(t) ->
+        [%{type: "input_text", text: t}]
+
+      %{type: "text", text: t} when is_binary(t) ->
+        [%{type: "input_text", text: t}]
+
+      %{"type" => "text", "text" => t} when is_binary(t) ->
+        [%{type: "input_text", text: t}]
+
+      %{"type" => "image"} = block ->
+        case Cranium.ImageInput.internal_image_to_responses_part(block) do
+          nil -> []
+          part -> [part]
+        end
+
+      %{type: "image"} = block ->
+        case Cranium.ImageInput.internal_image_to_responses_part(block) do
+          nil -> []
+          part -> [part]
+        end
+
+      _ ->
+        []
+    end)
   end
 
   defp stringify(content) when is_binary(content), do: content

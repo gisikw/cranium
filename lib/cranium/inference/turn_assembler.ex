@@ -197,7 +197,10 @@ defmodule Cranium.Inference.TurnAssembler do
 
         if state.active_pass do
           # A pass is already in flight — enqueue this pair
-          Logger.info("TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass}, depth=#{:queue.len(state.queue)})")
+          Logger.info(
+            "TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass}, depth=#{:queue.len(state.queue)})"
+          )
+
           %{state | queue: :queue.in({header, input}, state.queue)}
         else
           assemble_and_dispatch(state, header, input)
@@ -223,6 +226,7 @@ defmodule Cranium.Inference.TurnAssembler do
     # Skip if we already attempted orientation for this epoch (prevents retry loop
     # when orientation fails — e.g. context_length_exceeded).
     already_tried = state.orientation_epoch_id == epoch_ctx.epoch_id
+
     if is_fresh and not ephemeral and header.origin != "orientation" and not already_tried do
       dispatch_orientation(state, header, input, epoch_ctx)
     else
@@ -252,15 +256,20 @@ defmodule Cranium.Inference.TurnAssembler do
     # 2. Broadcast message_received so firehose clients see inbound messages
     #    Orientation prompts are private — suppress their input from the firehose.
     unless ephemeral or header.origin == "orientation" do
-      Cranium.Events.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
-        text: text,
-        origin: header.origin,
-        stream_id: stream_id
-      }})
+      Cranium.Events.broadcast(
+        header.conversation_id,
+        {:message_received, header.conversation_id,
+         %{
+           text: text,
+           origin: header.origin,
+           stream_id: stream_id
+         }}
+      )
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile, tools_prompt_content} =
+    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile,
+     tools_prompt_content} =
       resolve_profile(header)
 
     # 4. Resolve routing context
@@ -383,7 +392,8 @@ defmodule Cranium.Inference.TurnAssembler do
       saturation_critical: saturation_config[:saturation_critical]
     }
 
-    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx, plugin_injections)
+    {:ok, injected} =
+      Cranium.Context.TurnInjector.process(injection_message, injection_ctx, plugin_injections)
 
     # 7. Write injection flags to Store immediately
     injection_flags = %{
@@ -405,13 +415,17 @@ defmodule Cranium.Inference.TurnAssembler do
     # 8. Build history BEFORE persisting current message, so it doesn't
     #    appear twice (once from DB, once from the explicit append).
     enriched_text = injected[:text] || text
+    attachments = input_attachments(input)
+
+    {enriched_text, attachments} =
+      degrade_attachments_for_profile(enriched_text, attachments, resolved)
 
     messages =
       Cranium.Inference.History.contribute(
         header.conversation_id,
         epoch_id: epoch_id,
         text: enriched_text,
-        attachments: Map.get(header, :attachments, [])
+        attachments: attachments
       )
 
     # 9. Persist enriched user message (after history fetch)
@@ -483,6 +497,33 @@ defmodule Cranium.Inference.TurnAssembler do
     %{state | active_pass: stream_id}
   end
 
+  defp input_attachments(%TextInput{attachments: attachments}) when is_list(attachments),
+    do: attachments
+
+  defp input_attachments(_), do: []
+
+  defp degrade_attachments_for_profile(text, attachments, profile) do
+    if attachments == [] or Cranium.ImageInput.profile_supports_image_input?(profile) do
+      {text, attachments}
+    else
+      placeholders =
+        attachments
+        |> Enum.filter(&match?(%{type: :image}, &1))
+        |> Enum.map(fn att ->
+          Cranium.ImageInput.placeholder(
+            "selected profile does not support image input",
+            media_type: Map.get(att, :media_type),
+            filename: Map.get(att, :filename),
+            source: "native upload"
+          )["text"]
+        end)
+
+      degraded_text = Enum.join(placeholders ++ [text], "\n\n")
+      non_image_attachments = Enum.reject(attachments, &match?(%{type: :image}, &1))
+      {degraded_text, non_image_attachments}
+    end
+  end
+
   # --- Waking Room ---
   # Dispatches a synthetic orientation pass and queues the user's pass behind it.
 
@@ -510,14 +551,25 @@ defmodule Cranium.Inference.TurnAssembler do
     }
 
     # Enqueue the user's original pass — it will dispatch after orientation completes
-    state = %{state | queue: :queue.in({header, input}, state.queue), orientation_epoch_id: epoch_ctx.epoch_id}
+    state = %{
+      state
+      | queue: :queue.in({header, input}, state.queue),
+        orientation_epoch_id: epoch_ctx.epoch_id
+    }
 
     # Dispatch orientation through the normal assembly pipeline
     do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
   end
 
-  defp resolve_profile(%PassHeader{profile: profile_name, conversation_id: conversation_id, model: model_override, system: system_override}) do
-    profile_name = profile_name || Cranium.Config.room_default_profile(conversation_id) || Cranium.Config.default_profile_name()
+  defp resolve_profile(%PassHeader{
+         profile: profile_name,
+         conversation_id: conversation_id,
+         model: model_override,
+         system: system_override
+       }) do
+    profile_name =
+      profile_name || Cranium.Config.room_default_profile(conversation_id) ||
+        Cranium.Config.default_profile_name()
 
     resolved =
       case Cranium.Config.resolve_profile(profile_name) do
@@ -555,13 +607,17 @@ defmodule Cranium.Inference.TurnAssembler do
       plugins: resolved[:plugins] || [],
       tool_posture: resolved[:tool_posture] || :sandbox,
       tool_rw: resolved[:tool_rw] || [],
-      tool_ro: resolved[:tool_ro] || []
+      tool_ro: resolved[:tool_ro] || [],
+      capabilities: resolved[:capabilities] || %{},
+      image_input: resolved[:image_input] == true,
+      vision: resolved[:vision] == true
     }
 
     # Resolve tools_prompt content if the profile has it enabled
     tools_prompt_content = resolve_tools_prompt(resolved[:tools_prompt])
 
-    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile, tools_prompt_content}
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config,
+     profile, tools_prompt_content}
   end
 
   defp resolve_tools_prompt(true), do: Cranium.Muse.tools_prompt()

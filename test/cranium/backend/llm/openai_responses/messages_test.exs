@@ -33,7 +33,11 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
       {_instructions, input} = Messages.translate(messages, nil)
 
       assert input == [
-               %{type: "message", role: "assistant", content: [%{type: "output_text", text: "I'll help"}]}
+               %{
+                 type: "message",
+                 role: "assistant",
+                 content: [%{type: "output_text", text: "I'll help"}]
+               }
              ]
     end
 
@@ -45,7 +49,11 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
       {_instructions, input} = Messages.translate(messages, nil)
 
       assert input == [
-               %{type: "message", role: "assistant", content: [%{type: "output_text", text: "checking..."}]}
+               %{
+                 type: "message",
+                 role: "assistant",
+                 content: [%{type: "output_text", text: "checking..."}]
+               }
              ]
     end
 
@@ -113,6 +121,35 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
              ]
     end
 
+    test "translates user image blocks to input_image parts" do
+      messages = [
+        %{
+          role: "user",
+          content: [
+            %{type: "text", text: "look"},
+            %{
+              "type" => "image",
+              "source" => %{"type" => "base64", "media_type" => "image/png", "data" => "aGVsbG8="}
+            },
+            %{type: "text", text: "there"}
+          ]
+        }
+      ]
+
+      {_instructions, input} = Messages.translate(messages, nil)
+
+      assert input == [
+               %{
+                 role: "user",
+                 content: [
+                   %{type: "input_text", text: "look"},
+                   %{"type" => "input_image", "image_url" => "data:image/png;base64,aGVsbG8="},
+                   %{type: "input_text", text: "there"}
+                 ]
+               }
+             ]
+    end
+
     test "handles string-keyed message maps" do
       messages = [
         %{"role" => "user", "content" => "hello"},
@@ -169,9 +206,15 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
                Enum.at(input, 1)
 
       assert %{type: "function_call", call_id: "tc_1", name: "read"} = Enum.at(input, 2)
-      assert %{type: "function_call_output", call_id: "tc_1", output: "ratched\n"} = Enum.at(input, 3)
 
-      assert %{type: "message", role: "assistant", content: [%{type: "output_text", text: "Your hostname is ratched."}]} =
+      assert %{type: "function_call_output", call_id: "tc_1", output: "ratched\n"} =
+               Enum.at(input, 3)
+
+      assert %{
+               type: "message",
+               role: "assistant",
+               content: [%{type: "output_text", text: "Your hostname is ratched."}]
+             } =
                Enum.at(input, 4)
     end
   end
@@ -179,7 +222,11 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
   describe "translate_tools/1" do
     test "translates tool definitions" do
       tools = [
-        %{name: "read", description: "Read a file", input_schema: %{type: "object", properties: %{path: %{type: "string"}}}}
+        %{
+          name: "read",
+          description: "Read a file",
+          input_schema: %{type: "object", properties: %{path: %{type: "string"}}}
+        }
       ]
 
       result = Messages.translate_tools(tools)
@@ -197,7 +244,11 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.MessagesTest do
 
     test "handles string-keyed tool definitions" do
       tools = [
-        %{"name" => "bash", "description" => "Run a command", "input_schema" => %{"type" => "object"}}
+        %{
+          "name" => "bash",
+          "description" => "Run a command",
+          "input_schema" => %{"type" => "object"}
+        }
       ]
 
       result = Messages.translate_tools(tools)

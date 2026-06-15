@@ -145,10 +145,13 @@ defmodule Cranium.Transport.OpenAITest do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn messages, _opts ->
         send(test_pid, {:backend_messages, messages})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "ok"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -171,16 +174,110 @@ defmodule Cranium.Transport.OpenAITest do
       assert length(messages) == 3
     end
 
+    test "translates OpenAI image parts to omitted placeholders for non-vision profile" do
+      test_pid = self()
+
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn messages, _opts ->
+        send(test_pid, {:backend_messages, messages})
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      Plug.Test.conn(:post, "/v1/chat/completions", %{
+        "model" => "test",
+        "messages" => [
+          %{
+            "role" => "user",
+            "content" => [
+              %{"type" => "text", "text" => "before"},
+              %{
+                "type" => "image_url",
+                "image_url" => %{"url" => "data:image/png;base64,aGVsbG8="}
+              },
+              %{"type" => "text", "text" => "after"}
+            ]
+          }
+        ]
+      })
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> HTTP.call(HTTP.init([]))
+
+      assert_receive {:backend_messages, [%{"role" => "user", "content" => content}]}
+      assert [before, omitted, after_text] = content
+      assert before == %{"type" => "text", "text" => "before"}
+      assert omitted["type"] == "text"
+      assert omitted["text"] =~ "Image omitted"
+      assert omitted["text"] =~ "selected profile does not support image input"
+      assert after_text == %{"type" => "text", "text" => "after"}
+    end
+
+    test "preserves OpenAI image parts for vision profile" do
+      test_pid = self()
+
+      expect(Cranium.Backend.LLM.Mock, :stream_chat, fn messages, _opts ->
+        send(test_pid, {:backend_messages, messages})
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      Plug.Test.conn(:post, "/v1/chat/completions", %{
+        "model" => "test-vision",
+        "messages" => [
+          %{
+            "role" => "user",
+            "content" => [
+              %{"type" => "text", "text" => "look"},
+              %{
+                "type" => "image_url",
+                "image_url" => %{"url" => "data:image/jpeg;base64,aGVsbG8="}
+              }
+            ]
+          }
+        ]
+      })
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> HTTP.call(HTTP.init([]))
+
+      assert_receive {:backend_messages, [%{"role" => "user", "content" => content}]}
+      assert [%{"type" => "text", "text" => "look"}, image] = content
+
+      assert image == %{
+               "type" => "image",
+               "source" => %{
+                 "type" => "base64",
+                 "media_type" => "image/jpeg",
+                 "data" => "aGVsbG8="
+               }
+             }
+    end
+
     test "passes system prompt and model to backend opts" do
       test_pid = self()
 
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
         send(test_pid, {:backend_opts, opts})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "ok"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -208,10 +305,13 @@ defmodule Cranium.Transport.OpenAITest do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
         send(test_pid, {:backend_opts, opts})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "ok"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -224,7 +324,11 @@ defmodule Cranium.Transport.OpenAITest do
 
       assert_receive {:backend_opts, opts}
       assert opts[:thinking] == false
-      assert opts[:backend_config] == %{"thinking_mode" => "prefill", "endpoint" => "http://localhost:9999/v1"}
+
+      assert opts[:backend_config] == %{
+               "thinking_mode" => "prefill",
+               "endpoint" => "http://localhost:9999/v1"
+             }
     end
 
     test "returns zero usage when backend reports none" do
@@ -266,7 +370,9 @@ defmodule Cranium.Transport.OpenAITest do
       chunks = parse_sse_chunks(conn.resp_body)
 
       # First chunk: role
-      role_chunk = Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["delta"]["role"] end)
+      role_chunk =
+        Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["delta"]["role"] end)
+
       assert role_chunk
       assert hd(role_chunk["choices"])["delta"]["role"] == "assistant"
 
@@ -281,7 +387,9 @@ defmodule Cranium.Transport.OpenAITest do
       assert content == "Hello world!"
 
       # Final chunk: finish_reason
-      final = Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "stop" end)
+      final =
+        Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "stop" end)
+
       assert final
 
       # DONE sentinel
@@ -307,7 +415,10 @@ defmodule Cranium.Transport.OpenAITest do
         |> HTTP.call(HTTP.init([]))
 
       chunks = parse_sse_chunks(conn.resp_body)
-      final = Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "stop" end)
+
+      final =
+        Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "stop" end)
+
       assert final["usage"]["prompt_tokens"] == 100
       assert final["usage"]["completion_tokens"] == 25
       assert final["usage"]["total_tokens"] == 125
@@ -323,10 +434,13 @@ defmodule Cranium.Transport.OpenAITest do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
         send(test_pid, {:system, opts[:system]})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "ok"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -358,10 +472,13 @@ defmodule Cranium.Transport.OpenAITest do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, opts ->
         send(test_pid, {:backend_tools, opts[:tools]})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "ok"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "ok"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -374,7 +491,10 @@ defmodule Cranium.Transport.OpenAITest do
             "function" => %{
               "name" => "get_weather",
               "description" => "Get weather for a city",
-              "parameters" => %{"type" => "object", "properties" => %{"city" => %{"type" => "string"}}}
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"city" => %{"type" => "string"}}
+              }
             }
           }
         ]
@@ -387,16 +507,28 @@ defmodule Cranium.Transport.OpenAITest do
       [tool] = tools
       assert tool.name == "get_weather"
       assert tool.description == "Get weather for a city"
-      assert tool.input_schema == %{"type" => "object", "properties" => %{"city" => %{"type" => "string"}}}
+
+      assert tool.input_schema == %{
+               "type" => "object",
+               "properties" => %{"city" => %{"type" => "string"}}
+             }
     end
 
     test "returns tool_calls in response when model makes tool calls" do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, _opts ->
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_tool_use, %{id: "call_123", name: "get_weather", input: %{"city" => "Portland"}}})
-          send(caller, {:llm_stop, "tool_use"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:llm_tool_use,
+               %{id: "call_123", name: "get_weather", input: %{"city" => "Portland"}}}
+            )
+
+            send(caller, {:llm_stop, "tool_use"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -404,7 +536,16 @@ defmodule Cranium.Transport.OpenAITest do
         Plug.Test.conn(:post, "/v1/chat/completions", %{
           "model" => "test",
           "messages" => [%{"role" => "user", "content" => "What's the weather?"}],
-          "tools" => [%{"type" => "function", "function" => %{"name" => "get_weather", "description" => "Get weather", "parameters" => %{}}}]
+          "tools" => [
+            %{
+              "type" => "function",
+              "function" => %{
+                "name" => "get_weather",
+                "description" => "Get weather",
+                "parameters" => %{}
+              }
+            }
+          ]
         })
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> HTTP.call(HTTP.init([]))
@@ -429,10 +570,13 @@ defmodule Cranium.Transport.OpenAITest do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn messages, _opts ->
         send(test_pid, {:backend_messages, messages})
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_text, "It is 72°F"})
-          send(caller, {:llm_stop, "end_turn"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "It is 72°F"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -440,9 +584,17 @@ defmodule Cranium.Transport.OpenAITest do
         "model" => "test",
         "messages" => [
           %{"role" => "user", "content" => "What's the weather?"},
-          %{"role" => "assistant", "content" => nil, "tool_calls" => [
-            %{"id" => "call_123", "type" => "function", "function" => %{"name" => "get_weather", "arguments" => ~s({"city":"Portland"})}}
-          ]},
+          %{
+            "role" => "assistant",
+            "content" => nil,
+            "tool_calls" => [
+              %{
+                "id" => "call_123",
+                "type" => "function",
+                "function" => %{"name" => "get_weather", "arguments" => ~s({"city":"Portland"})}
+              }
+            ]
+          },
           %{"role" => "tool", "tool_call_id" => "call_123", "content" => "72°F and sunny"}
         ]
       })
@@ -478,10 +630,17 @@ defmodule Cranium.Transport.OpenAITest do
     test "streams tool_calls with tool_calls finish_reason" do
       expect(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, _opts ->
         caller = self()
-        pid = spawn(fn ->
-          send(caller, {:llm_tool_use, %{id: "call_456", name: "search", input: %{"q" => "elixir"}}})
-          send(caller, {:llm_stop, "tool_use"})
-        end)
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:llm_tool_use, %{id: "call_456", name: "search", input: %{"q" => "elixir"}}}
+            )
+
+            send(caller, {:llm_stop, "tool_use"})
+          end)
+
         {:ok, pid}
       end)
 
@@ -490,7 +649,12 @@ defmodule Cranium.Transport.OpenAITest do
           "model" => "test",
           "messages" => [%{"role" => "user", "content" => "Search for elixir"}],
           "stream" => true,
-          "tools" => [%{"type" => "function", "function" => %{"name" => "search", "description" => "Search", "parameters" => %{}}}]
+          "tools" => [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "search", "description" => "Search", "parameters" => %{}}
+            }
+          ]
         })
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> HTTP.call(HTTP.init([]))
@@ -499,16 +663,22 @@ defmodule Cranium.Transport.OpenAITest do
       chunks = parse_sse_chunks(conn.resp_body)
 
       # Should have a tool_calls chunk
-      tc_chunk = Enum.find(chunks, fn c ->
-        c["choices"] && Map.has_key?(hd(c["choices"])["delta"], "tool_calls")
-      end)
+      tc_chunk =
+        Enum.find(chunks, fn c ->
+          c["choices"] && Map.has_key?(hd(c["choices"])["delta"], "tool_calls")
+        end)
+
       assert tc_chunk
       [tc] = hd(tc_chunk["choices"])["delta"]["tool_calls"]
       assert tc["id"] == "call_456"
       assert tc["function"]["name"] == "search"
 
       # Final chunk should have tool_calls finish reason
-      final = Enum.find(chunks, fn c -> c["choices"] && hd(c["choices"])["finish_reason"] == "tool_calls" end)
+      final =
+        Enum.find(chunks, fn c ->
+          c["choices"] && hd(c["choices"])["finish_reason"] == "tool_calls"
+        end)
+
       assert final
 
       assert conn.resp_body =~ "data: [DONE]"

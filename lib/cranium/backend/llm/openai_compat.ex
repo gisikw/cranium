@@ -100,7 +100,10 @@ defmodule Cranium.Backend.LLM.OpenAICompat do
           |> Enum.reverse()
           |> IO.iodata_to_binary()
 
-        Logger.error("OpenAICompat API error: status=#{status} body=#{String.slice(error_body, 0..500)}")
+        Logger.error(
+          "OpenAICompat API error: status=#{status} body=#{String.slice(error_body, 0..500)}"
+        )
+
         send(caller, {:llm_stop, {:error, status, error_body}})
 
       {:error, reason} ->
@@ -259,9 +262,11 @@ defmodule Cranium.Backend.LLM.OpenAICompat do
         {tool_results, other} = split_tool_results(blocks)
         tool_msgs = Enum.map(tool_results, &to_tool_message/1)
 
-        case flatten_text(other) do
-          "" -> tool_msgs
-          text -> tool_msgs ++ [%{role: "user", content: text}]
+        content_parts = openai_content_parts(other)
+
+        case content_parts do
+          [] -> tool_msgs
+          parts -> tool_msgs ++ [%{role: "user", content: parts}]
         end
 
       _ ->
@@ -276,6 +281,38 @@ defmodule Cranium.Backend.LLM.OpenAICompat do
       %{type: "text", text: t} -> t
       %{"type" => "text", "text" => t} -> t
       _ -> ""
+    end)
+  end
+
+  defp openai_content_parts(blocks) do
+    blocks
+    |> Enum.flat_map(fn
+      %{text: t} when is_binary(t) ->
+        [%{"type" => "text", "text" => t}]
+
+      %{"text" => t} when is_binary(t) ->
+        [%{"type" => "text", "text" => t}]
+
+      %{type: "text", text: t} when is_binary(t) ->
+        [%{"type" => "text", "text" => t}]
+
+      %{"type" => "text", "text" => t} when is_binary(t) ->
+        [%{"type" => "text", "text" => t}]
+
+      %{"type" => "image"} = block ->
+        case Cranium.ImageInput.internal_image_to_openai_chat_part(block) do
+          nil -> []
+          part -> [part]
+        end
+
+      %{type: "image"} = block ->
+        case Cranium.ImageInput.internal_image_to_openai_chat_part(block) do
+          nil -> []
+          part -> [part]
+        end
+
+      _ ->
+        []
     end)
   end
 

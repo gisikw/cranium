@@ -1,0 +1,407 @@
+-- allium: 3
+
+-- Image Input
+--
+-- How cranium handles image-bearing user turns across native conversational
+-- ingress and OpenAI-compatible ingress, preserving conversational flow even
+-- when an image cannot be delivered to the selected model/profile.
+--
+-- Scope: ordered multimodal user turns, image content parts, image omission
+-- placeholders, profile image-input capability, and backend-specific image
+-- translation for Anthropic-shaped, OpenAI Chat Completions-compatible, and
+-- OpenAI Responses profiles.
+--
+-- Does NOT cover durable blob storage, cross-turn image recall, OCR/caption
+-- fallback, EXIF stripping implementation, or exposing attachments as files
+-- to tools. Those are future extensions.
+--
+-- Depends on: conversation-lifecycle.allium (PassHeader, TextInput, Pass)
+--             context-system.allium (FormattedMessage, AssembledTurn)
+--             inference-pipeline.allium (Profile, Backend dispatch)
+--             profile-config.allium (ResolvedProfile)
+
+use conversation-lifecycle
+use context-system
+use inference-pipeline
+use profile-config
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Transport {
+    -- HTTP/native/OpenAI-compatible ingress layer. Receives user input and
+    -- produces canonical user turn content for inference.
+}
+
+external entity TurnAssembler {
+    -- Correlates pass headers with content and contributes the current user
+    -- turn to assembled history.
+}
+
+external entity BackendTranslator {
+    -- Backend-specific message translator. Maps canonical multimodal content
+    -- to provider wire format.
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    image_max_bytes: Integer = 10485760
+        -- Maximum accepted image payload size before the image is omitted
+        -- with a model-visible reason. Default 10 MiB.
+
+    image_max_count_per_turn: Integer = 8
+        -- Maximum accepted image parts per user turn before excess image
+        -- parts are omitted with model-visible reasons.
+
+    image_supported_media_types: [String] = ["image/jpeg", "image/png", "image/webp", "image/gif"]
+        -- Image media types eligible for model delivery when a profile
+        -- supports image input.
+
+    image_placeholder_prefix: String = "[Image omitted:"
+        -- Prefix for model-visible placeholders replacing unavailable or
+        -- undeliverable image parts.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value UserTurn {
+    conversation_id: String
+    pass_id: String
+    origin: String
+    parts: [TurnPart]
+
+    @guidance
+        -- A user turn is ordered multimodal content. Images are not modeled
+        -- as separate sequential user turns; they are content parts embedded
+        -- at the position where the user/client supplied them.
+}
+
+value TurnPart {
+    kind: text | image
+    text: String?
+    image: ImagePart?
+
+    @guidance
+        -- Exactly one payload is present according to kind.
+        -- Future media types can extend kind and add new payload fields.
+}
+
+value ImagePart {
+    media_type: String?
+    data: Bytes?
+    data_url: String?
+    remote_url: String?
+    filename: String?
+    size_bytes: Integer?
+    source: native_upload | openai_image_url | openai_input_image | internal
+    validation: valid | unsupported_media_type | too_large | malformed | count_exceeded | unavailable
+    omission_reason: String?
+
+    @guidance
+        -- data/data_url/remote_url describe alternative representations of
+        -- the same image. Implementations may canonicalize to data +
+        -- media_type internally, but the behavioral contract is about the
+        -- image part and its deliverability, not storage shape.
+}
+
+value ProfileCapabilities {
+    image_input: Boolean
+
+    @guidance
+        -- image_input means the selected profile/model/backend combination
+        -- is allowed and expected to receive image parts. It is profile-level
+        -- metadata; do not infer it from backend family alone.
+}
+
+value ImagePlaceholder {
+    text: String
+    reason: String
+    media_type: String?
+    filename: String?
+
+    @guidance
+        -- A model-visible replacement for an image part that cannot be sent
+        -- to the model. The placeholder must not imply the model saw the
+        -- image; it should preserve enough metadata to explain the omission.
+}
+
+------------------------------------------------------------
+-- Derived Values
+------------------------------------------------------------
+
+-- Turn has one or more image parts.
+derived has_image_parts(turn: UserTurn): Boolean =
+    turn.parts where kind = image count > 0
+
+-- Turn has at least one non-empty text part.
+derived has_text_parts(turn: UserTurn): Boolean =
+    turn.parts where kind = text and text is not nil and text != "" count > 0
+
+-- Image is structurally eligible to send, before profile capability is considered.
+derived image_valid_for_delivery(image: ImagePart): Boolean =
+    image.validation = valid
+
+-- Profile can receive the image part if both the profile supports image input
+-- and the image itself is valid for delivery.
+derived image_deliverable(profile: ResolvedProfile, image: ImagePart): Boolean =
+    profile.capabilities.image_input = true and image_valid_for_delivery(image)
+
+------------------------------------------------------------
+-- Rules: Canonical Turn Construction
+------------------------------------------------------------
+
+rule NativeImageTurnConstruction {
+    when: Transport receives native conversational submit request
+    requires: request contains text or one or more image uploads
+
+    ensures: UserTurn.created(
+        conversation_id: request.conversation_id,
+        pass_id: request.pass_id,
+        origin: request.origin,
+        parts: canonical parts preserving request order where known
+    )
+
+    @guidance
+        -- Native clients may supply text plus image uploads. If the transport
+        -- cannot know the exact interleaving of multipart fields, it should
+        -- preserve the closest available order and keep image placeholders
+        -- adjacent to the submitted text rather than treating images as
+        -- separate turns.
+}
+
+rule OpenAIChatImageTurnConstruction {
+    when: Transport receives OpenAI-compatible Chat Completions request
+    requires: request.messages contains user content parts
+
+    ensures: UserTurn.created(
+        conversation_id: request.conversation_id,
+        pass_id: request.pass_id,
+        origin: "openai_compat",
+        parts: text and image_url parts translated into canonical order
+    )
+
+    @guidance
+        -- Chat Completions image_url parts become canonical image parts.
+        -- Text parts remain text parts. The user message remains a single
+        -- ordered multimodal turn.
+}
+
+rule OpenAIResponsesImageTurnConstruction {
+    when: Transport receives OpenAI Responses request
+    requires: request.input contains user input_text or input_image parts
+
+    ensures: UserTurn.created(
+        conversation_id: request.conversation_id,
+        pass_id: request.pass_id,
+        origin: "openai_responses",
+        parts: input_text and input_image parts translated into canonical order
+    )
+
+    @guidance
+        -- Responses input_image parts become canonical image parts. The
+        -- provider-facing shape is restored later by the backend translator.
+}
+
+------------------------------------------------------------
+-- Rules: Image Validation and Omission
+------------------------------------------------------------
+
+rule MarkUnsupportedImageMediaType {
+    when: image: ImagePart enters canonical turn construction
+    requires: image.media_type not in config.image_supported_media_types
+
+    ensures: image.validation = unsupported_media_type
+    ensures: image.omission_reason = "unsupported media type"
+}
+
+rule MarkOversizeImage {
+    when: image: ImagePart enters canonical turn construction
+    requires: image.size_bytes > config.image_max_bytes
+
+    ensures: image.validation = too_large
+    ensures: image.omission_reason = "image too large"
+}
+
+rule MarkMalformedImage {
+    when: image: ImagePart enters canonical turn construction
+    requires: image bytes, data URL, or remote URL cannot be parsed as an image input
+
+    ensures: image.validation = malformed
+    ensures: image.omission_reason = "malformed image payload"
+}
+
+rule MarkExcessImages {
+    when: turn: UserTurn.created
+    requires: turn image part count > config.image_max_count_per_turn
+
+    ensures: image.validation = count_exceeded for image parts beyond config.image_max_count_per_turn
+    ensures: image.omission_reason = "too many images in one turn" for image parts beyond config.image_max_count_per_turn
+}
+
+rule ReplaceUndeliverableImagesWithPlaceholders {
+    when: AssembleTurn(turn, profile)
+    requires: turn has image parts
+
+    ensures: every image part where image_deliverable(profile, image) = false
+        is replaced with an ImagePlaceholder at the same position in the turn
+    ensures: placeholder.reason includes image.omission_reason when image.validation != valid
+    ensures: placeholder.reason = "selected profile does not support image input"
+        when image.validation = valid and profile.capabilities.image_input = false
+    ensures: all text parts remain in their original relative order
+    ensures: all deliverable image parts remain in their original relative order
+
+    @guidance
+        -- Capability mismatch and image validation failures degrade the image
+        -- part, not the whole user turn. Even an image-only turn is dispatched
+        -- to the model as a placeholder-only user turn so the agent can
+        -- respond in its own voice and clients do not need special UI for
+        -- ordinary image omission cases.
+}
+
+rule PlaceholderTextShape {
+    when: ImagePlaceholder.created
+
+    ensures: placeholder.text starts_with config.image_placeholder_prefix
+    ensures: placeholder.text states that the image was omitted, not viewed
+    ensures: placeholder.text includes reason
+    ensures: placeholder.text includes media_type when media_type is known
+    ensures: placeholder.text includes filename when filename is known
+    ensures: placeholder.text excludes raw bytes, base64 data, and remote secrets
+
+    @guidance
+        -- Example:
+        -- [Image omitted: selected profile does not support image input. media_type=image/jpeg filename=tree.jpg]
+}
+
+------------------------------------------------------------
+-- Rules: Dispatch Semantics
+------------------------------------------------------------
+
+rule DispatchDegradedTurn {
+    when: AssembleTurn(turn, profile)
+    requires: one or more image parts were replaced with placeholders
+
+    ensures: assembled turn is dispatched to the selected profile
+    ensures: assembled turn contains the placeholders at the original image positions
+    ensures: no transport/client error is returned solely because images were omitted
+
+    @guidance
+        -- The model should be allowed to decide whether the omitted image is
+        -- central, incidental, or ignorable. Cranium should not throw away
+        -- surrounding text or force every client to surface capability errors.
+}
+
+rule RejectOnlyWhenNoUserTurnCanBeFormed {
+    when: Transport receives image-bearing request
+    requires: no UserTurn can be constructed at all
+
+    ensures: transport returns a protocol error
+
+    @guidance
+        -- This is narrower than image validation failure. If Cranium can form
+        -- a user turn containing text and/or image omission placeholders, it
+        -- should dispatch. Protocol errors are for requests that cannot be
+        -- associated with a conversation/pass/profile or cannot be parsed as
+        -- any user turn.
+}
+
+------------------------------------------------------------
+-- Rules: Backend Translation
+------------------------------------------------------------
+
+rule TranslateImagesForAnthropicShape {
+    when: BackendTranslator formats user turn for Anthropic-shaped backend
+    requires: profile.capabilities.image_input = true
+    requires: turn contains deliverable image parts
+
+    ensures: deliverable image parts become Anthropic image content blocks
+    ensures: text parts and placeholder parts become Anthropic text content blocks
+    ensures: original part order is preserved
+}
+
+rule TranslateImagesForOpenAIChatCompletions {
+    when: BackendTranslator formats user turn for OpenAI Chat Completions-compatible backend
+    requires: profile.capabilities.image_input = true
+    requires: turn contains deliverable image parts
+
+    ensures: deliverable image parts become Chat Completions image_url content parts
+    ensures: text parts and placeholder parts become Chat Completions text content parts
+    ensures: original part order is preserved
+}
+
+rule TranslateImagesForOpenAIResponses {
+    when: BackendTranslator formats user turn for OpenAI Responses backend
+    requires: profile.capabilities.image_input = true
+    requires: turn contains deliverable image parts
+
+    ensures: deliverable image parts become Responses input_image content parts
+    ensures: text parts and placeholder parts become Responses input_text content parts
+    ensures: original part order is preserved
+}
+
+rule DoNotUseTextFlatteningForImageTurns {
+    when: BackendTranslator formats user turn
+    requires: turn contains deliverable image parts or image placeholders
+
+    ensures: translator preserves content part boundaries when backend supports content parts
+    ensures: translator does not silently drop image parts
+    ensures: translator does not silently concatenate away image placeholder position
+
+    @guidance
+        -- Existing text-only flattening paths are acceptable for text-only
+        -- turns. Image-bearing turns need ordered content-part preservation
+        -- so "text before image" and "text after image" remain meaningful.
+}
+
+------------------------------------------------------------
+-- Rules: Profile Capabilities
+------------------------------------------------------------
+
+rule ParseImageInputCapability {
+    when: ProfileStore loads profile configuration
+
+    ensures: resolved_profile.capabilities.image_input is set from profile config when present
+    ensures: resolved_profile.capabilities.image_input = false when profile config omits image capability
+
+    @guidance
+        -- Default false is conservative. Backend family alone is not enough:
+        -- OpenAI-compatible servers, local models, and provider models vary in
+        -- vision support.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Ordered native multipart text and image interleaving" {
+    -- Native multipart uploads may not express exact text/image interleaving
+    -- as naturally as OpenAI content arrays. Should native clients send an
+    -- explicit content-parts JSON field for precise ordering, with legacy
+    -- text + images fields mapped to a simple default order?
+}
+
+open question "Remote image URLs" {
+    -- Should Cranium fetch remote image URLs and canonicalize them to bytes,
+    -- pass remote URLs through to providers that support them, or omit remote
+    -- URLs unless explicitly allowed? Fetching improves provider consistency
+    -- but introduces SSRF/privacy/cache concerns.
+}
+
+open question "Durable image history" {
+    -- V1 can dispatch images only in the current turn. Follow-up questions
+    -- like "zoom in on the left side" require durable image storage or a
+    -- generated description. What retention and privacy policy should govern
+    -- persisted images?
+}
+
+open question "EXIF and metadata stripping" {
+    -- Should Cranium strip EXIF/metadata before sending images to remote
+    -- providers? Probably yes or configurable, but the exact policy is not
+    -- specified here.
+}

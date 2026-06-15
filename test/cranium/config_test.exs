@@ -74,6 +74,19 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "image capabilities" do
+    test "vision capability defaults false and parses when set" do
+      {:ok, default_profile} = Config.resolve_profile("test")
+      {:ok, vision_profile} = Config.resolve_profile("test-vision")
+
+      refute default_profile.capabilities["image_input"]
+      refute default_profile.image_input
+      assert vision_profile.capabilities["image_input"] == true
+      assert vision_profile.image_input == true
+      assert vision_profile.vision == true
+    end
+  end
+
   describe "openai_system_mode" do
     test "defaults to :replace when not specified" do
       {:ok, resolved} = Config.resolve_profile("test")
@@ -151,7 +164,8 @@ defmodule Cranium.ConfigTest do
     end
 
     test "returns nil for nonexistent file" do
-      assert Config.read_identity("/tmp/nonexistent-identity-#{:rand.uniform(999_999)}.txt") == nil
+      assert Config.read_identity("/tmp/nonexistent-identity-#{:rand.uniform(999_999)}.txt") ==
+               nil
     end
   end
 end

@@ -83,6 +83,12 @@ profiles:
     identity: test/fixtures/test-identity.txt
     tools_prompt: true
 
+  test-vision:
+    backend: mock
+    model: test-model
+    capabilities:
+      image_input: true
+
 ollama_url: http://localhost:11434
 
 room_defaults:

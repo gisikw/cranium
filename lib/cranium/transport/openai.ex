@@ -60,7 +60,9 @@ defmodule Cranium.Transport.OpenAI do
           working_dir: ephemeral_working_dir()
         ]
 
-        Logger.info("OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)} tools=#{length(tools)}")
+        Logger.info(
+          "OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)} tools=#{length(tools)}"
+        )
 
         if stream do
           stream_response(conn, backend_messages, opts, profile, completion_id)
@@ -98,7 +100,7 @@ defmodule Cranium.Transport.OpenAI do
       {:ok, resolved} ->
         {client_system, non_system} = extract_system_messages(messages)
         system = apply_system_mode(resolved.openai_system_mode, resolved.identity, client_system)
-        backend_messages = translate_messages(non_system)
+        backend_messages = translate_messages(non_system, resolved)
         {:ok, resolved, system, backend_messages}
 
       {:error, :not_found} ->
@@ -141,19 +143,19 @@ defmodule Cranium.Transport.OpenAI do
 
   # --- Message Translation (OpenAI → Anthropic internal) ---
 
-  defp translate_messages(messages) do
+  defp translate_messages(messages, profile) do
     messages
-    |> Enum.flat_map(&translate_message/1)
+    |> Enum.flat_map(&translate_message(&1, profile))
     |> merge_consecutive_tool_results()
   end
 
   # Assistant message with tool_calls → Anthropic content blocks
-  defp translate_message(%{"role" => "assistant", "tool_calls" => tool_calls} = msg)
+  defp translate_message(%{"role" => "assistant", "tool_calls" => tool_calls} = msg, _profile)
        when is_list(tool_calls) and tool_calls != [] do
     text = msg["content"]
 
     content =
-      (if is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []) ++
+      if(is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []) ++
         Enum.map(tool_calls, fn tc ->
           func = tc["function"]
 
@@ -171,19 +173,30 @@ defmodule Cranium.Transport.OpenAI do
   end
 
   # Tool result message → Anthropic user message with tool_result block
-  defp translate_message(%{"role" => "tool"} = msg) do
-    [%{
-      "role" => "user",
-      "content" => [%{
-        "type" => "tool_result",
-        "tool_use_id" => msg["tool_call_id"],
-        "content" => msg["content"]
-      }]
-    }]
+  defp translate_message(%{"role" => "tool"} = msg, _profile) do
+    [
+      %{
+        "role" => "user",
+        "content" => [
+          %{
+            "type" => "tool_result",
+            "tool_use_id" => msg["tool_call_id"],
+            "content" => msg["content"]
+          }
+        ]
+      }
+    ]
+  end
+
+  # User multimodal content parts → internal content blocks
+  defp translate_message(%{"role" => role, "content" => content}, profile)
+       when is_list(content) do
+    blocks = Enum.flat_map(content, &Cranium.ImageInput.openai_chat_part_to_internal(&1, profile))
+    [%{"role" => role, "content" => blocks}]
   end
 
   # Everything else passes through
-  defp translate_message(msg), do: [msg]
+  defp translate_message(msg, _profile), do: [msg]
 
   # Anthropic requires consecutive tool_result blocks in a single user message.
   # Multiple OpenAI tool messages become multiple user messages after translate_message;
@@ -238,14 +251,27 @@ defmodule Cranium.Transport.OpenAI do
     case profile.backend_module.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        {conn, usage, tool_calls} = stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
+
+        {conn, usage, tool_calls} =
+          stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
 
         conn =
           if tool_calls != [] do
             # Emit tool calls and finish with tool_calls reason
             oai_tool_calls = format_tool_calls(tool_calls)
-            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{"tool_calls" => oai_tool_calls}, nil)
-            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "tool_calls", usage)
+
+            {:ok, conn} =
+              send_sse_chunk(
+                conn,
+                completion_id,
+                profile.name,
+                %{"tool_calls" => oai_tool_calls},
+                nil
+              )
+
+            {:ok, conn} =
+              send_sse_chunk(conn, completion_id, profile.name, %{}, "tool_calls", usage)
+
             conn
           else
             {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "stop", usage)
