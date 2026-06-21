@@ -9,8 +9,9 @@ defmodule Cranium.Dispatch do
   ## Fields
 
   - `conversation_id` — which conversation this pass belongs to
-  - `harness` — inference backend (`:claude_code`, `:api`, `:ollama`)
+  - `harness` — inference backend (`:claude_code`, `:api`, `:ollama`, `:tiamat`)
   - `model` — specific model identifier (e.g., `:"claude-sonnet-4-6"`)
+  - `router_profile` — Tiamat router profile when `harness` is `:tiamat`
   - `renditions` — output renditions the client wants (`[:text]`, `[:audio, :text]`)
   - `ephemeral` — if true, nothing persists to Store (fire and forget)
   """
@@ -19,8 +20,9 @@ defmodule Cranium.Dispatch do
 
   typedstruct do
     field :conversation_id, String.t()
-    field :harness, :claude_code | :api | :ollama | nil
+    field :harness, :claude_code | :api | :ollama | :tiamat | nil
     field :model, atom() | String.t() | nil
+    field :router_profile, String.t() | nil
     field :renditions, [:text | :audio], default: [:text]
     field :ephemeral, boolean(), default: false
   end
@@ -37,6 +39,7 @@ defmodule Cranium.Dispatch do
       conversation_id: params[:conversation_id] || params["conversation_id"] || "default",
       harness: resolve_harness(params[:harness] || params["harness"]),
       model: params[:model] || params["model"],
+      router_profile: params[:router_profile] || params["router_profile"],
       renditions: resolve_renditions(params[:disposition] || params["disposition"]),
       ephemeral: params[:ephemeral] == true || params["ephemeral"] == true
     }
@@ -50,6 +53,7 @@ defmodule Cranium.Dispatch do
       "claude_code" -> :claude_code
       "api" -> :api
       "ollama" -> :ollama
+      "tiamat" -> :tiamat
       _ -> nil
     end
   end

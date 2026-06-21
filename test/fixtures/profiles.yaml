@@ -60,6 +60,14 @@ profiles:
       thinking_mode: prefill
       endpoint: http://localhost:9999/v1
 
+  test-tiamat:
+    backend: tiamat
+    router_profile: exo
+    identity: test/fixtures/test-identity.txt
+    backend_config:
+      endpoint: http://localhost:4002
+      timeout: 300000
+
   test-audio:
     backend: mock
     model: test-model

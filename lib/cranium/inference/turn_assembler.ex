@@ -197,7 +197,10 @@ defmodule Cranium.Inference.TurnAssembler do
 
         if state.active_pass do
           # A pass is already in flight — enqueue this pair
-          Logger.info("TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass}, depth=#{:queue.len(state.queue)})")
+          Logger.info(
+            "TurnAssembler: queueing pass=#{pass_id} (active_pass=#{state.active_pass}, depth=#{:queue.len(state.queue)})"
+          )
+
           %{state | queue: :queue.in({header, input}, state.queue)}
         else
           assemble_and_dispatch(state, header, input)
@@ -223,6 +226,7 @@ defmodule Cranium.Inference.TurnAssembler do
     # Skip if we already attempted orientation for this epoch (prevents retry loop
     # when orientation fails — e.g. context_length_exceeded).
     already_tried = state.orientation_epoch_id == epoch_ctx.epoch_id
+
     if is_fresh and not ephemeral and header.origin != "orientation" and not already_tried do
       dispatch_orientation(state, header, input, epoch_ctx)
     else
@@ -252,15 +256,20 @@ defmodule Cranium.Inference.TurnAssembler do
     # 2. Broadcast message_received so firehose clients see inbound messages
     #    Orientation prompts are private — suppress their input from the firehose.
     unless ephemeral or header.origin == "orientation" do
-      Cranium.Events.broadcast(header.conversation_id, {:message_received, header.conversation_id, %{
-        text: text,
-        origin: header.origin,
-        stream_id: stream_id
-      }})
+      Cranium.Events.broadcast(
+        header.conversation_id,
+        {:message_received, header.conversation_id,
+         %{
+           text: text,
+           origin: header.origin,
+           stream_id: stream_id
+         }}
+      )
     end
 
     # 3. Resolve profile → backend, model, identity
-    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile, tools_prompt_content} =
+    {backend_module, resolved_model, identity, profile_name, thinking, saturation_config, profile,
+     tools_prompt_content} =
       resolve_profile(header)
 
     # 4. Resolve routing context
@@ -307,6 +316,7 @@ defmodule Cranium.Inference.TurnAssembler do
       model: resolved_model,
       identity: identity,
       thinking: thinking,
+      router_profile: profile.router_profile,
       backend_config: profile.backend_config,
       context_window: saturation_config[:context_window],
       saturation_warn: saturation_config[:saturation_warn],
@@ -325,6 +335,7 @@ defmodule Cranium.Inference.TurnAssembler do
     identity = resolved.identity
     profile_name = resolved.profile_name
     thinking = resolved.thinking
+    router_profile = resolved[:router_profile]
     backend_config = resolved[:backend_config] || %{}
 
     saturation_config = %{
@@ -383,7 +394,8 @@ defmodule Cranium.Inference.TurnAssembler do
       saturation_critical: saturation_config[:saturation_critical]
     }
 
-    {:ok, injected} = Cranium.Context.TurnInjector.process(injection_message, injection_ctx, plugin_injections)
+    {:ok, injected} =
+      Cranium.Context.TurnInjector.process(injection_message, injection_ctx, plugin_injections)
 
     # 7. Write injection flags to Store immediately
     injection_flags = %{
@@ -429,6 +441,7 @@ defmodule Cranium.Inference.TurnAssembler do
         Cranium.Backend.LLM.ClaudeCode -> :claude_code
         Cranium.Backend.LLM.Anthropic -> :api
         Cranium.Backend.LLM.Ollama -> :ollama
+        Cranium.Backend.LLM.Tiamat -> :tiamat
         _ -> nil
       end
 
@@ -437,6 +450,7 @@ defmodule Cranium.Inference.TurnAssembler do
         conversation_id: header.conversation_id,
         harness: harness_type,
         model: resolved_model,
+        router_profile: router_profile,
         disposition: header.disposition,
         ephemeral: header.ephemeral
       })
@@ -455,6 +469,7 @@ defmodule Cranium.Inference.TurnAssembler do
       model: resolved_model,
       profile: profile_name,
       thinking: thinking,
+      router_profile: router_profile,
       backend_config: backend_config,
       context_window: saturation_config[:context_window],
       ephemeral: ephemeral,
@@ -510,14 +525,25 @@ defmodule Cranium.Inference.TurnAssembler do
     }
 
     # Enqueue the user's original pass — it will dispatch after orientation completes
-    state = %{state | queue: :queue.in({header, input}, state.queue), orientation_epoch_id: epoch_ctx.epoch_id}
+    state = %{
+      state
+      | queue: :queue.in({header, input}, state.queue),
+        orientation_epoch_id: epoch_ctx.epoch_id
+    }
 
     # Dispatch orientation through the normal assembly pipeline
     do_assemble_and_dispatch(state, orientation_header, orientation_input, epoch_ctx)
   end
 
-  defp resolve_profile(%PassHeader{profile: profile_name, conversation_id: conversation_id, model: model_override, system: system_override}) do
-    profile_name = profile_name || Cranium.Config.room_default_profile(conversation_id) || Cranium.Config.default_profile_name()
+  defp resolve_profile(%PassHeader{
+         profile: profile_name,
+         conversation_id: conversation_id,
+         model: model_override,
+         system: system_override
+       }) do
+    profile_name =
+      profile_name || Cranium.Config.room_default_profile(conversation_id) ||
+        Cranium.Config.default_profile_name()
 
     resolved =
       case Cranium.Config.resolve_profile(profile_name) do
@@ -546,12 +572,16 @@ defmodule Cranium.Inference.TurnAssembler do
       saturation_critical: resolved[:saturation_critical]
     }
 
+    router_profile = resolved[:router_profile]
+    backend_config = resolved[:backend_config] || %{}
+
     # Build a lightweight profile struct for plugin initialization
     profile = %Cranium.Config.Profile{
       name: profile_name,
       backend: resolved.backend,
       model: model,
-      backend_config: resolved[:backend_config] || %{},
+      router_profile: router_profile,
+      backend_config: backend_config,
       plugins: resolved[:plugins] || [],
       tool_posture: resolved[:tool_posture] || :sandbox,
       tool_rw: resolved[:tool_rw] || [],
@@ -561,7 +591,8 @@ defmodule Cranium.Inference.TurnAssembler do
     # Resolve tools_prompt content if the profile has it enabled
     tools_prompt_content = resolve_tools_prompt(resolved[:tools_prompt])
 
-    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config, profile, tools_prompt_content}
+    {resolved.backend_module, model, identity, profile_name, resolved.thinking, saturation_config,
+     profile, tools_prompt_content}
   end
 
   defp resolve_tools_prompt(true), do: Cranium.Muse.tools_prompt()

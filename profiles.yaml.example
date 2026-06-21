@@ -4,7 +4,7 @@
 # Each profile bundles: backend (which adapter), model (which model on that backend),
 # and identity (system prompt file path — optional).
 #
-# Backends: claudecode, anthropic, ollama, openai_compat
+# Backends: claudecode, anthropic, ollama, openai_compat, openai_responses, tiamat
 #
 # The model string is backend-specific. For Ollama, this is the Ollama model name
 # (including custom Modelfiles). Model-specific params (temperature, context window,
@@ -67,6 +67,14 @@ profiles:
               model: qwen3.6-27b
               input_per_m_token: 0
               output_per_m_token: 0
+
+  exo-tiamat:
+    backend: tiamat
+    router_profile: exo
+    identity: /path/to/identity.md
+    backend_config:
+      endpoint: https://tiamat.gisi.network
+      timeout: 300000
 
   # OpenAI-compatible endpoint (llama.cpp, vLLM, etc.)
   qwen-local:

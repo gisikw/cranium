@@ -26,6 +26,21 @@ defmodule Cranium.ConfigTest do
       assert resolved.backend_module == Cranium.Backend.LLM.ClaudeCode
     end
 
+    test "resolves tiamat router profile" do
+      assert {:ok, resolved} = Config.resolve_profile("test-tiamat")
+      assert resolved.backend == :tiamat
+      assert resolved.backend_module == Cranium.Backend.LLM.Tiamat
+      assert resolved.model == nil
+      assert resolved.router_profile == "exo"
+
+      assert resolved.backend_config == %{
+               "endpoint" => "http://localhost:4002",
+               "timeout" => 300_000
+             }
+
+      assert resolved.identity == "You are a test identity."
+    end
+
     test "returns error for unknown profile" do
       assert {:error, :not_found} = Config.resolve_profile("nonexistent")
     end
@@ -151,7 +166,8 @@ defmodule Cranium.ConfigTest do
     end
 
     test "returns nil for nonexistent file" do
-      assert Config.read_identity("/tmp/nonexistent-identity-#{:rand.uniform(999_999)}.txt") == nil
+      assert Config.read_identity("/tmp/nonexistent-identity-#{:rand.uniform(999_999)}.txt") ==
+               nil
     end
   end
 end

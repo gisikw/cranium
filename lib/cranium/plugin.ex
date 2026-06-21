@@ -82,6 +82,7 @@ defmodule Cranium.Plugin do
           model: String.t() | nil,
           identity: String.t() | nil,
           thinking: boolean() | nil,
+          router_profile: String.t() | nil,
           backend_config: map(),
           context_window: pos_integer() | nil,
           saturation_warn: number() | nil,

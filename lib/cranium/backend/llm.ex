@@ -33,6 +33,7 @@ defmodule Cranium.Backend.LLM do
   - `:system` — system prompt string
   - `:tools` — list of tool definitions
   - `:model` — model identifier override
+  - `:router_profile` — Tiamat router profile when routing via Tiamat
   - `:max_tokens` — maximum output tokens
   """
   @callback stream_chat(messages :: list(), opts :: keyword()) ::

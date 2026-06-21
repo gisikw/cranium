@@ -68,8 +68,9 @@ value SaturationConfig {
 value ResolvedProfile {
     name: String
     backend_module: Atom
-    backend: claudecode | anthropic | ollama | mock
+    backend: claudecode | anthropic | ollama | openai_compat | openai_responses | tiamat | mock
     model: String?
+    router_profile: String?
     identity: String?
     thinking: Boolean?
     context_window: Integer?
@@ -111,8 +112,9 @@ entity ProfileStore {
 
 entity Profile {
     name: String
-    backend: claudecode | anthropic | ollama | mock
+    backend: claudecode | anthropic | ollama | openai_compat | openai_responses | tiamat | mock
     model: String?
+    router_profile: String?
     identity_path: String?
     thinking: Boolean?
     context_window: Integer?
@@ -169,6 +171,7 @@ rule LoadProfiles {
             name: key,
             backend: parsed backend atom,
             model: config["model"],
+            router_profile: config["router_profile"],
             identity_path: config["identity"],
             thinking: config["thinking"] (boolean or nil),
             context_window: config["context_window"],
@@ -191,13 +194,17 @@ rule LoadProfiles {
         --   - Missing or unreadable profiles.yaml
         --   - Missing "profiles" key
         --   - Empty profiles map
-        --   - Unknown backend string (not one of: claudecode, anthropic, ollama, mock)
+        --   - Unknown backend string (not one of: claudecode, anthropic, ollama, openai_compat, openai_responses, tiamat, mock)
+        --   - backend "tiamat" without a non-empty router_profile string
         --   - Default profile name not found in profiles map
         --
         -- Backend string mapping:
         --   "claudecode" -> :claudecode
         --   "anthropic"  -> :anthropic
         --   "ollama"     -> :ollama
+        --   "openai_compat" -> :openai_compat
+        --   "openai_responses" -> :openai_responses
+        --   "tiamat"     -> :tiamat
         --   "mock"       -> :mock
         --
         -- Plugin parsing: each entry must have a "module" key (string,
@@ -232,6 +239,9 @@ rule ResolveProfile {
         --   :claudecode -> Cranium.Backend.LLM.ClaudeCode
         --   :anthropic  -> Cranium.Backend.LLM.Anthropic
         --   :ollama     -> Cranium.Backend.LLM.Ollama
+        --   :openai_compat -> Cranium.Backend.LLM.OpenAICompat
+        --   :openai_responses -> Cranium.Backend.LLM.OpenAIResponses
+        --   :tiamat     -> Cranium.Backend.LLM.Tiamat
         --   :mock       -> Cranium.Backend.LLM.Mock (dynamic to avoid xref)
         --
         -- Identity is resolved lazily — the file is read (or served

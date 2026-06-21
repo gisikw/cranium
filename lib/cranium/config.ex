@@ -38,6 +38,7 @@ defmodule Cranium.Config do
       identity_paths: [],
       tools_prompt: false,
       thinking: nil,
+      router_profile: nil,
       context_window: nil,
       saturation_warn: nil,
       saturation_critical: nil,
@@ -61,11 +62,13 @@ defmodule Cranium.Config do
 
     @type t :: %__MODULE__{
             name: String.t(),
-            backend: :claudecode | :anthropic | :ollama | :openai_compat,
+            backend:
+              :claudecode | :anthropic | :ollama | :openai_compat | :openai_responses | :tiamat,
             model: String.t() | nil,
             identity_paths: [String.t()],
             tools_prompt: boolean(),
             thinking: boolean() | nil,
+            router_profile: String.t() | nil,
             context_window: pos_integer() | nil,
             saturation_warn: number() | nil,
             saturation_critical: number() | nil,
@@ -103,6 +106,7 @@ defmodule Cranium.Config do
            identity: identity,
            tools_prompt: profile.tools_prompt,
            thinking: profile.thinking,
+           router_profile: profile.router_profile,
            context_window: profile.context_window,
            saturation_warn: profile.saturation_warn,
            saturation_critical: profile.saturation_critical,
@@ -276,9 +280,14 @@ defmodule Cranium.Config do
             "ollama" -> :ollama
             "openai_compat" -> :openai_compat
             "openai_responses" -> :openai_responses
+            "tiamat" -> :tiamat
             "mock" -> :mock
             other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'"
           end
+
+        unless backend != :tiamat or valid_router_profile?(config["router_profile"]) do
+          raise "Cranium.Config: tiamat profile '#{name}' requires non-empty router_profile"
+        end
 
         thinking =
           case config["thinking"] do
@@ -316,6 +325,7 @@ defmodule Cranium.Config do
           identity_paths: identity_paths,
           tools_prompt: config["tools_prompt"] == true,
           thinking: thinking,
+          router_profile: config["router_profile"],
           context_window: config["context_window"],
           saturation_warn: config["saturation_warn"],
           saturation_critical: config["saturation_critical"],
@@ -352,7 +362,9 @@ defmodule Cranium.Config do
     if is_map(room_defaults) do
       for {room, profile_name} <- room_defaults do
         unless Map.has_key?(profiles, profile_name) do
-          Logger.warning("Config: room_defaults '#{room}' references unknown profile '#{profile_name}', ignoring")
+          Logger.warning(
+            "Config: room_defaults '#{room}' references unknown profile '#{profile_name}', ignoring"
+          )
         end
 
         :ets.insert(@table, {{:room_default, room}, profile_name})
@@ -366,6 +378,8 @@ defmodule Cranium.Config do
 
     Logger.info("Config: loaded #{map_size(profiles)} profiles (default: #{default_name})")
   end
+
+  defp valid_router_profile?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp normalize_identity_paths(nil), do: []
   defp normalize_identity_paths(path) when is_binary(path), do: [path]
@@ -387,6 +401,7 @@ defmodule Cranium.Config do
   end
 
   defp parse_plugins(nil), do: []
+
   defp parse_plugins(list) when is_list(list) do
     Enum.map(list, fn entry ->
       module_str = entry["module"] || raise "Cranium.Config: plugin entry missing 'module'"
@@ -395,6 +410,7 @@ defmodule Cranium.Config do
       %{module: module, config: config}
     end)
   end
+
   defp parse_plugins(_), do: []
 
   defp backend_module(:claudecode), do: Cranium.Backend.LLM.ClaudeCode
@@ -402,6 +418,7 @@ defmodule Cranium.Config do
   defp backend_module(:ollama), do: Cranium.Backend.LLM.Ollama
   defp backend_module(:openai_compat), do: Cranium.Backend.LLM.OpenAICompat
   defp backend_module(:openai_responses), do: Cranium.Backend.LLM.OpenAIResponses
+  defp backend_module(:tiamat), do: Cranium.Backend.LLM.Tiamat
   # Dynamic construction avoids compile-time xref warning — Mock only exists in test env.
   defp backend_module(:mock), do: Module.concat([Cranium.Backend.LLM, Mock])
 end
