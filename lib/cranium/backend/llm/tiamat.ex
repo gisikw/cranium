@@ -139,8 +139,9 @@ defmodule Cranium.Backend.LLM.Tiamat do
   defp append_in_memory_messages(request, _messages), do: request
 
   defp stringify_in_memory_message(message) when is_map(message) do
-    role = Map.get(message, :role) || Map.get(message, "role")
+    raw_role = Map.get(message, :role) || Map.get(message, "role")
     content = Map.get(message, :content) || Map.get(message, "content") || []
+    role = normalize_tiamat_role(raw_role, content)
 
     %{
       "id" =>
@@ -148,11 +149,23 @@ defmodule Cranium.Backend.LLM.Tiamat do
       "parent_id" => Map.get(message, :parent_id) || Map.get(message, "parent_id"),
       "created_at" =>
         Map.get(message, :created_at) || Map.get(message, "created_at") || DateTime.utc_now(),
-      "role" => to_string(role || "user"),
+      "role" => role,
       "content" => stringify_content_blocks(content),
       "provenance" => Map.get(message, :provenance) || Map.get(message, "provenance") || %{}
     }
   end
+
+  defp normalize_tiamat_role(role, content) do
+    if to_string(role || "user") == "user" and tool_result_content?(content),
+      do: "tool",
+      else: to_string(role || "user")
+  end
+
+  defp tool_result_content?(content) when is_list(content) do
+    Enum.any?(content, fn block -> block_value(block, "type") == "tool_result" end)
+  end
+
+  defp tool_result_content?(_), do: false
 
   defp stringify_content_blocks(content) when is_list(content) do
     Enum.map(content, &stringify_content_block/1)

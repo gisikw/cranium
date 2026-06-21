@@ -158,7 +158,10 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
     refute Map.has_key?(tool_use_block, "name")
     refute Map.has_key?(tool_use_block, "input")
 
-    assert [tool_result_message] = Enum.filter(second_request["messages"], &tool_result_message?/1)
+    assert [tool_result_message] =
+             Enum.filter(second_request["messages"], &tool_result_message?/1)
+
+    assert tool_result_message["role"] == "tool"
 
     assert [tool_result_block] =
              Enum.filter(tool_result_message["content"], &(Map.get(&1, "type") == "tool_result"))
