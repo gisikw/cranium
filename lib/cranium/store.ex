@@ -718,9 +718,66 @@ defmodule Cranium.Store do
     assigned = map_value(assignment, "assigned") || %{}
 
     %{}
-    |> maybe_put_parent_id(message, map_value(assigned, "parent_id"))
+    |> maybe_put_parent_id(
+      message,
+      map_value(assigned, "parent_id") || map_value(assignment, "assigned_parent_id")
+    )
     |> maybe_merge_provenance(message, map_value(assigned, "provenance"))
+    |> maybe_put_content_block_assignments(message, assignment, assigned)
   end
+
+  defp maybe_put_content_block_assignments(
+         changes,
+         %Message{content: content},
+         assignment,
+         assigned
+       )
+       when is_list(content) do
+    content_index = map_value(assignment, "content_index")
+
+    assigned_tool_use_id =
+      map_value(assignment, "assigned_tool_use_id") || map_value(assigned, "tool_use_id")
+
+    assigned_tool_result_for =
+      map_value(assignment, "assigned_tool_result_for") || map_value(assigned, "tool_result_for")
+
+    cond do
+      not is_integer(content_index) ->
+        changes
+
+      not is_binary(assigned_tool_use_id) and not is_binary(assigned_tool_result_for) ->
+        changes
+
+      content_index < 0 or content_index >= length(content) ->
+        changes
+
+      true ->
+        updated =
+          List.update_at(content, content_index, fn block ->
+            block
+            |> maybe_put_block_key("tool_use_id", assigned_tool_use_id)
+            |> maybe_put_block_key("tool_result_for", assigned_tool_result_for)
+          end)
+
+        if updated == content, do: changes, else: Map.put(changes, :content, updated)
+    end
+  end
+
+  defp maybe_put_content_block_assignments(changes, _message, _assignment, _assigned), do: changes
+
+  defp maybe_put_block_key(block, _key, nil), do: block
+
+  defp maybe_put_block_key(block, key, value) when is_map(block) and is_binary(value) do
+    current = Map.get(block, key) || Map.get(block, String.to_atom(key))
+
+    if current == value do
+      block
+    else
+      Map.put(block, key, value)
+    end
+  end
+
+  defp maybe_put_block_key(block, _key, _value), do: block
 
   defp maybe_put_parent_id(changes, %Message{parent_id: current}, assigned)
        when is_binary(assigned) or is_nil(assigned) do

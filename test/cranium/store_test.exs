@@ -192,6 +192,56 @@ defmodule CraniumTest.StoreTest do
       assert updated_second.parent_id == index_parent
     end
 
+    test "applies content-block tool id assignments" do
+      conversation_id = "conv-normalize-tools"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :assistant,
+          content: [
+            %{"type" => "tool_use", "tool_name" => "bash", "tool_input" => %{"command" => "pwd"}}
+          ]
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :tool,
+          content: [%{"type" => "tool_result", "tool_output" => %{"stdout" => "/tmp"}}]
+        })
+
+      {:ok, [assistant, tool]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+
+      delta = %{
+        "assignments" => [
+          %{
+            "selector" => %{"id" => assistant.id},
+            "content_index" => 0,
+            "assigned_tool_use_id" => "toolu_tiamat_test"
+          },
+          %{
+            "selector" => %{"id" => tool.id},
+            "content_index" => 0,
+            "assigned_tool_result_for" => "toolu_tiamat_test"
+          }
+        ]
+      }
+
+      assert {:ok, %{applied: 2, skipped: 0}} =
+               Cranium.Store.apply_tiamat_normalization_delta(
+                 conversation_id,
+                 epoch_id,
+                 [%{"id" => assistant.id}, %{"id" => tool.id}],
+                 delta
+               )
+
+      {:ok, [updated_assistant, updated_tool]} =
+        Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+
+      assert [%{"tool_use_id" => "toolu_tiamat_test"}] = updated_assistant.content
+      assert [%{"tool_result_for" => "toolu_tiamat_test"}] = updated_tool.content
+    end
+
     test "skips missing selectors and no-op assignments" do
       conversation_id = "conv-normalize-skip"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
