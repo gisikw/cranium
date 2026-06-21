@@ -6,6 +6,7 @@ defmodule Cranium.Backend.LLM do
   a process that sends tagged messages to the caller as SSE events arrive:
 
   - `{:llm_text, text}` — text content chunk
+  - `{:llm_assistant_content, blocks}` — native assistant content blocks for persistence
   - `{:llm_tool_use, %{id: id, name: name, input: input}}` — tool call
   - `{:llm_usage, %{input_tokens: n, output_tokens: n, ...}}` — token counts
   - `{:llm_stop, reason}` — inference complete ("end_turn", "tool_use", etc.)

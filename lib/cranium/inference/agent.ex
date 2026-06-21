@@ -65,6 +65,7 @@ defmodule Cranium.Inference.Agent do
     field :async_tasks_outstanding, list(), default: []
     field :async_results_pending, list(), default: []
     field :partial_output, list(), default: []
+    field :assistant_content_blocks, list(), default: []
     field :intermediate_messages, list(), default: []
     field :usage, map(), default: %{input_tokens: 0, output_tokens: 0}
     # For CC path: tracks pending clear_context call (nil or continuation string)
@@ -134,6 +135,7 @@ defmodule Cranium.Inference.Agent do
         stream_id: stream_id,
         messages: messages,
         partial_output: [],
+        assistant_content_blocks: [],
         intermediate_messages: [],
         async_tasks_outstanding: [],
         async_results_pending: [],
@@ -253,6 +255,7 @@ defmodule Cranium.Inference.Agent do
           stream_id: stream_id,
           status: :complete,
           output: final_state.partial_output |> Enum.reverse() |> Enum.join(),
+          final_message_content: final_assistant_content(final_state),
           intermediate_messages: final_state.intermediate_messages,
           usage: final_state.usage,
           cc_session_id: final_state.cc_session_id
@@ -290,6 +293,7 @@ defmodule Cranium.Inference.Agent do
   @impl true
   def handle_info({:llm_usage, _}, state), do: {:noreply, state}
   def handle_info({:llm_text, _}, state), do: {:noreply, state}
+  def handle_info({:llm_assistant_content, _}, state), do: {:noreply, state}
   def handle_info({:llm_stop, _}, state), do: {:noreply, state}
   def handle_info({:llm_tool_use, _}, state), do: {:noreply, state}
 
@@ -360,6 +364,15 @@ defmodule Cranium.Inference.Agent do
       {:llm_text, text} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
+        receive_loop(state, stream_id, llm_pid, ref, opts)
+
+      {:llm_assistant_content, content_blocks} when is_list(content_blocks) ->
+        state = %{
+          state
+          | assistant_content_blocks:
+              state.assistant_content_blocks ++ normalize_content_blocks(content_blocks)
+        }
+
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:llm_tool_use, tool_call} ->
@@ -598,7 +611,7 @@ defmodule Cranium.Inference.Agent do
         end)
 
       # Build assistant content blocks (text + tool_use)
-      assistant_content = build_assistant_content(state.partial_output, tool_calls)
+      assistant_content = build_assistant_content(state)
 
       # Append assistant message + tool results to conversation
       assistant_msg = %{role: "assistant", content: assistant_content}
@@ -614,6 +627,7 @@ defmodule Cranium.Inference.Agent do
       state = %{
         state
         | partial_output: [],
+          assistant_content_blocks: [],
           tool_calls_pending: [],
           intermediate_messages: state.intermediate_messages ++ intermediate
       }
@@ -797,7 +811,7 @@ defmodule Cranium.Inference.Agent do
   end
 
   defp append_current_assistant_message(messages, state) do
-    case build_assistant_content(state.partial_output, []) do
+    case build_assistant_content(state) do
       [] ->
         {messages, []}
 
@@ -817,7 +831,8 @@ defmodule Cranium.Inference.Agent do
           state
           | intermediate_messages:
               state.intermediate_messages ++ assistant_messages ++ injections,
-            partial_output: []
+            partial_output: [],
+            assistant_content_blocks: []
         }
 
         run_inference(state, stream_id, messages, opts)
@@ -1013,6 +1028,16 @@ defmodule Cranium.Inference.Agent do
 
   defp max_async_tasks_per_pass, do: Application.get_env(:cranium, :max_async_tasks_per_pass, 5)
 
+  defp final_assistant_content(state) do
+    blocks = normalize_content_blocks(state.assistant_content_blocks)
+
+    if blocks == [] do
+      nil
+    else
+      blocks
+    end
+  end
+
   defp async_result_preview_max_bytes,
     do: Application.get_env(:cranium, :async_result_preview_max_bytes, 1000)
 
@@ -1152,7 +1177,18 @@ defmodule Cranium.Inference.Agent do
     emit(stream_id, conversation_id, {:chunk, stream_id, {:tool_result, payload}})
   end
 
-  defp build_assistant_content(partial_output, tool_calls) do
+  defp build_assistant_content(state) do
+    native_blocks = normalize_content_blocks(state.assistant_content_blocks)
+    tool_calls = Enum.reverse(state.tool_calls_pending)
+
+    if native_blocks == [] do
+      build_assistant_content_from_legacy_stream(state.partial_output, tool_calls)
+    else
+      native_blocks
+    end
+  end
+
+  defp build_assistant_content_from_legacy_stream(partial_output, tool_calls) do
     text = partial_output |> Enum.reverse() |> Enum.join()
 
     text_blocks =
@@ -1164,6 +1200,55 @@ defmodule Cranium.Inference.Agent do
       end)
 
     text_blocks ++ tool_blocks
+  end
+
+  defp normalize_content_blocks(blocks) when is_list(blocks) do
+    Enum.map(blocks, &normalize_content_block/1)
+  end
+
+  defp normalize_content_block(block) when is_map(block) do
+    type = block_value(block, "type")
+
+    case type do
+      "text" ->
+        %{type: "text", text: block_value(block, "text") || ""}
+
+      "thinking" ->
+        %{
+          type: "thinking",
+          text: block_value(block, "text") || block_value(block, "thinking") || ""
+        }
+
+      "tool_use" ->
+        %{
+          type: "tool_use",
+          id: block_value(block, "tool_use_id") || block_value(block, "id"),
+          name: block_value(block, "tool_name") || block_value(block, "name"),
+          input: block_value(block, "tool_input") || block_value(block, "input") || %{}
+        }
+
+      other when is_binary(other) ->
+        block
+        |> stringify_keys()
+        |> Map.put("type", other)
+
+      _ ->
+        stringify_keys(block)
+    end
+  end
+
+  defp normalize_content_block(other), do: %{type: "text", text: to_string(other)}
+
+  defp block_value(map, key) when is_map(map) and is_binary(key) do
+    cond do
+      Map.has_key?(map, key) -> Map.get(map, key)
+      Map.has_key?(map, String.to_atom(key)) -> Map.get(map, String.to_atom(key))
+      true -> nil
+    end
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
   # Replace with latest usage snapshot rather than summing. Each CC assistant

@@ -45,6 +45,18 @@ defmodule Cranium.Backend.LLM.TiamatTest do
     }
 
     assert :ok = Tiamat.dispatch_response(self(), response)
+
+    assert_receive {:llm_assistant_content,
+                    [
+                      %{"type" => "text", "text" => "I'll check."},
+                      %{
+                        "type" => "tool_use",
+                        "tool_use_id" => "toolu_1",
+                        "tool_name" => "bash",
+                        "tool_input" => %{"command" => "printf hello"}
+                      }
+                    ]}
+
     assert_receive {:llm_text, "I'll check."}
 
     assert_receive {:llm_tool_use,

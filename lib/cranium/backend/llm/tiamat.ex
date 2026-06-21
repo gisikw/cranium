@@ -33,8 +33,14 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
   @doc false
   def dispatch_response(caller, %{"status" => "completed"} = response) do
-    response
-    |> transcript_delta()
+    delta = transcript_delta(response)
+    assistant_blocks = assistant_content_blocks(delta)
+
+    if assistant_blocks != [] do
+      send(caller, {:llm_assistant_content, assistant_blocks})
+    end
+
+    delta
     |> text_chunks()
     |> Enum.each(&send(caller, {:llm_text, &1}))
 
@@ -45,12 +51,17 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
   def dispatch_response(caller, %{"status" => "tool_call"} = response) do
     delta = transcript_delta(response)
+    assistant_blocks = assistant_content_blocks(delta)
+
+    if assistant_blocks != [] do
+      send(caller, {:llm_assistant_content, assistant_blocks})
+    end
 
     delta
     |> text_chunks()
     |> Enum.each(&send(caller, {:llm_text, &1}))
 
-    delta
+    assistant_blocks
     |> tool_calls()
     |> Enum.each(&send(caller, {:llm_tool_use, &1}))
 
@@ -181,6 +192,14 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
   defp transcript_delta(response), do: response["transcript_delta"] || []
 
+  defp assistant_content_blocks(delta) do
+    delta
+    |> Enum.filter(&(Map.get(&1, "role") == "assistant" or Map.get(&1, :role) == "assistant"))
+    |> Enum.flat_map(fn message ->
+      Map.get(message, "content") || Map.get(message, :content) || []
+    end)
+  end
+
   defp apply_normalization_delta(request, response, opts) do
     delta = response["normalization_delta"]
 
@@ -213,23 +232,26 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
   defp text_chunks(delta) do
     delta
-    |> Enum.flat_map(fn message -> message["content"] || [] end)
-    |> Enum.filter(&(&1["type"] == "text" and is_binary(&1["text"])))
-    |> Enum.map(& &1["text"])
+    |> assistant_content_blocks()
+    |> Enum.filter(&(block_value(&1, "type") == "text" and is_binary(block_value(&1, "text"))))
+    |> Enum.map(&block_value(&1, "text"))
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp tool_calls(delta) do
-    delta
-    |> Enum.flat_map(fn message -> message["content"] || [] end)
-    |> Enum.filter(&(&1["type"] == "tool_use"))
+  defp tool_calls(blocks) do
+    blocks
+    |> Enum.filter(&(block_value(&1, "type") == "tool_use"))
     |> Enum.map(fn block ->
       %{
-        id: block["tool_use_id"] || block["id"],
-        name: block["tool_name"] || block["name"],
-        input: block["tool_input"] || block["input"] || %{}
+        id: block_value(block, "tool_use_id") || block_value(block, "id"),
+        name: block_value(block, "tool_name") || block_value(block, "name"),
+        input: block_value(block, "tool_input") || block_value(block, "input") || %{}
       }
     end)
+  end
+
+  defp block_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
   end
 
   defp maybe_send_usage(caller, response) do

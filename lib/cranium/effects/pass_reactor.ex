@@ -36,7 +36,7 @@ defmodule Cranium.Effects.PassReactor do
       ) do
     unless payload[:ephemeral] do
       # Persist intermediate messages (assistant + tool_result pairs from tool loop)
-      for msg <- (payload[:intermediate_messages] || []) do
+      for msg <- payload[:intermediate_messages] || [] do
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: msg[:role] || msg["role"],
           content: msg[:content] || msg["content"],
@@ -44,18 +44,22 @@ defmodule Cranium.Effects.PassReactor do
         })
       end
 
-      if payload.output != "" do
+      final_message_content = payload[:final_message_content]
+
+      if payload.output != "" or final_message_content not in [nil, []] do
         # Persist final assistant message as content blocks
         Cranium.Store.append_message(cid, payload.epoch_id, %{
           role: :assistant,
-          content: [%{"type" => "text", "text" => payload.output}],
+          content: final_message_content || [%{"type" => "text", "text" => payload.output}],
           origin: payload[:origin],
           usage: payload[:usage]
         })
       else
         if (payload[:intermediate_messages] || []) == [] do
           Logger.warning("Inference completed with empty output",
-            conversation_id: cid, stage: :effects)
+            conversation_id: cid,
+            stage: :effects
+          )
         end
       end
 
@@ -83,7 +87,10 @@ defmodule Cranium.Effects.PassReactor do
           turn_count: payload.turn_count
         }
 
-        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(cid, after_pass_context)
+        Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(
+          cid,
+          after_pass_context
+        )
 
         # Dispatch sidecar evaluations for active macros
         Cranium.Macro.Engine.after_pass(after_pass_context)

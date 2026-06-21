@@ -87,6 +87,81 @@ defmodule Cranium.Inference.AgentTest do
       assert content =~ "hi"
     end
 
+    test "preserves native assistant content blocks while executing tool calls" do
+      test_pid = self()
+
+      tools_before = Application.get_env(:cranium, :tools, [])
+      on_exit(fn -> Application.put_env(:cranium, :tools, tools_before) end)
+      Cranium.Inference.Agent.ToolRouter.register("echo", Cranium.Inference.AgentTest.EchoTool)
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:llm_assistant_content,
+               [
+                 %{"type" => "thinking", "text" => "I should use the echo tool."},
+                 %{"type" => "text", "text" => "Let me check"},
+                 %{
+                   "type" => "tool_use",
+                   "tool_use_id" => "tc_native",
+                   "tool_name" => "echo",
+                   "tool_input" => %{"msg" => "hi"}
+                 }
+               ]}
+            )
+
+            send(caller, {:llm_text, "Let me check"})
+
+            send(
+              caller,
+              {:llm_tool_use, %{id: "tc_native", name: "echo", input: %{"msg" => "hi"}}}
+            )
+
+            send(caller, {:llm_stop, "tool_use"})
+          end)
+
+        {:ok, pid}
+      end)
+      |> expect(:stream_chat, fn messages, _opts ->
+        send(test_pid, {:native_second_call_messages, messages})
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_text, "Done!"})
+            send(caller, {:llm_stop, "end_turn"})
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-native"}
+      subscribe_stream("s-native")
+      {:ok, result} = Cranium.Inference.Agent.infer(agent, context)
+
+      assert result.output == "Done!"
+      assert_receive {:native_second_call_messages, messages}
+      [_user, assistant, tool_result] = messages
+
+      assert assistant.role == "assistant"
+
+      assert assistant.content == [
+               %{type: "thinking", text: "I should use the echo tool."},
+               %{type: "text", text: "Let me check"},
+               %{type: "tool_use", id: "tc_native", name: "echo", input: %{"msg" => "hi"}}
+             ]
+
+      assert tool_result.role == "user"
+      [%{type: "tool_result", tool_use_id: "tc_native", content: content}] = tool_result.content
+      assert content =~ "hi"
+    end
+
     test "handles marker tools with fake success" do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->
