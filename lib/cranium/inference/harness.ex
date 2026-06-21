@@ -121,7 +121,8 @@ defmodule Cranium.Inference.Harness do
       silent: silent,
       tool_posture: turn[:tool_posture] || :sandbox,
       tool_rw: turn[:tool_rw] || [],
-      tool_ro: turn[:tool_ro] || []
+      tool_ro: turn[:tool_ro] || [],
+      epoch_id: turn[:epoch_id]
     }
 
     result = Cranium.Inference.Agent.infer(agent_pid, context)
