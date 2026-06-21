@@ -11,6 +11,8 @@ defmodule Cranium.Store.Message do
     field :content, {:array, :map}
     field :origin, :string
     field :usage, :map
+    field :parent_id, :binary_id
+    field :provenance, :map
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
@@ -18,7 +20,16 @@ defmodule Cranium.Store.Message do
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:conversation_id, :epoch_id, :role, :content, :origin, :usage])
+    |> cast(attrs, [
+      :conversation_id,
+      :epoch_id,
+      :role,
+      :content,
+      :origin,
+      :usage,
+      :parent_id,
+      :provenance
+    ])
     |> validate_required([:conversation_id, :role, :content])
   end
 end

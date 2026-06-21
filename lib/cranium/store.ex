@@ -280,7 +280,9 @@ defmodule Cranium.Store do
       role: to_string(message[:role] || "user"),
       content: message[:content] || [],
       origin: message[:origin],
-      usage: message[:usage]
+      usage: message[:usage],
+      parent_id: message[:parent_id],
+      provenance: message[:provenance]
     })
     |> Repo.insert!()
 
@@ -322,10 +324,11 @@ defmodule Cranium.Store do
     fetch = limit + 1
 
     # Exclude orientation messages — those are private to the model
-    base = from(m in Message,
-      where: m.conversation_id == ^conversation_id,
-      where: m.origin != "orientation" or is_nil(m.origin)
-    )
+    base =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id,
+        where: m.origin != "orientation" or is_nil(m.origin)
+      )
 
     base =
       case before_ts do
@@ -548,11 +551,12 @@ defmodule Cranium.Store do
     since = Keyword.get(opts, :since)
     room = Keyword.get(opts, :room)
 
-    base = from(m in Message,
-      where: m.origin != "orientation" or is_nil(m.origin),
-      order_by: [asc: m.inserted_at, asc: m.id],
-      limit: ^limit
-    )
+    base =
+      from(m in Message,
+        where: m.origin != "orientation" or is_nil(m.origin),
+        order_by: [asc: m.inserted_at, asc: m.id],
+        limit: ^limit
+      )
 
     base = if since, do: from(m in base, where: m.inserted_at > ^since), else: base
     base = if room, do: from(m in base, where: m.conversation_id == ^room), else: base
@@ -601,7 +605,9 @@ defmodule Cranium.Store do
           new_epoch_attrs = %{conversation_id: conversation_id}
 
           new_epoch_attrs =
-            if continuation, do: Map.put(new_epoch_attrs, :continuation, continuation), else: new_epoch_attrs
+            if continuation,
+              do: Map.put(new_epoch_attrs, :continuation, continuation),
+              else: new_epoch_attrs
 
           new_epoch =
             %Epoch{}
@@ -637,11 +643,33 @@ defmodule Cranium.Store do
   end
 
   defp message_to_map(%Message{} = m) do
-    %{role: String.to_existing_atom(m.role), content: m.content}
+    %{
+      id: m.id,
+      conversation_id: m.conversation_id,
+      epoch_id: m.epoch_id,
+      parent_id: m.parent_id,
+      role: String.to_existing_atom(m.role),
+      content: m.content,
+      origin: m.origin,
+      usage: m.usage,
+      provenance: m.provenance,
+      inserted_at: m.inserted_at
+    }
   end
 
-  defp message_to_map(%{role: role, content: content}) do
-    %{role: String.to_existing_atom(to_string(role)), content: content}
+  defp message_to_map(%{role: role, content: content} = m) do
+    %{
+      id: Map.get(m, :id),
+      conversation_id: Map.get(m, :conversation_id),
+      epoch_id: Map.get(m, :epoch_id),
+      parent_id: Map.get(m, :parent_id),
+      role: String.to_existing_atom(to_string(role)),
+      content: content,
+      origin: Map.get(m, :origin),
+      usage: Map.get(m, :usage),
+      provenance: Map.get(m, :provenance),
+      inserted_at: Map.get(m, :inserted_at)
+    }
   end
 
   defp message_to_api_map(%Message{} = m) do
@@ -652,10 +680,13 @@ defmodule Cranium.Store do
       text: extract_text(m.content),
       origin: m.origin,
       created_at: m.inserted_at,
-      epoch_id: m.epoch_id
+      epoch_id: m.epoch_id,
+      parent_id: m.parent_id
     }
 
-    if m.usage, do: Map.put(base, :usage, m.usage), else: base
+    base = if m.provenance, do: Map.put(base, :provenance, m.provenance), else: base
+    base = if m.usage, do: Map.put(base, :usage, m.usage), else: base
+    base
   end
 
   @doc "Extract concatenated text from content blocks."
@@ -686,6 +717,7 @@ defmodule Cranium.Store do
 
     base = %{
       id: m.id,
+      parent_id: m.parent_id,
       conversation_id: m.conversation_id,
       epoch_id: m.epoch_id,
       timestamp: DateTime.to_iso8601(m.inserted_at),
@@ -693,16 +725,21 @@ defmodule Cranium.Store do
       content: extract_text(m.content)
     }
 
-    # Only include model and token counts for assistant messages with usage
-    base = if usage["model"] || usage[:model],
-      do: Map.put(base, :model, usage["model"] || usage[:model]),
-      else: base
+    base = if m.provenance, do: Map.put(base, :provenance, m.provenance), else: base
 
-    base = if usage["input_tokens"] || usage[:input_tokens],
-      do: base
-        |> Map.put(:tokens_in, usage["input_tokens"] || usage[:input_tokens])
-        |> Map.put(:tokens_out, usage["output_tokens"] || usage[:output_tokens]),
-      else: base
+    # Only include model and token counts for assistant messages with usage
+    base =
+      if usage["model"] || usage[:model],
+        do: Map.put(base, :model, usage["model"] || usage[:model]),
+        else: base
+
+    base =
+      if usage["input_tokens"] || usage[:input_tokens],
+        do:
+          base
+          |> Map.put(:tokens_in, usage["input_tokens"] || usage[:input_tokens])
+          |> Map.put(:tokens_out, usage["output_tokens"] || usage[:output_tokens]),
+        else: base
 
     if tool_calls != [], do: Map.put(base, :tool_calls, tool_calls), else: base
   end
@@ -784,6 +821,7 @@ defmodule Cranium.Store do
   defp extract_tool_calls(_, _), do: []
 
   defp tool_call_success?(nil), do: true
+
   defp tool_call_success?(result) do
     is_error = result["is_error"] || result[:is_error]
     content = to_string(result["content"] || result[:content] || "")

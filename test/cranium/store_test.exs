@@ -14,7 +14,11 @@ defmodule CraniumTest.StoreTest do
     end
 
     test "inserts messages and retrieves them in insertion order", %{epoch_id: epoch_id} do
-      :ok = Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("hello")})
+      :ok =
+        Cranium.Store.append_message("conv-msg", epoch_id, %{
+          role: :user,
+          content: text_block("hello")
+        })
 
       :ok =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
@@ -23,25 +27,76 @@ defmodule CraniumTest.StoreTest do
         })
 
       :ok =
-        Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("how are you?")})
+        Cranium.Store.append_message("conv-msg", epoch_id, %{
+          role: :user,
+          content: text_block("how are you?")
+        })
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg")
 
       assert length(messages) == 3
       assert Enum.map(messages, & &1.role) == [:user, :assistant, :user]
-      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == ["hello", "hi there", "how are you?"]
+
+      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == [
+               "hello",
+               "hi there",
+               "how are you?"
+             ]
+    end
+
+    test "round-trips native transcript metadata", %{epoch_id: epoch_id} do
+      parent_id = Ecto.UUID.generate()
+
+      provenance = %{
+        "origin" => "cranium",
+        "backend" => "tiamat",
+        "provider" => "anthropic",
+        "model" => "claude-sonnet-4-6",
+        "provider_request_id" => "req-123",
+        "provider_message_id" => "msg-456"
+      }
+
+      :ok =
+        Cranium.Store.append_message("conv-msg", epoch_id, %{
+          role: :assistant,
+          content: text_block("with provenance"),
+          parent_id: parent_id,
+          origin: "maw",
+          usage: %{model: "claude-sonnet-4-6", input_tokens: 10, output_tokens: 3},
+          provenance: provenance
+        })
+
+      {:ok, [message]} = Cranium.Store.get_messages("conv-msg", epoch_id: epoch_id)
+
+      assert message.id
+      assert message.conversation_id == "conv-msg"
+      assert message.epoch_id == epoch_id
+      assert message.parent_id == parent_id
+      assert message.role == :assistant
+      assert message.origin == "maw"
+      assert message.usage["model"] == "claude-sonnet-4-6"
+      assert message.provenance == provenance
+      assert %DateTime{} = message.inserted_at
     end
 
     test "respects the limit option, returning most recent", %{epoch_id: epoch_id} do
       for i <- 1..10 do
         :ok =
-          Cranium.Store.append_message("conv-msg", epoch_id, %{role: :user, content: text_block("msg #{i}")})
+          Cranium.Store.append_message("conv-msg", epoch_id, %{
+            role: :user,
+            content: text_block("msg #{i}")
+          })
       end
 
       {:ok, messages} = Cranium.Store.get_messages("conv-msg", limit: 3)
 
       assert length(messages) == 3
-      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == ["msg 8", "msg 9", "msg 10"]
+
+      assert Enum.map(messages, &Cranium.Store.extract_text(&1.content)) == [
+               "msg 8",
+               "msg 9",
+               "msg 10"
+             ]
     end
 
     test "returns empty list when no messages exist" do
@@ -53,8 +108,17 @@ defmodule CraniumTest.StoreTest do
       {:ok, epoch_a} = Cranium.Store.create_epoch("conv-a")
       {:ok, epoch_b} = Cranium.Store.create_epoch("conv-b")
 
-      :ok = Cranium.Store.append_message("conv-a", epoch_a, %{role: :user, content: text_block("alpha")})
-      :ok = Cranium.Store.append_message("conv-b", epoch_b, %{role: :user, content: text_block("bravo")})
+      :ok =
+        Cranium.Store.append_message("conv-a", epoch_a, %{
+          role: :user,
+          content: text_block("alpha")
+        })
+
+      :ok =
+        Cranium.Store.append_message("conv-b", epoch_b, %{
+          role: :user,
+          content: text_block("bravo")
+        })
 
       {:ok, a_msgs} = Cranium.Store.get_messages("conv-a")
       {:ok, b_msgs} = Cranium.Store.get_messages("conv-b")
@@ -63,6 +127,55 @@ defmodule CraniumTest.StoreTest do
       assert Cranium.Store.extract_text(hd(a_msgs).content) == "alpha"
       assert length(b_msgs) == 1
       assert Cranium.Store.extract_text(hd(b_msgs).content) == "bravo"
+    end
+  end
+
+  describe "list_messages" do
+    test "includes native transcript metadata in API messages" do
+      {:ok, epoch_id} = Cranium.Store.create_epoch("conv-api")
+      parent_id = Ecto.UUID.generate()
+      provenance = %{"origin" => "tiamat", "model" => "test-model"}
+
+      :ok =
+        Cranium.Store.append_message("conv-api", epoch_id, %{
+          role: :assistant,
+          content: text_block("api visible"),
+          parent_id: parent_id,
+          provenance: provenance
+        })
+
+      {:ok, %{messages: [message], has_more: false}} = Cranium.Store.list_messages("conv-api")
+
+      assert message.id
+      assert message.epoch_id == epoch_id
+      assert message.parent_id == parent_id
+      assert message.provenance == provenance
+      assert message.text == "api visible"
+    end
+  end
+
+  describe "list_transcripts" do
+    test "includes native transcript metadata in transcript export" do
+      {:ok, epoch_id} = Cranium.Store.create_epoch("conv-transcript")
+      parent_id = Ecto.UUID.generate()
+      provenance = %{"origin" => "tiamat", "provider_request_id" => "req-789"}
+
+      :ok =
+        Cranium.Store.append_message("conv-transcript", epoch_id, %{
+          role: :assistant,
+          content: text_block("export me"),
+          parent_id: parent_id,
+          provenance: provenance
+        })
+
+      since = DateTime.utc_now() |> DateTime.add(-60, :second)
+      {:ok, [record]} = Cranium.Store.list_transcripts(room: "conv-transcript", since: since)
+
+      assert record.id
+      assert record.parent_id == parent_id
+      assert record.provenance == provenance
+      assert record.content == "export me"
+      assert record.epoch_id == epoch_id
     end
   end
 
@@ -138,11 +251,20 @@ defmodule CraniumTest.StoreTest do
   describe "get_last_message_at/1" do
     test "returns the timestamp of the most recent message" do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-ts")
-      :ok = Cranium.Store.append_message("conv-ts", epoch_id, %{role: :user, content: text_block("first")})
+
+      :ok =
+        Cranium.Store.append_message("conv-ts", epoch_id, %{
+          role: :user,
+          content: text_block("first")
+        })
+
       Process.sleep(10)
 
       :ok =
-        Cranium.Store.append_message("conv-ts", epoch_id, %{role: :assistant, content: text_block("second")})
+        Cranium.Store.append_message("conv-ts", epoch_id, %{
+          role: :assistant,
+          content: text_block("second")
+        })
 
       {:ok, ts} = Cranium.Store.get_last_message_at(epoch_id)
       assert %DateTime{} = ts
