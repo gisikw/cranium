@@ -24,7 +24,17 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
             "content" => [%{"type" => "text", "text" => "from tiamat"}]
           }
         ],
-        "normalization_delta" => %{"assignments" => []},
+        "normalization_delta" => %{
+          "assignments" => [
+            %{
+              "selector" => %{"index" => 0},
+              "assigned" => %{
+                "parent_id" => nil,
+                "provenance" => %{"normalized_by" => "tiamat-test"}
+              }
+            }
+          ]
+        },
         "routing_diagnostics" => %{"attempts" => []}
       }
 
@@ -88,6 +98,9 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
 
     assert_receive {:llm_text, "from tiamat"}
     assert_receive {:llm_stop, "end_turn"}
+
+    {:ok, [stored]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+    assert stored.provenance == %{"normalized_by" => "tiamat-test"}
 
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, reason}

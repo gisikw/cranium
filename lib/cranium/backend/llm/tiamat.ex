@@ -78,6 +78,7 @@ defmodule Cranium.Backend.LLM.Tiamat do
   defp do_stream(caller, opts) do
     with {:ok, request} <- build_request(opts),
          {:ok, response} <- post_turn(request, opts) do
+      apply_normalization_delta(request, response, opts)
       dispatch_response(caller, response)
     else
       {:error, reason} ->
@@ -179,6 +180,36 @@ defmodule Cranium.Backend.LLM.Tiamat do
   end
 
   defp transcript_delta(response), do: response["transcript_delta"] || []
+
+  defp apply_normalization_delta(request, response, opts) do
+    delta = response["normalization_delta"]
+
+    if is_map(delta) do
+      conversation_id = Keyword.get(opts, :conversation_id)
+      epoch_id = Keyword.get(opts, :epoch_id)
+      request_messages = request["messages"] || []
+
+      case Cranium.Store.apply_tiamat_normalization_delta(
+             conversation_id,
+             epoch_id,
+             request_messages,
+             delta
+           ) do
+        {:ok, %{applied: applied, skipped: skipped}} ->
+          if applied > 0 or skipped > 0 do
+            Logger.debug("Applied Tiamat normalization delta",
+              applied: applied,
+              skipped: skipped,
+              conversation_id: conversation_id,
+              epoch_id: epoch_id
+            )
+          end
+
+        {:error, reason} ->
+          Logger.warning("Failed to apply Tiamat normalization delta", error: inspect(reason))
+      end
+    end
+  end
 
   defp text_chunks(delta) do
     delta

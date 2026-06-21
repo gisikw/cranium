@@ -68,6 +68,23 @@ defmodule Cranium.Store do
   end
 
   @doc """
+  Apply Tiamat normalization assignments to already-persisted transcript rows.
+
+  Tiamat selectors may address request messages by durable id or by request index.
+  Cranium owns persisted message ids and inserted_at timestamps, so conflicting
+  assignments for those fields are ignored; parentage and provenance are safe
+  mechanical decorations and are applied when resolvable.
+  """
+  @spec apply_tiamat_normalization_delta(String.t(), String.t(), [map()], map() | nil) ::
+          {:ok, %{applied: non_neg_integer(), skipped: non_neg_integer()}} | {:error, :db_error}
+  def apply_tiamat_normalization_delta(conversation_id, epoch_id, request_messages, delta) do
+    GenServer.call(
+      __MODULE__,
+      {:apply_tiamat_normalization_delta, conversation_id, epoch_id, request_messages, delta}
+    )
+  end
+
+  @doc """
   Paginated message listing for API consumers.
 
   Options:
@@ -314,6 +331,17 @@ defmodule Cranium.Store do
 
     result = Enum.map(messages, &message_to_map/1)
     {:reply, {:ok, result}, state}
+  end
+
+  defp do_handle_call(
+         {:apply_tiamat_normalization_delta, conversation_id, epoch_id, request_messages, delta},
+         _from,
+         state
+       ) do
+    result =
+      do_apply_tiamat_normalization_delta(conversation_id, epoch_id, request_messages, delta)
+
+    {:reply, result, state}
   end
 
   defp do_handle_call({:list_messages, conversation_id, opts}, _from, state) do
@@ -621,6 +649,102 @@ defmodule Cranium.Store do
   end
 
   # --- Private ---
+
+  defp do_apply_tiamat_normalization_delta(_conversation_id, _epoch_id, _request_messages, nil),
+    do: {:ok, %{applied: 0, skipped: 0}}
+
+  defp do_apply_tiamat_normalization_delta(conversation_id, epoch_id, request_messages, delta) do
+    assignments = normalization_assignments(delta)
+
+    messages =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id and m.epoch_id == ^epoch_id,
+        order_by: [asc: m.inserted_at, asc: m.id]
+      )
+      |> Repo.all()
+
+    request_by_index =
+      request_messages
+      |> Enum.with_index()
+      |> Map.new(fn {message, index} -> {index, map_value(message, "id")} end)
+
+    message_by_id = Map.new(messages, &{&1.id, &1})
+
+    {applied, skipped} =
+      Enum.reduce(assignments, {0, 0}, fn assignment, {applied, skipped} ->
+        with {:ok, message_id} <- assignment_message_id(assignment, request_by_index),
+             %Message{} = message <- Map.get(message_by_id, message_id),
+             changes when changes != %{} <- safe_normalization_changes(message, assignment) do
+          message
+          |> Message.changeset(changes)
+          |> Repo.update!()
+
+          {applied + 1, skipped}
+        else
+          _ -> {applied, skipped + 1}
+        end
+      end)
+
+    {:ok, %{applied: applied, skipped: skipped}}
+  end
+
+  defp normalization_assignments(%{"assignments" => assignments}) when is_list(assignments),
+    do: assignments
+
+  defp normalization_assignments(%{assignments: assignments}) when is_list(assignments),
+    do: assignments
+
+  defp normalization_assignments(_), do: []
+
+  defp assignment_message_id(assignment, request_by_index) do
+    selector = map_value(assignment, "selector") || %{}
+
+    cond do
+      is_binary(map_value(selector, "id")) ->
+        {:ok, map_value(selector, "id")}
+
+      is_integer(map_value(selector, "index")) ->
+        case Map.get(request_by_index, map_value(selector, "index")) do
+          id when is_binary(id) -> {:ok, id}
+          _ -> :error
+        end
+
+      true ->
+        :error
+    end
+  end
+
+  defp safe_normalization_changes(%Message{} = message, assignment) do
+    assigned = map_value(assignment, "assigned") || %{}
+
+    %{}
+    |> maybe_put_parent_id(message, map_value(assigned, "parent_id"))
+    |> maybe_merge_provenance(message, map_value(assigned, "provenance"))
+  end
+
+  defp maybe_put_parent_id(changes, %Message{parent_id: current}, assigned)
+       when is_binary(assigned) or is_nil(assigned) do
+    if current == assigned, do: changes, else: Map.put(changes, :parent_id, assigned)
+  end
+
+  defp maybe_put_parent_id(changes, _message, _assigned), do: changes
+
+  defp maybe_merge_provenance(changes, %Message{provenance: current}, assigned)
+       when is_map(assigned) do
+    merged = Map.merge(current || %{}, stringify_keys(assigned))
+
+    if merged == (current || %{}), do: changes, else: Map.put(changes, :provenance, merged)
+  end
+
+  defp maybe_merge_provenance(changes, _message, _assigned), do: changes
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  end
 
   defp epoch_to_map(%Epoch{} = e) do
     %{

@@ -130,6 +130,105 @@ defmodule CraniumTest.StoreTest do
     end
   end
 
+  describe "apply_tiamat_normalization_delta" do
+    test "applies assignments by id selector and index selector" do
+      conversation_id = "conv-normalize"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: text_block("one")
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :assistant,
+          content: text_block("two")
+        })
+
+      {:ok, [first, second]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+      assigned_parent = Ecto.UUID.generate()
+      index_parent = Ecto.UUID.generate()
+
+      delta = %{
+        "assignments" => [
+          %{
+            "selector" => %{"id" => first.id},
+            "assigned" => %{
+              "id" => Ecto.UUID.generate(),
+              "parent_id" => assigned_parent,
+              "created_at" => "2001-01-01T00:00:00Z",
+              "provenance" => %{"normalized_by" => "tiamat"}
+            }
+          },
+          %{
+            "selector" => %{"index" => 1},
+            "assigned" => %{"parent_id" => index_parent}
+          }
+        ]
+      }
+
+      request_messages = [
+        %{"id" => first.id},
+        %{"id" => second.id}
+      ]
+
+      assert {:ok, %{applied: 2, skipped: 0}} =
+               Cranium.Store.apply_tiamat_normalization_delta(
+                 conversation_id,
+                 epoch_id,
+                 request_messages,
+                 delta
+               )
+
+      {:ok, [updated_first, updated_second]} =
+        Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+
+      assert updated_first.id == first.id
+      assert updated_first.inserted_at == first.inserted_at
+      assert updated_first.parent_id == assigned_parent
+      assert updated_first.provenance == %{"normalized_by" => "tiamat"}
+      assert updated_second.parent_id == index_parent
+    end
+
+    test "skips missing selectors and no-op assignments" do
+      conversation_id = "conv-normalize-skip"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      parent_id = Ecto.UUID.generate()
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: text_block("one"),
+          parent_id: parent_id,
+          provenance: %{"origin" => "test"}
+        })
+
+      {:ok, [message]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+
+      delta = %{
+        "assignments" => [
+          %{"selector" => %{"index" => 99}, "assigned" => %{"parent_id" => Ecto.UUID.generate()}},
+          %{"selector" => %{"id" => message.id}, "assigned" => %{"parent_id" => parent_id}}
+        ]
+      }
+
+      assert {:ok, %{applied: 0, skipped: 2}} =
+               Cranium.Store.apply_tiamat_normalization_delta(
+                 conversation_id,
+                 epoch_id,
+                 [%{"id" => message.id}],
+                 delta
+               )
+
+      {:ok, [unchanged]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+      assert unchanged.parent_id == parent_id
+      assert unchanged.provenance == %{"origin" => "test"}
+    end
+  end
+
   describe "list_messages" do
     test "includes native transcript metadata in API messages" do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-api")
