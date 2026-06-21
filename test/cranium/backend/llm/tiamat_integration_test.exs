@@ -145,6 +145,29 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
     assert Enum.any?(second_request["messages"], &assistant_tool_use_message?/1)
     assert Enum.any?(second_request["messages"], &tool_result_message?/1)
 
+    assert [assistant_tool_message] =
+             Enum.filter(second_request["messages"], &assistant_tool_use_message?/1)
+
+    assert [tool_use_block] =
+             Enum.filter(assistant_tool_message["content"], &(Map.get(&1, "type") == "tool_use"))
+
+    assert tool_use_block["tool_use_id"] == "toolu_echo"
+    assert tool_use_block["tool_name"] == "echo"
+    assert tool_use_block["tool_input"] == %{"msg" => "from tiamat"}
+    refute Map.has_key?(tool_use_block, "id")
+    refute Map.has_key?(tool_use_block, "name")
+    refute Map.has_key?(tool_use_block, "input")
+
+    assert [tool_result_message] = Enum.filter(second_request["messages"], &tool_result_message?/1)
+
+    assert [tool_result_block] =
+             Enum.filter(tool_result_message["content"], &(Map.get(&1, "type") == "tool_result"))
+
+    assert tool_result_block["tool_result_for"] == "toolu_echo"
+    assert is_binary(tool_result_block["tool_output"])
+    refute Map.has_key?(tool_result_block, "tool_use_id")
+    refute Map.has_key?(tool_result_block, "content")
+
     assert_receive {:chunk, ^stream_id, "checking"}
     assert_receive {:chunk, ^stream_id, {:tool_use, %{id: "toolu_echo", name: "echo"}}}
 

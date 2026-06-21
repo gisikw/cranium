@@ -163,12 +163,47 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
   defp stringify_content_blocks(content), do: [%{"type" => "text", "text" => inspect(content)}]
 
-  defp stringify_content_block(block) when is_map(block), do: stringify_keys(block)
+  defp stringify_content_block(block) when is_map(block) do
+    block
+    |> stringify_keys()
+    |> normalize_tiamat_content_block()
+  end
+
   defp stringify_content_block(text) when is_binary(text), do: %{"type" => "text", "text" => text}
   defp stringify_content_block(other), do: %{"type" => "text", "text" => inspect(other)}
 
   defp stringify_keys(map) do
     Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)
+  end
+
+  defp normalize_tiamat_content_block(%{"type" => "tool_use"} = block) do
+    block
+    |> put_alias_if_present("tool_use_id", "id")
+    |> put_alias_if_present("tool_name", "name")
+    |> put_alias_if_present("tool_input", "input")
+    |> Map.drop(["id", "name", "input"])
+  end
+
+  defp normalize_tiamat_content_block(%{"type" => "tool_result"} = block) do
+    block
+    |> put_alias_if_present("tool_result_for", "tool_use_id")
+    |> put_alias_if_present("tool_output", "content")
+    |> Map.drop(["tool_use_id", "content"])
+  end
+
+  defp normalize_tiamat_content_block(block), do: block
+
+  defp put_alias_if_present(block, canonical_key, alias_key) do
+    case Map.fetch(block, canonical_key) do
+      {:ok, _} ->
+        block
+
+      :error ->
+        case Map.fetch(block, alias_key) do
+          {:ok, value} -> Map.put(block, canonical_key, value)
+          :error -> block
+        end
+    end
   end
 
   defp stringify_value(value) when is_map(value), do: stringify_keys(value)
@@ -184,6 +219,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
     Logger.info(
       "Tiamat request: endpoint=#{endpoint} router_profile=#{request["router_profile"]} messages=#{length(request["messages"])} tools=#{length(request["tools"])}"
     )
+
+    log_tool_block_diagnostics(request)
 
     sse_state = SSE.new()
 
@@ -223,6 +260,39 @@ defmodule Cranium.Backend.LLM.Tiamat do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp log_tool_block_diagnostics(request) do
+    request
+    |> Map.get("messages", [])
+    |> Enum.with_index()
+    |> Enum.each(fn {message, index} ->
+      role = Map.get(message, "role")
+
+      message
+      |> Map.get("content", [])
+      |> Enum.each(fn
+        %{"type" => "tool_use"} = block ->
+          Logger.debug("Tiamat request tool block",
+            message_index: index,
+            role: role,
+            block_type: "tool_use",
+            tool_use_id: Map.get(block, "tool_use_id"),
+            tool_name: Map.get(block, "tool_name")
+          )
+
+        %{"type" => "tool_result"} = block ->
+          Logger.debug("Tiamat request tool block",
+            message_index: index,
+            role: role,
+            block_type: "tool_result",
+            tool_use_id: Map.get(block, "tool_result_for")
+          )
+
+        _ ->
+          :ok
+      end)
+    end)
   end
 
   defp handle_events(events) do
