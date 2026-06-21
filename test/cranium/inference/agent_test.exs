@@ -641,8 +641,17 @@ defmodule Cranium.Inference.AgentTest do
                  stream_id: "s-async-clear-cancel"
                })
 
-      assert_receive :blocking_tool_started, 2_000
       assert_received {:chunk, "s-async-clear-cancel", {:async_task, %{event_type: :started}}}
+
+      assert_received {:chunk, "s-async-clear-cancel",
+                       {:tool_result,
+                        %{
+                          tool_use_id: "tc_clear_blocking",
+                          content: async_ack
+                        }}}
+
+      assert async_ack =~ "async_task_id"
+      assert async_ack =~ "accepted"
 
       assert_received {:chunk, "s-async-clear-cancel", {:async_task, %{event_type: :cancelled}}}
 

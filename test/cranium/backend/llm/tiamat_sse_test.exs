@@ -13,31 +13,63 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
       {:ok, request} = Jason.decode(body)
       send(self_pid(), {:tiamat_request, request})
 
-      response = %{
-        "schema" => "tiamat.turn.response.v1",
-        "response_id" => Ecto.UUID.generate(),
-        "request_id" => request["request_id"],
-        "status" => "completed",
-        "transcript_delta" => [
-          %{
-            "role" => "assistant",
-            "content" => [%{"type" => "text", "text" => "from tiamat"}]
-          }
-        ],
-        "normalization_delta" => %{
-          "assignments" => [
-            %{
-              "selector" => %{"index" => 0},
-              "assigned" => %{
-                "parent_id" => nil,
-                "provenance" => %{"normalized_by" => "tiamat-test"}
-              }
-            }
-          ]
-        },
-        "routing_diagnostics" => %{"attempts" => []}
-      }
+      case mode() do
+        :block ->
+          send(self_pid(), :tiamat_request_blocking)
+          Process.sleep(:infinity)
+          conn
 
+        :error ->
+          response = %{
+            "schema" => "tiamat.turn.response.v1",
+            "response_id" => Ecto.UUID.generate(),
+            "request_id" => request["request_id"],
+            "status" => "error",
+            "error_code" => "invalid_request",
+            "errors" => [
+              %{
+                "code" => "invalid_request",
+                "message" => "bad fake request",
+                "recoverable" => false
+              }
+            ]
+          }
+
+          send_sse(conn, response)
+
+        :completed ->
+          response = %{
+            "schema" => "tiamat.turn.response.v1",
+            "response_id" => Ecto.UUID.generate(),
+            "request_id" => request["request_id"],
+            "status" => "completed",
+            "transcript_delta" => [
+              %{
+                "role" => "assistant",
+                "content" => [%{"type" => "text", "text" => "from tiamat"}]
+              }
+            ],
+            "normalization_delta" => %{
+              "assignments" => [
+                %{
+                  "selector" => %{"index" => 0},
+                  "assigned" => %{
+                    "parent_id" => nil,
+                    "provenance" => %{"normalized_by" => "tiamat-test"}
+                  }
+                }
+              ]
+            },
+            "routing_diagnostics" => %{"attempts" => []}
+          }
+
+          send_sse(conn, response)
+      end
+    end
+
+    def call(conn, _opts), do: send_resp(conn, 404, "not found")
+
+    defp send_sse(conn, response) do
       conn
       |> put_resp_content_type("text/event-stream")
       |> send_resp(
@@ -46,20 +78,27 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
       )
     end
 
-    def call(conn, _opts), do: send_resp(conn, 404, "not found")
-
     defp self_pid do
       :persistent_term.get({__MODULE__, :test_pid})
+    end
+
+    defp mode do
+      :persistent_term.get({__MODULE__, :mode}, :completed)
     end
   end
 
   setup do
     :persistent_term.put({TestRouter, :test_pid}, self())
+    :persistent_term.put({TestRouter, :mode}, :completed)
 
     port = 45_000 + :rand.uniform(10_000)
-    {:ok, _} = Bandit.start_link(plug: TestRouter, port: port)
+    {:ok, server} = Bandit.start_link(plug: TestRouter, port: port)
 
-    on_exit(fn -> :persistent_term.erase({TestRouter, :test_pid}) end)
+    on_exit(fn ->
+      :persistent_term.erase({TestRouter, :test_pid})
+      :persistent_term.erase({TestRouter, :mode})
+      Process.exit(server, :shutdown)
+    end)
 
     %{endpoint: "http://127.0.0.1:#{port}"}
   end
@@ -93,6 +132,8 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
              %{"id" => "cranium-system", "text" => "System prompt"}
            ]
 
+    assert request["system_prompt"]["post"] == []
+
     assert [%{"role" => "user"}] = request["messages"]
     assert request["tools"] == []
 
@@ -105,5 +146,61 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, reason}
     assert reason in [:normal, :noproc]
+  end
+
+  test "translates Tiamat SSE error responses", %{endpoint: endpoint} do
+    :persistent_term.put({TestRouter, :mode}, :error)
+
+    conversation_id = "tiamat-sse-error-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    assert {:ok, _pid} =
+             Tiamat.stream_chat([],
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+             )
+
+    assert_receive {:tiamat_request, _request}
+
+    assert_receive {:llm_stop,
+                    {:error,
+                     %{
+                       error_code: "invalid_request",
+                       errors: [
+                         %{
+                           "code" => "invalid_request",
+                           "message" => "bad fake request",
+                           "recoverable" => false
+                         }
+                       ]
+                     }}}
+  end
+
+  test "backend process can be cancelled while HTTP request is in flight", %{endpoint: endpoint} do
+    :persistent_term.put({TestRouter, :mode}, :block)
+
+    conversation_id = "tiamat-sse-cancel-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    assert {:ok, pid} =
+             Tiamat.stream_chat([],
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 60_000}
+             )
+
+    assert_receive {:tiamat_request, _request}
+    assert_receive :tiamat_request_blocking
+
+    ref = Process.monitor(pid)
+    Process.unlink(pid)
+    Process.exit(pid, :shutdown)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}, 2_000
+    refute_receive {:llm_stop, _}, 50
   end
 end

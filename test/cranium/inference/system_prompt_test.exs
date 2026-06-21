@@ -17,19 +17,21 @@ defmodule Cranium.Inference.SystemPromptTest do
     end
 
     test "uses identity override when provided", %{conversation_id: cid} do
-      result = SystemPrompt.contribute(cid,
-        is_fresh: false,
-        identity: "You are a test agent."
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: false,
+          identity: "You are a test agent."
+        )
 
       assert result == "You are a test agent."
     end
 
     test "ignores empty identity override", %{conversation_id: cid} do
-      result = SystemPrompt.contribute(cid,
-        is_fresh: false,
-        identity: ""
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: false,
+          identity: ""
+        )
 
       assert is_binary(result)
     end
@@ -38,10 +40,11 @@ defmodule Cranium.Inference.SystemPromptTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch(cid)
       Cranium.Store.save_handoff(epoch_id, "Previous session context here.")
 
-      result = SystemPrompt.contribute(cid,
-        is_fresh: true,
-        identity: "Base identity."
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: true,
+          identity: "Base identity."
+        )
 
       assert result =~ "Base identity."
       assert result =~ "<room-handoff>"
@@ -54,19 +57,21 @@ defmodule Cranium.Inference.SystemPromptTest do
       Cranium.Store.save_handoff(epoch_id, "Handoff content.")
 
       # Turn 1: fresh, resolves and caches handoff
-      result1 = SystemPrompt.contribute(cid,
-        is_fresh: true,
-        identity: "Base identity."
-      )
+      result1 =
+        SystemPrompt.contribute(cid,
+          is_fresh: true,
+          identity: "Base identity."
+        )
 
       assert result1 =~ "<room-handoff>"
       assert result1 =~ "Handoff content."
 
       # Turn 2+: not fresh, handoff persists from cache
-      result2 = SystemPrompt.contribute(cid,
-        is_fresh: false,
-        identity: "Base identity."
-      )
+      result2 =
+        SystemPrompt.contribute(cid,
+          is_fresh: false,
+          identity: "Base identity."
+        )
 
       assert result1 == result2
     end
@@ -95,10 +100,11 @@ defmodule Cranium.Inference.SystemPromptTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch(cid)
       Cranium.Store.save_handoff(epoch_id, "Should not appear.")
 
-      result = SystemPrompt.contribute(cid,
-        is_fresh: false,
-        identity: "Base identity."
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: false,
+          identity: "Base identity."
+        )
 
       # First call for this conversation is non-fresh — resolves handoff
       # anyway (cache miss triggers lookup), so it WILL include the handoff.
@@ -121,11 +127,12 @@ defmodule Cranium.Inference.SystemPromptTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch(cid)
       Cranium.Store.save_handoff(epoch_id, "Handoff content.")
 
-      result = SystemPrompt.contribute(cid,
-        is_fresh: true,
-        identity: "Identity.",
-        tools_prompt: "# Tool Guidance\nUse Read instead of cat."
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: true,
+          identity: "Identity.",
+          tools_prompt: "# Tool Guidance\nUse Read instead of cat."
+        )
 
       assert result =~ "Identity."
       assert result =~ "# Tool Guidance"
@@ -140,11 +147,12 @@ defmodule Cranium.Inference.SystemPromptTest do
     end
 
     test "tools_prompt without handoff", %{conversation_id: cid} do
-      result = SystemPrompt.contribute(cid,
-        is_fresh: true,
-        identity: "Identity.",
-        tools_prompt: "Tool guidance."
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: true,
+          identity: "Identity.",
+          tools_prompt: "Tool guidance."
+        )
 
       assert result =~ "Identity."
       assert result =~ "Tool guidance."
@@ -152,13 +160,39 @@ defmodule Cranium.Inference.SystemPromptTest do
     end
 
     test "nil tools_prompt is skipped", %{conversation_id: cid} do
-      result = SystemPrompt.contribute(cid,
-        is_fresh: true,
-        identity: "Identity.",
-        tools_prompt: nil
-      )
+      result =
+        SystemPrompt.contribute(cid,
+          is_fresh: true,
+          identity: "Identity.",
+          tools_prompt: nil
+        )
 
       assert result == "Identity."
+    end
+
+    test "fragments split identity pre from tools and handoff post", %{conversation_id: cid} do
+      {:ok, epoch_id} = Cranium.Store.create_epoch(cid)
+      Cranium.Store.save_handoff(epoch_id, "Handoff content.")
+
+      fragments =
+        SystemPrompt.fragments(cid,
+          is_fresh: true,
+          identity: "Identity.",
+          tools_prompt: "Tool guidance."
+        )
+
+      assert fragments.pre == [%{"id" => "cranium-identity", "text" => "Identity."}]
+
+      assert fragments.post == [
+               %{"id" => "cranium-tools", "text" => "Tool guidance."},
+               %{
+                 "id" => "cranium-handoff",
+                 "text" => "<room-handoff>\nHandoff content.\n</room-handoff>"
+               }
+             ]
+
+      assert fragments.system ==
+               "Identity.\n\nTool guidance.\n\n<room-handoff>\nHandoff content.\n</room-handoff>"
     end
   end
 end

@@ -180,6 +180,8 @@ defmodule Cranium.Inference.Agent do
 
     opts = [
       system: system,
+      system_prompt_pre: context[:system_prompt_pre],
+      system_prompt_post: context[:system_prompt_post],
       max_tokens: Map.get(context, :max_tokens, 8192),
       tools: tools,
       tools_disabled: tools_disabled,

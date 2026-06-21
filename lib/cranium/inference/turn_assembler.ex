@@ -345,13 +345,15 @@ defmodule Cranium.Inference.TurnAssembler do
     }
 
     # 5. System prompt — uses (possibly overridden) identity
-    system_prompt =
-      Cranium.Inference.SystemPrompt.contribute(
+    prompt_fragments =
+      Cranium.Inference.SystemPrompt.fragments(
         header.conversation_id,
         is_fresh: is_fresh,
         identity: identity,
         tools_prompt: tools_prompt_content
       )
+
+    system_prompt = prompt_fragments.system
 
     # 5c. Dispatch before_context_build hook to plugins
     turn_context = %{
@@ -458,6 +460,8 @@ defmodule Cranium.Inference.TurnAssembler do
     # 11. Emit turn_ready to Harness
     turn = %{
       system: system_prompt,
+      system_prompt_pre: prompt_fragments.pre,
+      system_prompt_post: prompt_fragments.post,
       messages: messages,
       mode: :text,
       conversation_id: header.conversation_id,

@@ -104,6 +104,8 @@ defmodule Cranium.Inference.Harness do
     # Build Agent context
     context = %{
       system: turn.system,
+      system_prompt_pre: turn[:system_prompt_pre],
+      system_prompt_post: turn[:system_prompt_post],
       messages: turn.messages,
       mode: turn[:mode] || :text,
       conversation_id: cid,

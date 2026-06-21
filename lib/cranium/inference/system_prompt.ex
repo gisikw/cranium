@@ -36,6 +36,17 @@ defmodule Cranium.Inference.SystemPrompt do
     GenServer.call(__MODULE__, {:contribute, conversation_id, opts})
   end
 
+  @doc """
+  Return both the flattened system prompt and Tiamat-style prompt fragments.
+
+  `pre` contains durable Cranium identity. `post` contains Cranium-owned dynamic
+  context that should stay after Tiamat's substrate-specific middle steering.
+  """
+  @spec fragments(String.t(), keyword()) :: %{system: String.t(), pre: [map()], post: [map()]}
+  def fragments(conversation_id, opts \\ []) do
+    GenServer.call(__MODULE__, {:fragments, conversation_id, opts})
+  end
+
   # --- GenServer ---
 
   @impl true
@@ -45,6 +56,19 @@ defmodule Cranium.Inference.SystemPrompt do
 
   @impl true
   def handle_call({:contribute, conversation_id, opts}, _from, state) do
+    {fragments, state} = build_fragments(conversation_id, opts, state)
+    {:reply, fragments.system, state}
+  end
+
+  @impl true
+  def handle_call({:fragments, conversation_id, opts}, _from, state) do
+    {fragments, state} = build_fragments(conversation_id, opts, state)
+    {:reply, fragments, state}
+  end
+
+  # --- Private ---
+
+  defp build_fragments(conversation_id, opts, state) do
     is_fresh = Keyword.get(opts, :is_fresh, false)
     identity = Keyword.get(opts, :identity) || ""
     tools_prompt = Keyword.get(opts, :tools_prompt)
@@ -71,26 +95,33 @@ defmodule Cranium.Inference.SystemPrompt do
           {cached, handoffs}
       end
 
-    # Compose: identity + tools_prompt + handoff
-    parts = [identity]
+    pre = prompt_fragment_list([{"cranium-identity", identity}])
 
-    parts =
-      if is_binary(tools_prompt) and tools_prompt != "" do
-        parts ++ [tools_prompt]
-      else
-        parts
-      end
+    post =
+      []
+      |> maybe_add_fragment("cranium-tools", tools_prompt)
+      |> maybe_add_fragment("cranium-handoff", handoff_block(handoff))
 
-    parts =
-      case handoff do
-        nil -> parts
-        content -> parts ++ ["<room-handoff>\n" <> content <> "\n</room-handoff>"]
-      end
+    system_prompt =
+      (Enum.map(pre, & &1["text"]) ++ Enum.map(post, & &1["text"]))
+      |> Enum.join("\n\n")
 
-    system_prompt = Enum.join(parts, "\n\n")
-
-    {:reply, system_prompt, %{state | handoffs: handoffs}}
+    {%{system: system_prompt, pre: pre, post: post}, %{state | handoffs: handoffs}}
   end
+
+  defp prompt_fragment_list(fragments) do
+    fragments
+    |> Enum.reduce([], fn {id, text}, acc -> maybe_add_fragment(acc, id, text) end)
+  end
+
+  defp maybe_add_fragment(fragments, _id, text) when not is_binary(text) or text == "" do
+    fragments
+  end
+
+  defp maybe_add_fragment(fragments, id, text), do: fragments ++ [%{"id" => id, "text" => text}]
+
+  defp handoff_block(nil), do: nil
+  defp handoff_block(content), do: "<room-handoff>\n" <> content <> "\n</room-handoff>"
 
   # --- Private ---
 

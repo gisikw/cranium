@@ -25,9 +25,9 @@ defmodule Cranium.Backend.LLM.Tiamat do
   def manages_tool_loop?, do: false
 
   @impl true
-  def stream_chat(_messages, opts) do
+  def stream_chat(messages, opts) do
     caller = self()
-    pid = spawn_link(fn -> do_stream(caller, opts) end)
+    pid = spawn_link(fn -> do_stream(caller, messages, opts) end)
     {:ok, pid}
   end
 
@@ -86,8 +86,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
     :ok
   end
 
-  defp do_stream(caller, opts) do
-    with {:ok, request} <- build_request(opts),
+  defp do_stream(caller, messages, opts) do
+    with {:ok, request} <- build_request(messages, opts),
          {:ok, response} <- post_turn(request, opts) do
       apply_normalization_delta(request, response, opts)
       dispatch_response(caller, response)
@@ -98,7 +98,7 @@ defmodule Cranium.Backend.LLM.Tiamat do
     end
   end
 
-  defp build_request(opts) do
+  defp build_request(messages, opts) do
     conversation_id = Keyword.get(opts, :conversation_id)
     epoch_id = Keyword.get(opts, :epoch_id)
     router_profile = Keyword.get(opts, :router_profile)
@@ -120,12 +120,60 @@ defmodule Cranium.Backend.LLM.Tiamat do
             epoch_id: epoch_id,
             router_profile: router_profile,
             system_prompt: Keyword.get(opts, :system),
+            system_prompt_pre: Keyword.get(opts, :system_prompt_pre),
+            system_prompt_post: Keyword.get(opts, :system_prompt_post),
             tools_disabled: Keyword.get(opts, :tools_disabled, false)
           )
+          |> append_in_memory_messages(messages)
 
         {:ok, request}
     end
   end
+
+  defp append_in_memory_messages(request, messages) when is_list(messages) do
+    stored_count = length(request["messages"] || [])
+    additions = messages |> Enum.drop(stored_count) |> Enum.map(&stringify_in_memory_message/1)
+    Map.update!(request, "messages", &(&1 ++ additions))
+  end
+
+  defp append_in_memory_messages(request, _messages), do: request
+
+  defp stringify_in_memory_message(message) when is_map(message) do
+    role = Map.get(message, :role) || Map.get(message, "role")
+    content = Map.get(message, :content) || Map.get(message, "content") || []
+
+    %{
+      "id" =>
+        Map.get(message, :id) || Map.get(message, "id") || "agent-memory-#{Ecto.UUID.generate()}",
+      "parent_id" => Map.get(message, :parent_id) || Map.get(message, "parent_id"),
+      "created_at" =>
+        Map.get(message, :created_at) || Map.get(message, "created_at") || DateTime.utc_now(),
+      "role" => to_string(role || "user"),
+      "content" => stringify_content_blocks(content),
+      "provenance" => Map.get(message, :provenance) || Map.get(message, "provenance") || %{}
+    }
+  end
+
+  defp stringify_content_blocks(content) when is_list(content) do
+    Enum.map(content, &stringify_content_block/1)
+  end
+
+  defp stringify_content_blocks(content) when is_binary(content),
+    do: [%{"type" => "text", "text" => content}]
+
+  defp stringify_content_blocks(content), do: [%{"type" => "text", "text" => inspect(content)}]
+
+  defp stringify_content_block(block) when is_map(block), do: stringify_keys(block)
+  defp stringify_content_block(text) when is_binary(text), do: %{"type" => "text", "text" => text}
+  defp stringify_content_block(other), do: %{"type" => "text", "text" => inspect(other)}
+
+  defp stringify_keys(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)
+  end
+
+  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
+  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
+  defp stringify_value(value), do: value
 
   defp post_turn(request, opts) do
     backend_config = Keyword.get(opts, :backend_config, %{}) || %{}
