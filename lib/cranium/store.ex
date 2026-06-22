@@ -955,13 +955,19 @@ defmodule Cranium.Store do
 
   defp is_tool_result_message?(_), do: false
 
-  # Build a map of tool_use_id → tool_result content from user messages
+  # Build a map of tool_use_id → tool_result content from tool-result messages.
+  # Older Cranium transcripts stored tool results as user messages with
+  # tool_use_id; Tiamat-normalized transcripts store role=tool with
+  # tool_result_for. Accept both shapes while exporting history.
   defp build_tool_result_index(messages) do
     Enum.reduce(messages, %{}, fn m, acc ->
-      if m.role == "user" do
+      if m.role in ["user", "tool"] do
         Enum.reduce(m.content || [], acc, fn block, inner_acc ->
           type = block["type"] || block[:type]
-          tool_use_id = block["tool_use_id"] || block[:tool_use_id]
+
+          tool_use_id =
+            block["tool_result_for"] || block[:tool_result_for] || block["tool_use_id"] ||
+              block[:tool_use_id]
 
           if type == "tool_result" && tool_use_id do
             Map.put(inner_acc, tool_use_id, block)
@@ -982,8 +988,8 @@ defmodule Cranium.Store do
       (block["type"] || block[:type]) == "tool_use"
     end)
     |> Enum.map(fn block ->
-      id = block["id"] || block[:id]
-      name = block["name"] || block[:name]
+      id = block["tool_use_id"] || block[:tool_use_id] || block["id"] || block[:id]
+      name = block["tool_name"] || block[:tool_name] || block["name"] || block[:name]
       result = Map.get(tool_results, id)
 
       success = tool_call_success?(result)

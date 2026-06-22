@@ -326,6 +326,44 @@ defmodule CraniumTest.StoreTest do
       assert record.content == "export me"
       assert record.epoch_id == epoch_id
     end
+
+    test "exports Tiamat-canonical tool ids and tool results" do
+      conversation_id = "conv-transcript-tools"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :assistant,
+          content: [
+            %{
+              "type" => "tool_use",
+              "tool_use_id" => "toolu_tiamat_test",
+              "tool_name" => "bash",
+              "tool_input" => %{"command" => "pwd"}
+            }
+          ]
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :tool,
+          content: [
+            %{
+              "type" => "tool_result",
+              "tool_result_for" => "toolu_tiamat_test",
+              "tool_output" => %{"stdout" => "/tmp"},
+              "is_error" => false
+            }
+          ]
+        })
+
+      since = DateTime.utc_now() |> DateTime.add(-60, :second)
+
+      {:ok, [record, _tool_record]} =
+        Cranium.Store.list_transcripts(room: conversation_id, since: since)
+
+      assert record.tool_calls == [%{name: "bash", success: true}]
+    end
   end
 
   describe "create_epoch/update_epoch/get_epoch" do
