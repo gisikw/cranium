@@ -217,7 +217,8 @@ defmodule Cranium.Store do
   extracts model/token counts from the usage JSONB.
 
   Options:
-  - `:since` — `DateTime`; only messages inserted after this time (required for incremental pulls)
+  - `:since` — `DateTime`; only messages inserted after this time
+  - `:after_id` — message id cursor paired with `:since`; includes rows at the same timestamp with id greater than this value
   - `:limit` — max messages to return (default 1000, clamped 1..5000)
   - `:room` — optional conversation_id filter
   """
@@ -577,6 +578,7 @@ defmodule Cranium.Store do
   defp do_handle_call({:list_transcripts, opts}, _from, state) do
     limit = opts |> Keyword.get(:limit, 1000) |> min(5000) |> max(1)
     since = Keyword.get(opts, :since)
+    after_id = Keyword.get(opts, :after_id)
     room = Keyword.get(opts, :room)
 
     base =
@@ -586,7 +588,20 @@ defmodule Cranium.Store do
         limit: ^limit
       )
 
-    base = if since, do: from(m in base, where: m.inserted_at > ^since), else: base
+    base =
+      cond do
+        since && is_binary(after_id) ->
+          from(m in base,
+            where: m.inserted_at > ^since or (m.inserted_at == ^since and m.id > ^after_id)
+          )
+
+        since ->
+          from(m in base, where: m.inserted_at > ^since)
+
+        true ->
+          base
+      end
+
     base = if room, do: from(m in base, where: m.conversation_id == ^room), else: base
 
     messages = Repo.all(base)
@@ -903,9 +918,12 @@ defmodule Cranium.Store do
       epoch_id: m.epoch_id,
       timestamp: DateTime.to_iso8601(m.inserted_at),
       role: m.role,
-      content: extract_text(m.content)
+      content: m.content,
+      text: extract_text(m.content)
     }
 
+    base = if m.origin, do: Map.put(base, :origin, m.origin), else: base
+    base = if m.usage, do: Map.put(base, :usage, m.usage), else: base
     base = if m.provenance, do: Map.put(base, :provenance, m.provenance), else: base
 
     # Only include model and token counts for assistant messages with usage

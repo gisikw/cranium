@@ -71,8 +71,11 @@ defmodule Cranium.Transport.HTTP do
 
       "!cancel" ->
         result = Cranium.cancel(conversation_id)
+
         Logger.info("Cancel result: #{inspect(result)}",
-          conversation_id: conversation_id, transport: :http)
+          conversation_id: conversation_id,
+          transport: :http
+        )
 
         conn
         |> put_resp_content_type("application/json")
@@ -125,7 +128,10 @@ defmodule Cranium.Transport.HTTP do
         Cranium.Inference.Conversation.start_or_get(conversation_id)
 
         Cranium.Events.broadcast({:pass_header, header})
-        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}})
+
+        Cranium.Events.broadcast(
+          {:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}}
+        )
 
         conn
         |> put_resp_content_type("application/json")
@@ -214,9 +220,18 @@ defmodule Cranium.Transport.HTTP do
     # Send current service status immediately so clients that connect
     # after startup (the common case) don't miss the service_ready event.
     version = Application.spec(:cranium, :vsn) |> to_string()
-    status_event = if Cranium.Drain.draining?(),
-      do: sse_event("service_draining", %{reason: "reconnect", version: version, stream_id: "", conversation_id: ""}),
-      else: sse_event("service_ready", %{version: version, stream_id: "", conversation_id: ""})
+
+    status_event =
+      if Cranium.Drain.draining?(),
+        do:
+          sse_event("service_draining", %{
+            reason: "reconnect",
+            version: version,
+            stream_id: "",
+            conversation_id: ""
+          }),
+        else: sse_event("service_ready", %{version: version, stream_id: "", conversation_id: ""})
+
     {:ok, conn} = chunk(conn, status_event)
 
     Cranium.Events.subscribe()
@@ -300,7 +315,8 @@ defmodule Cranium.Transport.HTTP do
         origin: origin
       )
 
-    :ok = Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
+    :ok =
+      Cranium.Transport.Manifest.init_stream(stream_id, conversation_id, disposition: disposition)
 
     # Bridge: emit PassHeader so TurnAssembler can correlate chunked takes
     header = %Cranium.Messages.PassHeader{
@@ -499,7 +515,9 @@ defmodule Cranium.Transport.HTTP do
 
     since =
       case params["since"] do
-        nil -> nil
+        nil ->
+          nil
+
         str ->
           case DateTime.from_iso8601(str) do
             {:ok, dt, _offset} -> dt
@@ -508,19 +526,23 @@ defmodule Cranium.Transport.HTTP do
       end
 
     room = params["room"]
+    after_id = params["after_id"]
 
     if since == :invalid do
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{"error" => "invalid 'since' timestamp"}))
     else
-      opts = [limit: limit] ++
-        if(since, do: [since: since], else: []) ++
-        if(room, do: [room: room], else: [])
+      opts =
+        [limit: limit] ++
+          if(since, do: [since: since], else: []) ++
+          if(after_id, do: [after_id: after_id], else: []) ++
+          if(room, do: [room: room], else: [])
 
       case Cranium.Store.list_transcripts(opts) do
         {:ok, records} ->
-          ndjson = records
+          ndjson =
+            records
             |> Enum.map(&Jason.encode!/1)
             |> Enum.join("\n")
 
@@ -618,32 +640,64 @@ defmodule Cranium.Transport.HTTP do
         sse_loop(conn, stream_id, conv_id)
 
       {:chunk, ^stream_id, text} when is_binary(text) ->
-        {:ok, conn} = chunk(conn, sse_event("chunk", %{stream_id: stream_id, conversation_id: conversation_id, content: text}))
+        {:ok, conn} =
+          chunk(
+            conn,
+            sse_event("chunk", %{
+              stream_id: stream_id,
+              conversation_id: conversation_id,
+              content: text
+            })
+          )
+
         sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:marker, marker}} ->
         {:ok, conn} =
           chunk(
             conn,
-            sse_event("cue", %{stream_id: stream_id, conversation_id: conversation_id, cue_type: "marker", data: marker})
+            sse_event("cue", %{
+              stream_id: stream_id,
+              conversation_id: conversation_id,
+              cue_type: "marker",
+              data: marker
+            })
           )
 
         sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:tool_use, data}} ->
         {:ok, conn} =
-          chunk(conn, sse_event("tool_use", %{stream_id: stream_id, conversation_id: conversation_id, data: data}))
+          chunk(
+            conn,
+            sse_event("tool_use", %{
+              stream_id: stream_id,
+              conversation_id: conversation_id,
+              data: data
+            })
+          )
 
         sse_loop(conn, stream_id, conversation_id)
 
       {:chunk, ^stream_id, {:tool_result, data}} ->
         {:ok, conn} =
-          chunk(conn, sse_event("tool_result", %{stream_id: stream_id, conversation_id: conversation_id, data: data}))
+          chunk(
+            conn,
+            sse_event("tool_result", %{
+              stream_id: stream_id,
+              conversation_id: conversation_id,
+              data: data
+            })
+          )
 
         sse_loop(conn, stream_id, conversation_id)
 
       {:stream_end, ^stream_id} ->
-        chunk(conn, sse_event("stream_end", %{stream_id: stream_id, conversation_id: conversation_id}))
+        chunk(
+          conn,
+          sse_event("stream_end", %{stream_id: stream_id, conversation_id: conversation_id})
+        )
+
         conn
     after
       30_000 ->
@@ -682,16 +736,26 @@ defmodule Cranium.Transport.HTTP do
 
       {:chunk, stream_id, text} when is_binary(text) ->
         conv_id = Map.get(streams, stream_id)
-        case chunk(conn, sse_event("chunk", %{stream_id: stream_id, conversation_id: conv_id, content: text})) do
+
+        case chunk(
+               conn,
+               sse_event("chunk", %{stream_id: stream_id, conversation_id: conv_id, content: text})
+             ) do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, {:marker, marker}} ->
         conv_id = Map.get(streams, stream_id)
+
         case chunk(
                conn,
-               sse_event("cue", %{stream_id: stream_id, conversation_id: conv_id, cue_type: "marker", data: marker})
+               sse_event("cue", %{
+                 stream_id: stream_id,
+                 conversation_id: conv_id,
+                 cue_type: "marker",
+                 data: marker
+               })
              ) do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
@@ -699,14 +763,26 @@ defmodule Cranium.Transport.HTTP do
 
       {:chunk, stream_id, {:tool_use, data}} ->
         conv_id = Map.get(streams, stream_id)
-        case chunk(conn, sse_event("tool_use", %{stream_id: stream_id, conversation_id: conv_id, data: data})) do
+
+        case chunk(
+               conn,
+               sse_event("tool_use", %{stream_id: stream_id, conversation_id: conv_id, data: data})
+             ) do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
 
       {:chunk, stream_id, {:tool_result, data}} ->
         conv_id = Map.get(streams, stream_id)
-        case chunk(conn, sse_event("tool_result", %{stream_id: stream_id, conversation_id: conv_id, data: data})) do
+
+        case chunk(
+               conn,
+               sse_event("tool_result", %{
+                 stream_id: stream_id,
+                 conversation_id: conv_id,
+                 data: data
+               })
+             ) do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
@@ -714,7 +790,11 @@ defmodule Cranium.Transport.HTTP do
       {:stream_end, stream_id} ->
         conv_id = Map.get(streams, stream_id)
         streams = Map.delete(streams, stream_id)
-        case chunk(conn, sse_event("stream_end", %{stream_id: stream_id, conversation_id: conv_id})) do
+
+        case chunk(
+               conn,
+               sse_event("stream_end", %{stream_id: stream_id, conversation_id: conv_id})
+             ) do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
@@ -734,7 +814,8 @@ defmodule Cranium.Transport.HTTP do
         if meta[:silent] do
           multi_stream_sse_loop(conn, streams)
         else
-          data = meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
+          data =
+            meta |> Map.put(:stream_id, stream_id) |> Map.put(:conversation_id, conversation_id)
 
           case chunk(conn, sse_event("pass_complete", data)) do
             {:ok, conn} -> multi_stream_sse_loop(conn, streams)

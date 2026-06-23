@@ -3,6 +3,8 @@ defmodule CraniumTest.StoreTest do
 
   @moduletag :capture_log
 
+  import Ecto.Query
+
   # Store is started by the application supervisor; DataCase handles DB sandbox.
 
   defp text_block(text), do: [%{"type" => "text", "text" => text}]
@@ -323,7 +325,8 @@ defmodule CraniumTest.StoreTest do
       assert record.id
       assert record.parent_id == parent_id
       assert record.provenance == provenance
-      assert record.content == "export me"
+      assert record.content == text_block("export me")
+      assert record.text == "export me"
       assert record.epoch_id == epoch_id
     end
 
@@ -363,6 +366,44 @@ defmodule CraniumTest.StoreTest do
         Cranium.Store.list_transcripts(room: conversation_id, since: since)
 
       assert record.tool_calls == [%{name: "bash", success: true}]
+    end
+
+    test "uses timestamp and id cursor for stable incremental export" do
+      conversation_id = "conv-transcript-cursor"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: text_block("first")
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: text_block("second")
+        })
+
+      {:ok, [first, second]} = Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id)
+
+      Cranium.Store.Repo.update_all(
+        from(m in Cranium.Store.Message,
+          where: m.id in ^[first.id, second.id]
+        ),
+        set: [inserted_at: first.inserted_at]
+      )
+
+      cursor_id = min(first.id, second.id)
+      expected_id = max(first.id, second.id)
+
+      {:ok, [record]} =
+        Cranium.Store.list_transcripts(
+          room: conversation_id,
+          since: first.inserted_at,
+          after_id: cursor_id
+        )
+
+      assert record.id == expected_id
     end
   end
 
