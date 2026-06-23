@@ -325,8 +325,9 @@ defmodule CraniumTest.StoreTest do
       assert record.id
       assert record.parent_id == parent_id
       assert record.provenance == provenance
-      assert record.content == text_block("export me")
+      assert record.content == "export me"
       assert record.text == "export me"
+      assert record.content_blocks == text_block("export me")
       assert record.epoch_id == epoch_id
     end
 

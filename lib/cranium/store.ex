@@ -918,8 +918,9 @@ defmodule Cranium.Store do
       epoch_id: m.epoch_id,
       timestamp: DateTime.to_iso8601(m.inserted_at),
       role: m.role,
-      content: m.content,
-      text: extract_text(m.content)
+      content: extract_text(m.content),
+      text: extract_text(m.content),
+      content_blocks: m.content
     }
 
     base = if m.origin, do: Map.put(base, :origin, m.origin), else: base
