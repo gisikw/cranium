@@ -312,6 +312,82 @@ defmodule Cranium.Inference.AgentTest do
       result = Task.await(task, 5000)
       assert {:error, :cancelled, partial} = result
       assert partial.output == "Starting..."
+      assert partial.interrupted_context == "Starting..."
+    end
+
+    test "cancel captures pending tool calls as interrupted context even without text" do
+      test_pid = self()
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:llm_tool_use, %{id: "tc_1", name: "bash", input: %{"command" => "hostname"}}}
+            )
+
+            send(test_pid, :tool_seen)
+            Process.sleep(:infinity)
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-cancel-tool"}
+      subscribe_stream("s-cancel-tool")
+
+      task = Task.async(fn -> Cranium.Inference.Agent.infer(agent, context) end)
+
+      assert_receive :tool_seen, 2000
+      GenServer.cast(agent, :cancel)
+
+      result = Task.await(task, 5000)
+      assert {:error, :cancelled, partial} = result
+      assert partial.output == ""
+      assert partial.interrupted_context =~ "**bash**"
+      assert partial.interrupted_context =~ "hostname"
+    end
+
+    test "cancel captures completed tool messages as interrupted context" do
+      test_pid = self()
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:cc_tool_use, %{id: "toolu_1", name: "bash", input: %{"command" => "pwd"}}}
+            )
+
+            send(caller, {:cc_tool_result, %{tool_use_id: "toolu_1", content: "/tmp"}})
+            send(test_pid, :tool_result_seen)
+            Process.sleep(:infinity)
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-cancel-tool-result"}
+      subscribe_stream("s-cancel-tool-result")
+
+      task = Task.async(fn -> Cranium.Inference.Agent.infer(agent, context) end)
+
+      assert_receive :tool_result_seen, 2000
+      GenServer.cast(agent, :cancel)
+
+      result = Task.await(task, 5000)
+      assert {:error, :cancelled, partial} = result
+      assert partial.interrupted_context =~ "assistant: > **bash**"
+      assert partial.interrupted_context =~ "user: > **toolu_1 result**"
+      assert partial.interrupted_context =~ "/tmp"
     end
 
     test "keeps last usage snapshot across tool use rounds" do

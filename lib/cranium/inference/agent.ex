@@ -269,9 +269,12 @@ defmodule Cranium.Inference.Agent do
         output = final_state.partial_output |> Enum.reverse() |> Enum.join()
         Logger.info("Inference cancelled", output_length: String.length(output))
 
+        interrupted_context = build_interrupted_context(final_state)
+
         partial = %{
           stream_id: stream_id,
           output: output,
+          interrupted_context: interrupted_context,
           usage: final_state.usage,
           cc_session_id: final_state.cc_session_id
         }
@@ -1177,6 +1180,131 @@ defmodule Cranium.Inference.Agent do
   defp emit_tool_result(stream_id, conversation_id, tool_use_id, content) do
     payload = %{tool_use_id: tool_use_id, content: content}
     emit(stream_id, conversation_id, {:chunk, stream_id, {:tool_result, payload}})
+  end
+
+  defp build_interrupted_context(state) do
+    sections =
+      []
+      |> append_content_block_sections(build_assistant_content(state))
+      |> append_message_sections(state.intermediate_messages)
+      |> append_pending_tool_sections(state.tool_calls_pending)
+      |> append_async_task_sections(state.async_tasks_outstanding)
+      |> append_async_result_sections(state.async_results_pending)
+      |> Enum.reject(&(&1 in [nil, ""]))
+
+    Enum.join(sections, "\n\n")
+  end
+
+  defp append_content_block_sections(sections, blocks) when is_list(blocks) do
+    sections ++ Enum.flat_map(blocks, &content_block_sections/1)
+  end
+
+  defp append_content_block_sections(sections, _), do: sections
+
+  defp append_message_sections(sections, messages) when is_list(messages) do
+    sections ++
+      Enum.flat_map(messages, fn message ->
+        role = map_value(message, "role") || "message"
+        content = map_value(message, "content") || []
+
+        content_block_sections(content)
+        |> Enum.map(fn section -> "#{role}: #{section}" end)
+      end)
+  end
+
+  defp append_message_sections(sections, _), do: sections
+
+  defp append_pending_tool_sections(sections, tool_calls) when is_list(tool_calls) do
+    sections ++
+      (tool_calls
+       |> Enum.reverse()
+       |> Enum.map(fn tc -> "> **#{tool_call_name(tc)}**: `#{tool_call_detail(tc)}`" end))
+  end
+
+  defp append_pending_tool_sections(sections, _), do: sections
+
+  defp append_async_task_sections(sections, tasks) when is_list(tasks) do
+    sections ++
+      Enum.map(tasks, fn task ->
+        "> **#{task[:tool_name] || "async tool"}**: async task #{task[:id] || "unknown"} was running when cancelled"
+      end)
+  end
+
+  defp append_async_task_sections(sections, _), do: sections
+
+  defp append_async_result_sections(sections, results) when is_list(results) do
+    sections ++
+      Enum.map(results, fn result ->
+        status = result[:status] || "completed"
+        tool_name = result[:tool_name] || "async tool"
+        "> **#{tool_name}**: async task #{status} before cancellation"
+      end)
+  end
+
+  defp append_async_result_sections(sections, _), do: sections
+
+  defp content_block_sections(blocks) when is_list(blocks),
+    do: Enum.flat_map(blocks, &content_block_sections/1)
+
+  defp content_block_sections(block) when is_map(block) do
+    case map_value(block, "type") do
+      "text" ->
+        case map_value(block, "text") do
+          text when is_binary(text) and text != "" -> [text]
+          _ -> []
+        end
+
+      "tool_use" ->
+        name = map_value(block, "tool_name") || map_value(block, "name") || "tool"
+        input = map_value(block, "tool_input") || map_value(block, "input") || %{}
+        ["> **#{name}**: `#{tool_detail(name, input)}`"]
+
+      "tool_result" ->
+        result_for =
+          map_value(block, "tool_result_for") || map_value(block, "tool_use_id") || "tool"
+
+        output = map_value(block, "tool_output") || map_value(block, "content") || ""
+        ["> **#{result_for} result**: `#{truncate_inline(output)}`"]
+
+      _ ->
+        []
+    end
+  end
+
+  defp content_block_sections(_), do: []
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  end
+
+  defp map_value(_, _), do: nil
+
+  defp tool_call_name(tc), do: map_value(tc, "tool_name") || map_value(tc, "name") || "tool"
+
+  defp tool_call_detail(tc),
+    do:
+      tool_detail(
+        tool_call_name(tc),
+        map_value(tc, "tool_input") || map_value(tc, "input") || %{}
+      )
+
+  defp tool_detail(_name, input) when is_map(input) do
+    cond do
+      map_value(input, "command") -> truncate_inline(map_value(input, "command"))
+      map_value(input, "file_path") -> truncate_inline(map_value(input, "file_path"))
+      map_value(input, "path") -> truncate_inline(map_value(input, "path"))
+      map_value(input, "pattern") -> truncate_inline(map_value(input, "pattern"))
+      true -> truncate_inline(input)
+    end
+  end
+
+  defp tool_detail(_name, input), do: truncate_inline(input)
+
+  defp truncate_inline(value) do
+    value
+    |> inspect(limit: 20, printable_limit: 200)
+    |> String.replace("`", "\\`")
+    |> String.slice(0, 240)
   end
 
   defp build_assistant_content(state) do

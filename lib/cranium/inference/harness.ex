@@ -206,6 +206,8 @@ defmodule Cranium.Inference.Harness do
     output = partial[:output] || ""
     cc_session_id = partial[:cc_session_id] || turn[:cc_session_id]
 
+    interrupted_context = partial[:interrupted_context] || output
+
     # Emit pass_complete (cancelled) — Persistence.Effects handles Store mutations + pass_done
     Cranium.Events.broadcast(
       stream_id,
@@ -215,6 +217,7 @@ defmodule Cranium.Inference.Harness do
          reason: :cancelled,
          epoch_id: turn.epoch_id,
          output: output,
+         interrupted_context: interrupted_context,
          cc_session_id: cc_session_id,
          profile: turn[:profile],
          ephemeral: ephemeral

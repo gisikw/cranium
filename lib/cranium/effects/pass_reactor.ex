@@ -110,6 +110,7 @@ defmodule Cranium.Effects.PassReactor do
       ) do
     unless payload[:ephemeral] do
       output = payload[:output] || ""
+      interrupted_source = payload[:interrupted_context] || output
 
       if output != "" do
         Cranium.Store.append_message(cid, payload.epoch_id, %{
@@ -119,10 +120,10 @@ defmodule Cranium.Effects.PassReactor do
       end
 
       interrupted =
-        if output != "" do
-          if String.length(output) > 2000,
-            do: String.slice(output, 0, 2000) <> "\n\n[...output truncated...]",
-            else: output
+        if interrupted_source != "" do
+          if String.length(interrupted_source) > 2000,
+            do: String.slice(interrupted_source, 0, 2000) <> "\n\n[...output truncated...]",
+            else: interrupted_source
         end
 
       Cranium.Store.update_epoch(payload.epoch_id, %{
