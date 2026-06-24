@@ -247,7 +247,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
       emitted_usage: false,
       normalization_delta: nil,
       failure_reason: nil,
-      text_delta_part_ids: MapSet.new()
+      text_delta_part_ids: MapSet.new(),
+      completed_content_keys: MapSet.new()
     })
 
     stream_fn = fn {:data, data}, {req, resp} ->
@@ -431,17 +432,52 @@ defmodule Cranium.Backend.LLM.Tiamat do
     |> Map.get(:text_delta_part_ids, MapSet.new())
   end
 
+  defp completed_content_keys do
+    Process.get(:tiamat_stream_result, %{})
+    |> Map.get(:completed_content_keys, MapSet.new())
+  end
+
+  defp remember_completed_content_keys(keys) when is_list(keys) do
+    update_stream_result(
+      :completed_content_keys,
+      Enum.reduce(keys, completed_content_keys(), &MapSet.put(&2, &1))
+    )
+  end
+
+  defp completed_content_key(block) when is_map(block) do
+    cond do
+      is_binary(block_value(block, "tool_use_id") || block_value(block, "id")) ->
+        {"tool_use", block_value(block, "tool_use_id") || block_value(block, "id")}
+
+      block_value(block, "type") == "text" and is_binary(block_value(block, "text")) ->
+        {"text", block_value(block, "text")}
+
+      true ->
+        {:block, :erlang.phash2(block)}
+    end
+  end
+
+  defp completed_content_key(block), do: {:block, :erlang.phash2(block)}
+
   defp emit_completed_content(_caller, []), do: :ok
 
   defp emit_completed_content(caller, blocks) do
-    send(caller, {:llm_assistant_content, blocks})
-    update_stream_result(:emitted_assistant_content, true)
+    fresh_blocks =
+      Enum.reject(blocks, fn block ->
+        MapSet.member?(completed_content_keys(), completed_content_key(block))
+      end)
 
-    tool_calls = Events.tool_calls(blocks)
-    Enum.each(tool_calls, &send(caller, {:llm_tool_use, &1}))
+    if fresh_blocks != [] do
+      remember_completed_content_keys(Enum.map(fresh_blocks, &completed_content_key/1))
+      send(caller, {:llm_assistant_content, fresh_blocks})
+      update_stream_result(:emitted_assistant_content, true)
 
-    if tool_calls != [] do
-      update_stream_result(:emitted_tool_calls, true)
+      tool_calls = Events.tool_calls(fresh_blocks)
+      Enum.each(tool_calls, &send(caller, {:llm_tool_use, &1}))
+
+      if tool_calls != [] do
+        update_stream_result(:emitted_tool_calls, true)
+      end
     end
   end
 
@@ -454,7 +490,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
         emitted_tool_calls: false,
         emitted_usage: false,
         normalization_delta: nil,
-        text_delta_part_ids: MapSet.new()
+        text_delta_part_ids: MapSet.new(),
+        completed_content_keys: MapSet.new()
       })
 
     Process.put(:tiamat_stream_result, Map.put(result, key, value))

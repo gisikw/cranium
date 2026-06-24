@@ -162,14 +162,31 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
             "tool_input" => %{"command" => "printf native"}
           }
         }),
-        native_event(request, 6, "usage_update", %{
+        native_event(request, 6, "assistant_message_completed", %{
+          "attempt_id" => "att_1",
+          "message" => %{
+            "id" => "msg_1",
+            "role" => "assistant",
+            "content" => [
+              %{"type" => "text", "text" => "streamed text"},
+              %{
+                "type" => "tool_use",
+                "tool_use_id" => "toolu_native",
+                "tool_name" => "bash",
+                "tool_input" => %{"command" => "printf native"}
+              }
+            ]
+          },
+          "completion_status" => "completed"
+        }),
+        native_event(request, 7, "usage_update", %{
           "attempt_id" => "att_1",
           "reporting_mode" => "final",
           "final" => true,
           "usage" => %{"input_tokens" => 5, "output_tokens" => 2}
         }),
-        native_event(request, 7, "turn_response", %{"response" => response}),
-        native_event(request, 8, "stream_closed", %{"status" => "closed"})
+        native_event(request, 8, "turn_response", %{"response" => response}),
+        native_event(request, 9, "stream_closed", %{"status" => "closed"})
       ]
 
       send_native_events(conn, events)
@@ -331,6 +348,7 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
 
     assert_receive {:llm_usage, %{input_tokens: 5, output_tokens: 2}}
     assert_receive {:llm_stop, "tool_use"}
+    refute_receive {:llm_tool_use, %{id: "toolu_native"}}, 50
     refute_receive {:llm_text, "streamed text"}, 50
   end
 
