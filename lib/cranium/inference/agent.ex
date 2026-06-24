@@ -1199,8 +1199,6 @@ defmodule Cranium.Inference.Agent do
     sections ++ Enum.flat_map(blocks, &content_block_sections/1)
   end
 
-  defp append_content_block_sections(sections, _), do: sections
-
   defp append_message_sections(sections, messages) when is_list(messages) do
     sections ++
       Enum.flat_map(messages, fn message ->
