@@ -1,20 +1,11 @@
 defmodule Cranium.Backend.LLM.Tiamat do
-  @moduledoc """
-  Tiamat router backend.
-
-  Satisfies Cranium's existing `Cranium.Backend.LLM` behaviour by POSTing a
-  native Cranium transcript request to Tiamat's `/v1/router/turns` SSE endpoint
-  and translating the final `turn_response` event into the Agent protocol.
-
-  V0 Tiamat responses are final-response streams rather than true token streams:
-  this adapter emits text/tool calls after receiving `turn_response`, then emits
-  the appropriate `:llm_stop` reason.
-  """
+  @moduledoc false
 
   @behaviour Cranium.Backend.LLM
 
   require Logger
 
+  alias Cranium.Backend.LLM.Tiamat.Events
   alias Cranium.Backend.SSE
   alias Cranium.Inference.TiamatTurnRequest
 
@@ -31,66 +22,79 @@ defmodule Cranium.Backend.LLM.Tiamat do
     {:ok, pid}
   end
 
-  @doc false
-  def dispatch_response(caller, %{"status" => "completed"} = response) do
+  def dispatch_response(caller, response, opts \\ [])
+
+  def dispatch_response(caller, %{"status" => "completed"} = response, opts) do
     delta = transcript_delta(response)
     assistant_blocks = assistant_content_blocks(delta)
 
-    if assistant_blocks != [] do
+    unless Keyword.get(opts, :emitted_text, false) do
+      delta
+      |> text_chunks()
+      |> Enum.each(&send(caller, {:llm_text, &1}))
+    end
+
+    if not Keyword.get(opts, :emitted_assistant_content, false) and assistant_blocks != [] do
       send(caller, {:llm_assistant_content, assistant_blocks})
     end
 
-    delta
-    |> text_chunks()
-    |> Enum.each(&send(caller, {:llm_text, &1}))
-
-    maybe_send_usage(caller, response)
+    maybe_send_usage(caller, response, opts)
     send(caller, {:llm_stop, "end_turn"})
     :ok
   end
 
-  def dispatch_response(caller, %{"status" => "tool_call"} = response) do
+  def dispatch_response(caller, %{"status" => "tool_call"} = response, opts) do
     delta = transcript_delta(response)
     assistant_blocks = assistant_content_blocks(delta)
 
-    if assistant_blocks != [] do
+    unless Keyword.get(opts, :emitted_text, false) do
+      delta
+      |> text_chunks()
+      |> Enum.each(&send(caller, {:llm_text, &1}))
+    end
+
+    if not Keyword.get(opts, :emitted_assistant_content, false) and assistant_blocks != [] do
       send(caller, {:llm_assistant_content, assistant_blocks})
     end
 
-    delta
-    |> text_chunks()
-    |> Enum.each(&send(caller, {:llm_text, &1}))
+    unless Keyword.get(opts, :emitted_tool_calls, false) do
+      assistant_blocks
+      |> tool_calls()
+      |> Enum.each(&send(caller, {:llm_tool_use, &1}))
+    end
 
-    assistant_blocks
-    |> tool_calls()
-    |> Enum.each(&send(caller, {:llm_tool_use, &1}))
-
-    maybe_send_usage(caller, response)
+    maybe_send_usage(caller, response, opts)
     send(caller, {:llm_stop, "tool_use"})
     :ok
   end
 
-  def dispatch_response(caller, %{"status" => "error"} = response) do
+  def dispatch_response(caller, %{"status" => "error"} = response, opts) do
     reason = %{
       error_code: response["error_code"],
       errors: response["errors"] || []
     }
 
-    maybe_send_usage(caller, response)
+    maybe_send_usage(caller, response, opts)
     send(caller, {:llm_stop, {:error, reason}})
     :ok
   end
 
-  def dispatch_response(caller, response) do
+  def dispatch_response(caller, response, _opts) do
     send(caller, {:llm_stop, {:error, {:unexpected_tiamat_response, response}}})
     :ok
   end
 
   defp do_stream(caller, messages, opts) do
     with {:ok, request} <- build_request(messages, opts),
-         {:ok, response} <- post_turn(request, opts) do
-      apply_normalization_delta(request, response, opts)
-      dispatch_response(caller, response)
+         {:ok, result} <- post_turn(caller, request, opts) do
+      apply_normalization_delta(request, result.response, opts)
+
+      dispatch_response(caller, result.response,
+        emitted_text: result.emitted_text,
+        emitted_assistant_content: result.emitted_assistant_content,
+        emitted_tool_calls: result.emitted_tool_calls,
+        emitted_usage: result.emitted_usage
+      )
     else
       {:error, reason} ->
         Logger.error("Tiamat request failed", error: inspect(reason))
@@ -223,7 +227,7 @@ defmodule Cranium.Backend.LLM.Tiamat do
   defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
   defp stringify_value(value), do: value
 
-  defp post_turn(request, opts) do
+  defp post_turn(caller, request, opts) do
     backend_config = Keyword.get(opts, :backend_config, %{}) || %{}
     endpoint = backend_config["endpoint"] || @default_endpoint
     timeout = backend_config["timeout"] || @default_timeout
@@ -233,15 +237,24 @@ defmodule Cranium.Backend.LLM.Tiamat do
       "Tiamat request: endpoint=#{endpoint} router_profile=#{request["router_profile"]} messages=#{length(request["messages"])} tools=#{length(request["tools"])}"
     )
 
-    log_tool_block_diagnostics(request)
-
     sse_state = SSE.new()
+
+    Process.put(:tiamat_stream_result, %{
+      response: nil,
+      emitted_text: false,
+      emitted_assistant_content: false,
+      emitted_tool_calls: false,
+      emitted_usage: false,
+      normalization_delta: nil,
+      failure_reason: nil,
+      text_delta_part_ids: MapSet.new()
+    })
 
     stream_fn = fn {:data, data}, {req, resp} ->
       if resp.status == 200 do
         {events, new_sse} = SSE.parse(Process.get(:sse_state, sse_state), data)
         Process.put(:sse_state, new_sse)
-        handle_events(events)
+        handle_events(caller, events)
         {:cont, {req, resp}}
       else
         Process.put(:error_body, [data | Process.get(:error_body, [])])
@@ -257,9 +270,51 @@ defmodule Cranium.Backend.LLM.Tiamat do
            into: stream_fn
          ) do
       {:ok, %{status: 200}} ->
-        case Process.get(:tiamat_response) do
-          %{} = response -> {:ok, response}
-          nil -> {:error, :missing_turn_response}
+        case Process.get(:tiamat_stream_result) do
+          %{
+            response: %{} = response,
+            emitted_text: emitted_text,
+            emitted_assistant_content: emitted_assistant_content,
+            emitted_tool_calls: emitted_tool_calls,
+            emitted_usage: emitted_usage,
+            normalization_delta: delta
+          } ->
+            response =
+              if is_map(delta),
+                do: Map.put_new(response, "normalization_delta", delta),
+                else: response
+
+            {:ok,
+             %{
+               response: response,
+               emitted_text: emitted_text,
+               emitted_assistant_content: emitted_assistant_content,
+               emitted_tool_calls: emitted_tool_calls,
+               emitted_usage: emitted_usage
+             }}
+
+          %{
+            failure_reason: failure_reason,
+            response: nil
+          }
+          when is_map(failure_reason) ->
+            failure_reason = stringify_keys(failure_reason)
+
+            {:ok,
+             %{
+               response: %{
+                 "status" => "error",
+                 "error_code" => failure_reason["error_code"],
+                 "errors" => failure_reason["errors"] || []
+               },
+               emitted_text: false,
+               emitted_assistant_content: false,
+               emitted_tool_calls: false,
+               emitted_usage: false
+             }}
+
+          _ ->
+            {:error, Process.get(:tiamat_decode_error) || :missing_turn_response}
         end
 
       {:ok, %{status: status}} ->
@@ -275,50 +330,134 @@ defmodule Cranium.Backend.LLM.Tiamat do
     end
   end
 
-  defp log_tool_block_diagnostics(request) do
-    request
-    |> Map.get("messages", [])
-    |> Enum.with_index()
-    |> Enum.each(fn {message, index} ->
-      role = Map.get(message, "role")
-
-      message
-      |> Map.get("content", [])
-      |> Enum.each(fn
-        %{"type" => "tool_use"} = block ->
-          Logger.debug("Tiamat request tool block",
-            message_index: index,
-            role: role,
-            block_type: "tool_use",
-            tool_use_id: Map.get(block, "tool_use_id"),
-            tool_name: Map.get(block, "tool_name")
-          )
-
-        %{"type" => "tool_result"} = block ->
-          Logger.debug("Tiamat request tool block",
-            message_index: index,
-            role: role,
-            block_type: "tool_result",
-            tool_use_id: Map.get(block, "tool_result_for")
-          )
-
-        _ ->
-          :ok
-      end)
+  defp handle_events(caller, events) do
+    Enum.each(events, fn event ->
+      case Events.decode_sse(event) do
+        {:ok, envelope} -> handle_turn_event(caller, envelope)
+        {:error, error} -> Process.put(:tiamat_decode_error, error)
+        :ignore -> :ok
+      end
     end)
   end
 
-  defp handle_events(events) do
-    Enum.each(events, fn
-      %{event: "turn_response", data: data} ->
-        case Jason.decode(data) do
-          {:ok, response} -> Process.put(:tiamat_response, response)
-          {:error, error} -> Process.put(:tiamat_decode_error, error)
-        end
+  defp handle_turn_event(_caller, %{"type" => "turn_response"} = envelope) do
+    case Events.turn_response(envelope) do
+      {:ok, response} -> update_stream_result(:response, response)
+      :error -> Process.put(:tiamat_decode_error, :invalid_turn_response_event)
+    end
+  end
 
-      _other ->
+  defp handle_turn_event(_caller, %{"type" => "normalization_delta"} = envelope) do
+    update_stream_result(:normalization_delta, Events.normalization_delta(envelope))
+  end
+
+  defp handle_turn_event(caller, %{"type" => "content_part_delta"} = envelope) do
+    case Events.text_delta(envelope) do
+      text when is_binary(text) ->
+        send(caller, {:llm_text, text})
+        remember_text_delta_part(envelope)
+        update_stream_result(:emitted_text, true)
+
+      _ ->
         :ok
-    end)
+    end
+  end
+
+  defp handle_turn_event(caller, %{"type" => "content_part_completed"} = envelope) do
+    maybe_emit_completed_text(caller, envelope)
+    blocks = Events.completed_content(envelope)
+    emit_completed_content(caller, blocks)
+  end
+
+  defp handle_turn_event(caller, %{"type" => "assistant_message_completed"} = envelope) do
+    blocks = Events.message_content(envelope)
+    emit_completed_content(caller, blocks)
+  end
+
+  defp handle_turn_event(caller, %{"type" => "usage_update"} = envelope) do
+    case Events.usage(envelope) do
+      %{} = usage ->
+        send(caller, {:llm_usage, atomize_usage(usage)})
+        update_stream_result(:emitted_usage, true)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp handle_turn_event(_caller, %{"type" => "turn_failed"} = envelope) do
+    update_stream_result(:failure_reason, Events.failure_reason(envelope))
+  end
+
+  defp handle_turn_event(_caller, %{"type" => "stream_closed"}), do: :ok
+  defp handle_turn_event(_caller, _envelope), do: :ok
+
+  defp maybe_emit_completed_text(caller, envelope) do
+    part_id = Events.part_id(envelope)
+
+    cond do
+      streamed_text_part?(part_id) ->
+        :ok
+
+      true ->
+        case Events.completed_text(envelope) do
+          text when is_binary(text) ->
+            send(caller, {:llm_text, text})
+            update_stream_result(:emitted_text, true)
+
+          _ ->
+            :ok
+        end
+    end
+  end
+
+  defp remember_text_delta_part(envelope) do
+    case Events.part_id(envelope) do
+      part_id when is_binary(part_id) ->
+        update_stream_result(:text_delta_part_ids, MapSet.put(text_delta_part_ids(), part_id))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp streamed_text_part?(part_id) when is_binary(part_id),
+    do: MapSet.member?(text_delta_part_ids(), part_id)
+
+  defp streamed_text_part?(_), do: false
+
+  defp text_delta_part_ids do
+    Process.get(:tiamat_stream_result, %{})
+    |> Map.get(:text_delta_part_ids, MapSet.new())
+  end
+
+  defp emit_completed_content(_caller, []), do: :ok
+
+  defp emit_completed_content(caller, blocks) do
+    send(caller, {:llm_assistant_content, blocks})
+    update_stream_result(:emitted_assistant_content, true)
+
+    tool_calls = Events.tool_calls(blocks)
+    Enum.each(tool_calls, &send(caller, {:llm_tool_use, &1}))
+
+    if tool_calls != [] do
+      update_stream_result(:emitted_tool_calls, true)
+    end
+  end
+
+  defp update_stream_result(key, value) do
+    result =
+      Process.get(:tiamat_stream_result, %{
+        response: nil,
+        emitted_text: false,
+        emitted_assistant_content: false,
+        emitted_tool_calls: false,
+        emitted_usage: false,
+        normalization_delta: nil,
+        text_delta_part_ids: MapSet.new()
+      })
+
+    Process.put(:tiamat_stream_result, Map.put(result, key, value))
   end
 
   defp transcript_delta(response), do: response["transcript_delta"] || []
@@ -385,17 +524,17 @@ defmodule Cranium.Backend.LLM.Tiamat do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
   end
 
-  defp maybe_send_usage(caller, response) do
+  defp maybe_send_usage(caller, response, opts) do
     usage = response["usage"]
 
-    if is_map(usage) do
+    if is_map(usage) and not Keyword.get(opts, :emitted_usage, false) do
       send(caller, {:llm_usage, atomize_usage(usage)})
     end
   end
 
   defp atomize_usage(usage) do
     Map.new(usage, fn {key, value} ->
-      {String.to_atom(key), value}
+      {String.to_atom(to_string(key)), value}
     end)
   end
 end
