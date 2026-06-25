@@ -166,7 +166,7 @@ defmodule Cranium.Inference.Harness do
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
 
-    saturation = compute_saturation(usage, turn[:context_window])
+    saturation = compute_saturation(usage, turn[:context_window], turn, output)
     new_count = (turn[:turn_count] || 0) + 1
     cc_session_id = agent_result[:cc_session_id] || turn[:cc_session_id]
 
@@ -246,17 +246,70 @@ defmodule Cranium.Inference.Harness do
   # --- Helpers ---
 
   @doc false
-  @spec compute_saturation(map(), pos_integer() | nil) :: float()
-  def compute_saturation(usage, context_window \\ nil) do
+  @spec compute_saturation(map(), pos_integer() | nil, map() | nil, String.t()) :: float()
+  def compute_saturation(usage, context_window \\ nil, turn \\ nil, output \\ "") do
     max_context_tokens =
       context_window || Application.get_env(:cranium, :pipeline)[:max_context_tokens] || 200_000
 
-    total =
-      (usage[:input_tokens] || 0) +
-        (usage[:output_tokens] || 0) +
-        (usage[:cache_creation_input_tokens] || 0) +
-        (usage[:cache_read_input_tokens] || 0)
+    total = usage_token_total(usage)
+    total = if total > 0, do: total, else: estimate_turn_tokens(turn, output)
 
     min(total / max_context_tokens, 1.0)
   end
+
+  defp usage_token_total(usage) when is_map(usage) do
+    usage_value(usage, :input_tokens) +
+      usage_value(usage, :output_tokens) +
+      usage_value(usage, :cache_creation_input_tokens) +
+      usage_value(usage, :cache_read_input_tokens)
+  end
+
+  defp usage_token_total(_), do: 0
+
+  defp usage_value(usage, key) do
+    string_key = Atom.to_string(key)
+    value = Map.get(usage, key) || Map.get(usage, string_key) || 0
+
+    cond do
+      is_integer(value) -> value
+      is_float(value) -> trunc(value)
+      is_binary(value) -> String.to_integer(value)
+      true -> 0
+    end
+  rescue
+    ArgumentError -> 0
+  end
+
+  defp estimate_turn_tokens(nil, _output), do: 0
+
+  defp estimate_turn_tokens(turn, output) when is_map(turn) do
+    chars =
+      [
+        turn[:system],
+        turn[:system_prompt_pre],
+        turn[:system_prompt_post],
+        turn[:messages],
+        output
+      ]
+      |> Enum.reduce(0, &(&2 + estimated_chars(&1)))
+
+    # Deliberately conservative: four characters per token is a common rough
+    # English/code heuristic. The estimate is only used when the backend reports
+    # no usage at all, so a useful warning beats silent saturation blindness.
+    div(chars + 3, 4)
+  end
+
+  defp estimated_chars(nil), do: 0
+  defp estimated_chars(text) when is_binary(text), do: String.length(text)
+
+  defp estimated_chars(list) when is_list(list),
+    do: Enum.reduce(list, 0, &(&2 + estimated_chars(&1)))
+
+  defp estimated_chars(map) when is_map(map) do
+    map
+    |> Map.values()
+    |> estimated_chars()
+  end
+
+  defp estimated_chars(other), do: other |> inspect() |> String.length()
 end

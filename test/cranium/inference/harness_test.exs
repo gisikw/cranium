@@ -12,7 +12,8 @@ defmodule Cranium.Inference.HarnessTest do
     stub(Cranium.Backend.LLM.Mock, :manages_tool_loop?, fn -> false end)
 
     # Clean up any leftover conversation supervisors
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Cranium.Inference.ConversationDynamicSupervisor) do
+    for {_, pid, _, _} <-
+          DynamicSupervisor.which_children(Cranium.Inference.ConversationDynamicSupervisor) do
       DynamicSupervisor.terminate_child(Cranium.Inference.ConversationDynamicSupervisor, pid)
     end
 
@@ -32,7 +33,10 @@ defmodule Cranium.Inference.HarnessTest do
     end
 
     test "returns 0.5 at midpoint" do
-      assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 99_000, output_tokens: 1_000}) == 0.5
+      assert Cranium.Inference.Harness.compute_saturation(%{
+               input_tokens: 99_000,
+               output_tokens: 1_000
+             }) == 0.5
     end
 
     test "clamps to 1.0 over limit" do
@@ -48,6 +52,33 @@ defmodule Cranium.Inference.HarnessTest do
     test "falls back to global config when context_window is nil" do
       # nil context_window should use Application config (200_000)
       assert Cranium.Inference.Harness.compute_saturation(%{input_tokens: 100_000}, nil) == 0.5
+    end
+
+    test "accepts usage maps with string keys" do
+      assert Cranium.Inference.Harness.compute_saturation(%{
+               "input_tokens" => 99_000,
+               "output_tokens" => 1_000
+             }) == 0.5
+    end
+
+    test "estimates saturation from assembled turn when usage is missing" do
+      turn = %{
+        system: String.duplicate("s", 400),
+        system_prompt_pre: nil,
+        system_prompt_post: nil,
+        messages: [
+          %{"role" => "user", "content" => String.duplicate("m", 400)}
+        ]
+      }
+
+      assert_in_delta Cranium.Inference.Harness.compute_saturation(
+                        %{input_tokens: 0, output_tokens: 0},
+                        1_000,
+                        turn,
+                        String.duplicate("o", 200)
+                      ),
+                      0.25,
+                      0.01
     end
   end
 
@@ -98,10 +129,16 @@ defmodule Cranium.Inference.HarnessTest do
       }
 
       Cranium.Events.broadcast({:pass_header, header})
-      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}})
+
+      Cranium.Events.broadcast(
+        {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "hello world"}}
+      )
 
       # Wait for pass_complete (enriched payload from Harness)
-      assert_receive {:pass_complete, ^conversation_id, ^stream_id, %{saturation: sat, turn_count: 2, reason: :complete}}, 5000
+      assert_receive {:pass_complete, ^conversation_id, ^stream_id,
+                      %{saturation: sat, turn_count: 2, reason: :complete}},
+                     5000
+
       assert sat == 0.5
 
       # Flush Effects to ensure async Store mutations complete
@@ -118,7 +155,11 @@ defmodule Cranium.Inference.HarnessTest do
       {:ok, messages} = Cranium.Store.get_messages(conversation_id)
       assert length(messages) >= 2
       assert Enum.any?(messages, fn m -> m.role == :user end)
-      assert Enum.any?(messages, fn m -> m.role == :assistant and Cranium.Store.extract_text(m.content) == "hello from harness" end)
+
+      assert Enum.any?(messages, fn m ->
+               m.role == :assistant and
+                 Cranium.Store.extract_text(m.content) == "hello from harness"
+             end)
     end
 
     test "handles cancellation and stores interrupted context" do
@@ -160,7 +201,10 @@ defmodule Cranium.Inference.HarnessTest do
       }
 
       Cranium.Events.broadcast({:pass_header, header})
-      Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "cancel me"}})
+
+      Cranium.Events.broadcast(
+        {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "cancel me"}}
+      )
 
       # Wait for inference to start, then cancel
       assert_receive :inference_started, 5000
@@ -218,7 +262,10 @@ defmodule Cranium.Inference.HarnessTest do
         }
 
         Cranium.Events.broadcast({:pass_header, header})
-        Cranium.Events.broadcast({:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "msg #{i}"}})
+
+        Cranium.Events.broadcast(
+          {:text_input, %Cranium.Messages.TextInput{pass_id: pass_id, text: "msg #{i}"}}
+        )
       end
 
       # Both passes should complete (second queued, dispatched after first)
