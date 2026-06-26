@@ -6,7 +6,9 @@ defmodule Cranium.Inference.ContentBlocks do
   @doc "Build user content blocks from text plus optional attachments."
   @spec user_content(String.t() | nil, list()) :: [map()]
   def user_content(text, attachments \\ []) do
-    image_blocks(attachments) ++ [%{"type" => "text", "text" => text || ""}]
+    blocks = image_blocks(attachments) ++ text_blocks(text)
+
+    if blocks == [], do: [%{"type" => "text", "text" => ""}], else: blocks
   end
 
   @doc "Return true when attachments contains at least one usable image."
@@ -44,6 +46,18 @@ defmodule Cranium.Inference.ContentBlocks do
   end
 
   defp image_blocks(_), do: []
+
+  defp text_blocks(text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    if trimmed == "" do
+      []
+    else
+      [%{"type" => "text", "text" => text}]
+    end
+  end
+
+  defp text_blocks(_), do: []
 
   defp attachment_type(attachment), do: value(attachment, :type, "type")
   defp attachment_data(attachment), do: value(attachment, :data, "data")

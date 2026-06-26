@@ -154,6 +154,45 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
              ]
     end
 
+    test "drops empty persisted text blocks when projecting image history" do
+      conversation_id = "tiamat-request-image-empty-text-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      image_block = %{
+        "type" => "image",
+        "source" => %{
+          "type" => "base64",
+          "media_type" => "image/png",
+          "data" => Base.encode64("png")
+        }
+      }
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: [image_block, %{"type" => "text", "text" => ""}],
+          origin: "matrix:headjack"
+        })
+
+      request =
+        TiamatTurnRequest.assemble(
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          router_profile: "exo",
+          tools_disabled: true
+        )
+
+      [message] = request["messages"]
+
+      assert message["content"] == [
+               %{
+                 "type" => "image",
+                 "image_media_type" => "image/png",
+                 "image_data" => Base.encode64("png")
+               }
+             ]
+    end
+
     test "includes tool definitions unless disabled" do
       conversation_id = "tiamat-request-tools-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)

@@ -81,6 +81,36 @@ defmodule Cranium.Inference.HistoryTest do
       assert text_part["text"] == "look at this"
     end
 
+    test "does not include an empty text block for image-only current messages" do
+      conversation_id = "test-history-img-only-#{System.unique_integer([:positive])}"
+
+      attachment = %{
+        type: :image,
+        media_type: "image/png",
+        data: <<137, 80, 78, 71>>
+      }
+
+      messages =
+        History.contribute(conversation_id,
+          text: "",
+          attachments: [attachment]
+        )
+
+      current = List.last(messages)
+      assert current["role"] == "user"
+
+      assert current["content"] == [
+               %{
+                 "type" => "image",
+                 "source" => %{
+                   "type" => "base64",
+                   "media_type" => "image/png",
+                   "data" => Base.encode64(<<137, 80, 78, 71>>)
+                 }
+               }
+             ]
+    end
+
     test "defaults to empty text when not provided" do
       conversation_id = "test-history-default-#{System.unique_integer([:positive])}"
 

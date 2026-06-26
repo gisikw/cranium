@@ -71,7 +71,15 @@ defmodule Cranium.Inference.TiamatTurnRequest do
 
   defp maybe_append_current_user(_conversation_id, _epoch_id, _opts), do: :ok
 
-  defp current_text_content(text), do: [%{"type" => "text", "text" => text || ""}]
+  defp current_text_content(text) when is_binary(text) do
+    if String.trim(text) == "" do
+      []
+    else
+      [%{"type" => "text", "text" => text}]
+    end
+  end
+
+  defp current_text_content(_), do: []
 
   defp current_parent_id(conversation_id, epoch_id, %{current_user_parent_id: :last_message}) do
     case Cranium.Store.get_messages(conversation_id, epoch_id: epoch_id) do
@@ -96,10 +104,17 @@ defmodule Cranium.Inference.TiamatTurnRequest do
       "parent_id" => message.parent_id,
       "created_at" => message.created_at,
       "role" => message.role,
-      "content" => Enum.map(message.content, &native_content_block/1),
+      "content" => message.content |> Enum.map(&native_content_block/1) |> Enum.reject(&is_nil/1),
       "provenance" => message.provenance
     }
   end
+
+  defp native_content_block(%{"type" => "text", "text" => text})
+       when is_binary(text) do
+    if String.trim(text) == "", do: nil, else: %{"type" => "text", "text" => text}
+  end
+
+  defp native_content_block(%{"type" => "text"}), do: nil
 
   defp native_content_block(%{"type" => "image", "source" => %{"type" => "base64"} = source}) do
     %{
