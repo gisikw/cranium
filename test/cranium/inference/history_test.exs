@@ -11,10 +11,11 @@ defmodule Cranium.Inference.HistoryTest do
     test "returns current message when no history exists" do
       conversation_id = "test-history-#{System.unique_integer([:positive])}"
 
-      messages = History.contribute(conversation_id,
-        text: "hello",
-        attachments: []
-      )
+      messages =
+        History.contribute(conversation_id,
+          text: "hello",
+          attachments: []
+        )
 
       assert length(messages) == 1
       assert List.last(messages) == %{"role" => "user", "content" => "hello"}
@@ -34,15 +35,21 @@ defmodule Cranium.Inference.HistoryTest do
         content: text_block("first reply")
       })
 
-      messages = History.contribute(conversation_id,
-        epoch_id: epoch_id,
-        text: "second message",
-        attachments: []
-      )
+      messages =
+        History.contribute(conversation_id,
+          epoch_id: epoch_id,
+          text: "second message",
+          attachments: []
+        )
 
       assert length(messages) == 3
       assert Enum.at(messages, 0) == %{"role" => "user", "content" => text_block("first message")}
-      assert Enum.at(messages, 1) == %{"role" => "assistant", "content" => text_block("first reply")}
+
+      assert Enum.at(messages, 1) == %{
+               "role" => "assistant",
+               "content" => text_block("first reply")
+             }
+
       assert Enum.at(messages, 2) == %{"role" => "user", "content" => "second message"}
     end
 
@@ -55,10 +62,11 @@ defmodule Cranium.Inference.HistoryTest do
         data: <<137, 80, 78, 71>>
       }
 
-      messages = History.contribute(conversation_id,
-        text: "look at this",
-        attachments: [attachment]
-      )
+      messages =
+        History.contribute(conversation_id,
+          text: "look at this",
+          attachments: [attachment]
+        )
 
       current = List.last(messages)
       assert current["role"] == "user"
@@ -67,6 +75,8 @@ defmodule Cranium.Inference.HistoryTest do
       [image_part, text_part] = current["content"]
       assert image_part["type"] == "image"
       assert image_part["source"]["type"] == "base64"
+      assert image_part["source"]["media_type"] == "image/png"
+      assert image_part["source"]["data"] == Base.encode64(<<137, 80, 78, 71>>)
       assert text_part["type"] == "text"
       assert text_part["text"] == "look at this"
     end

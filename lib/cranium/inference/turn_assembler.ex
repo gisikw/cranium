@@ -36,6 +36,7 @@ defmodule Cranium.Inference.TurnAssembler do
   require Logger
 
   alias Cranium.Messages.{PassHeader, TextInput, TakeComplete}
+  alias Cranium.Inference.ContentBlocks
 
   @stale_timeout_ms :timer.minutes(20)
   @sweep_interval_ms :timer.minutes(1)
@@ -420,19 +421,27 @@ defmodule Cranium.Inference.TurnAssembler do
     #    appear twice (once from DB, once from the explicit append).
     enriched_text = injected[:text] || text
 
+    attachments =
+      case input do
+        %TextInput{attachments: attachments} -> attachments || []
+        _ -> []
+      end
+
+    current_content = ContentBlocks.user_content(enriched_text, attachments)
+
     messages =
       Cranium.Inference.History.contribute(
         header.conversation_id,
         epoch_id: epoch_id,
         text: enriched_text,
-        attachments: Map.get(header, :attachments, [])
+        attachments: attachments
       )
 
     # 9. Persist enriched user message (after history fetch)
     unless ephemeral do
       Cranium.Store.append_message(header.conversation_id, epoch_id, %{
         role: :user,
-        content: [%{"type" => "text", "text" => enriched_text}],
+        content: current_content,
         origin: header.origin
       })
     end

@@ -18,6 +18,8 @@ defmodule Cranium.Inference.History do
 
   require Logger
 
+  alias Cranium.Inference.ContentBlocks
+
   @doc """
   Return formatted conversation history with the current message appended.
 
@@ -53,22 +55,7 @@ defmodule Cranium.Inference.History do
 
   defp format_current(text, attachments)
        when is_list(attachments) and attachments != [] do
-    image_parts =
-      attachments
-      |> Enum.filter(&(&1.type == :image))
-      |> Enum.map(fn att ->
-        %{
-          "type" => "image",
-          "source" => %{
-            "type" => "base64",
-            "media_type" => att.media_type,
-            "data" => Base.encode64(att.data)
-          }
-        }
-      end)
-
-    content = image_parts ++ [%{"type" => "text", "text" => text}]
-    %{"role" => "user", "content" => content}
+    %{"role" => "user", "content" => ContentBlocks.user_content(text, attachments)}
   end
 
   defp format_current(text, _attachments), do: %{"role" => "user", "content" => text}

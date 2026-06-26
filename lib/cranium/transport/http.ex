@@ -101,6 +101,7 @@ defmodule Cranium.Transport.HTTP do
 
     text = conn.body_params["text"]
     audio = conn.body_params["audio"]
+    image_attachments = image_attachments(conn.body_params)
 
     pass_id = Cranium.Stage.new_stream_id()
 
@@ -118,9 +119,11 @@ defmodule Cranium.Transport.HTTP do
     }
 
     cond do
-      is_binary(text) and text != "" ->
+      (is_binary(text) and text != "") or image_attachments != [] ->
+        text = text || ""
+
         Logger.info(
-          "Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text, 0..80))}",
+          "Submit: stream=#{stream_id} conversation=#{conversation_id} disposition=#{inspect(disposition)} text=#{inspect(String.slice(text, 0..80))} images=#{length(image_attachments)}",
           transport: :http
         )
 
@@ -130,7 +133,12 @@ defmodule Cranium.Transport.HTTP do
         Cranium.Events.broadcast({:pass_header, header})
 
         Cranium.Events.broadcast(
-          {:text_input, %Cranium.Messages.TextInput{pass_id: header.pass_id, text: text}}
+          {:text_input,
+           %Cranium.Messages.TextInput{
+             pass_id: header.pass_id,
+             text: text,
+             attachments: image_attachments
+           }}
         )
 
         conn
@@ -890,6 +898,31 @@ defmodule Cranium.Transport.HTTP do
   defp sse_event(event_type, data) do
     "event: #{event_type}\ndata: #{Jason.encode!(data)}\n\n"
   end
+
+  defp image_attachments(params) do
+    params
+    |> Map.take(["image", "images", "images[]"])
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.filter(&match?(%Plug.Upload{}, &1))
+    |> Enum.map(fn upload ->
+      %{
+        type: :image,
+        media_type: upload.content_type || media_type_from_filename(upload.filename),
+        data: File.read!(upload.path),
+        filename: upload.filename
+      }
+    end)
+  end
+
+  defp media_type_from_filename(filename) when is_binary(filename) do
+    case MIME.from_path(filename) do
+      "application/octet-stream" -> "image/png"
+      media_type -> media_type
+    end
+  end
+
+  defp media_type_from_filename(_), do: "image/png"
 
   defp parse_disposition(list) when is_list(list), do: list
 
