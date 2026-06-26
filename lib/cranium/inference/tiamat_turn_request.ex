@@ -96,10 +96,28 @@ defmodule Cranium.Inference.TiamatTurnRequest do
       "parent_id" => message.parent_id,
       "created_at" => message.created_at,
       "role" => message.role,
-      "content" => message.content,
+      "content" => Enum.map(message.content, &native_content_block/1),
       "provenance" => message.provenance
     }
   end
+
+  defp native_content_block(%{"type" => "image", "source" => %{"type" => "base64"} = source}) do
+    %{
+      "type" => "image",
+      "image_media_type" => Map.get(source, "media_type"),
+      "image_data" => Map.get(source, "data")
+    }
+  end
+
+  defp native_content_block(%{"type" => "image", "source" => %{"type" => "url"} = source}) do
+    %{
+      "type" => "image",
+      "image_media_type" => Map.get(source, "media_type"),
+      "image_url" => Map.get(source, "url")
+    }
+  end
+
+  defp native_content_block(block), do: block
 
   defp system_prompt(opts) do
     %{

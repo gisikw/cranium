@@ -113,7 +113,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       assert length(stored) == 2
     end
 
-    test "passes persisted image blocks through native history" do
+    test "projects persisted image blocks into Tiamat native history" do
       conversation_id = "tiamat-request-image-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
@@ -143,7 +143,15 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
 
       [message] = request["messages"]
       assert message["role"] == "user"
-      assert message["content"] == [image_block, %{"type" => "text", "text" => "what is this?"}]
+
+      assert message["content"] == [
+               %{
+                 "type" => "image",
+                 "image_media_type" => "image/png",
+                 "image_data" => Base.encode64("png")
+               },
+               %{"type" => "text", "text" => "what is this?"}
+             ]
     end
 
     test "includes tool definitions unless disabled" do
