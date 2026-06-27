@@ -96,6 +96,7 @@ defmodule Cranium.Inference.TiamatTurnRequest do
     conversation_id
     |> NativeHistory.contribute(epoch_id: epoch_id)
     |> Enum.map(&stringify_message/1)
+    |> Enum.reject(&(Map.get(&1, "content") == []))
   end
 
   defp stringify_message(message) do
