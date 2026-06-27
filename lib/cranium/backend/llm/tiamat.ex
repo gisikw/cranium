@@ -135,12 +135,69 @@ defmodule Cranium.Backend.LLM.Tiamat do
   end
 
   defp append_in_memory_messages(request, messages) when is_list(messages) do
-    stored_count = length(request["messages"] || [])
-    additions = messages |> Enum.drop(stored_count) |> Enum.map(&stringify_in_memory_message/1)
-    Map.update!(request, "messages", &(&1 ++ additions))
+    existing_messages = request["messages"] || []
+    existing_ids = message_ids(existing_messages)
+    existing_fingerprints = message_fingerprints(existing_messages)
+    stored_count = length(existing_messages)
+
+    {additions, _ids, _fingerprints} =
+      messages
+      |> Enum.drop(stored_count)
+      |> Enum.map(&stringify_in_memory_message/1)
+      |> Enum.reduce({[], existing_ids, existing_fingerprints}, fn message,
+                                                                   {acc, ids, fingerprints} ->
+        id = message["id"]
+        fingerprint = message_fingerprint(message)
+
+        cond do
+          is_binary(id) and MapSet.member?(ids, id) ->
+            {acc, ids, fingerprints}
+
+          MapSet.member?(fingerprints, fingerprint) ->
+            {acc, ids, fingerprints}
+
+          true ->
+            ids = if is_binary(id), do: MapSet.put(ids, id), else: ids
+            {[message | acc], ids, MapSet.put(fingerprints, fingerprint)}
+        end
+      end)
+
+    Map.update!(request, "messages", &(&1 ++ Enum.reverse(additions)))
   end
 
   defp append_in_memory_messages(request, _messages), do: request
+
+  defp message_ids(messages) do
+    messages
+    |> Enum.map(& &1["id"])
+    |> Enum.filter(&is_binary/1)
+    |> MapSet.new()
+  end
+
+  defp message_fingerprints(messages) do
+    messages
+    |> Enum.map(&message_fingerprint/1)
+    |> MapSet.new()
+  end
+
+  defp message_fingerprint(message) do
+    {message["role"], canonical_content(message["content"] || [])}
+  end
+
+  defp canonical_content(content) do
+    content
+    |> stringify_value()
+    |> prune_empty_metadata()
+  end
+
+  defp prune_empty_metadata(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> value in [nil, %{}] end)
+    |> Map.new(fn {key, value} -> {key, prune_empty_metadata(value)} end)
+  end
+
+  defp prune_empty_metadata(list) when is_list(list), do: Enum.map(list, &prune_empty_metadata/1)
+  defp prune_empty_metadata(value), do: value
 
   defp stringify_in_memory_message(message) when is_map(message) do
     raw_role = Map.get(message, :role) || Map.get(message, "role")

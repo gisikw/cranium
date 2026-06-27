@@ -314,6 +314,40 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     assert reason in [:normal, :noproc]
   end
 
+  test "does not transiently duplicate persisted latest user from in-memory tail", %{
+    endpoint: endpoint
+  } do
+    conversation_id = "tiamat-sse-dedupe-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    user_content = [%{"type" => "text", "text" => "latest user"}]
+
+    :ok =
+      Cranium.Store.append_message(conversation_id, epoch_id, %{
+        role: :user,
+        content: user_content,
+        origin: "test"
+      })
+
+    in_memory_messages = [
+      %{role: :system, content: [%{"type" => "text", "text" => "in-memory-only prelude"}]},
+      %{role: :user, content: user_content}
+    ]
+
+    assert {:ok, _pid} =
+             Tiamat.stream_chat(in_memory_messages,
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+             )
+
+    assert_receive {:tiamat_request, request}
+    assert [%{"role" => "user", "content" => ^user_content}] = request["messages"]
+    refute_receive {:tiamat_request, _}, 50
+  end
+
   test "consumes native Tiamat turn stream events incrementally", %{endpoint: endpoint} do
     :persistent_term.put({TestRouter, :mode}, :native)
 
