@@ -1,0 +1,731 @@
+-- allium: 3
+
+-- Room Sync
+--
+-- First-party Cranium room sync API for Hearth and future native clients.
+-- Replaces the patchwork of history fetch, firehose SSE, manifest polling,
+-- and metadata queries with a single coherent sync model.
+--
+-- Design stance: commands produce durable events; materialized projections
+-- serve product state; snapshots include cursors; recent events make clients
+-- resumable. This is deliberately NOT Matrix — no federation, no E2EE
+-- protocol, no room auth DAGs, no state resolution.
+--
+-- Scope: Event log, room snapshots, transcript projection, event streaming,
+-- room list summaries, command acknowledgement, cursor semantics.
+-- Does NOT cover: inference internals, media pipeline, context injection,
+-- legacy firehose/Headjack (those remain KTLO and untouched).
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Epoch {
+    -- Managed by conversation-lifecycle spec
+    -- Room state: saturation, turn_count, handoff, status, profile
+}
+
+external entity Message {
+    -- Managed by conversation-lifecycle spec
+    -- Append-only transcript rows with structured content blocks
+}
+
+external entity Agent {
+    -- Managed by inference pipeline
+    -- Provides active turn state (is inference running, stream_id)
+}
+
+external entity LegacyFirehose {
+    -- The existing SSE firehose at /v1/conversations/:id/events
+    -- and /v1/events (global). Remains untouched for Matrix/Headjack/Maw.
+    -- Not a dependency of this spec. Not modified by this spec.
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value EventEnvelope {
+    event_id: String
+    room_id: String
+    seq: Integer
+    type: String
+    occurred_at: Timestamp
+    correlation_id: String?
+    payload: Map
+
+    @guidance
+        -- event_id is globally unique (UUID or similar).
+        -- seq is monotonically increasing per room. Assigned at insert time.
+        -- correlation_id ties events back to the command that caused them
+        -- (e.g., the client_command_id from a message submission).
+        -- type is a dotted string like "message.created" or "turn.started".
+}
+
+value MessagePart {
+    id: String
+    type: text | tool_call | tool_result | audio_segment | image | artifact | status
+    -- Type-specific fields vary per type (see guidance)
+
+    @guidance
+        -- MessagePart is the universal rendering unit. Both live streaming
+        -- events and historical transcript queries return the same part shape.
+        -- This eliminates the current divergence where live turns render as
+        -- multiple text chunks and historical turns collapse to one text blob.
+        --
+        -- Part types:
+        --   text: { text: String }
+        --   tool_call: { tool: String, input: Map?, status: pending|running|complete|error, summary: String? }
+        --   tool_result: { tool_use_id: String, content: String, is_error: Boolean }
+        --   audio_segment: { segment_id: String, url: String?, duration_ms: Integer? }
+        --   image: { media_type: String, source: String }
+        --   artifact: { artifact_id: String, name: String?, url: String? }
+        --   status: { text: String }
+        --
+        -- Part IDs are stable within a message — the same part keeps the same
+        -- ID whether received live via event stream or read from transcript.
+}
+
+value TranscriptMessage {
+    id: String
+    room_id: String
+    role: user | assistant
+    parts: List<MessagePart>
+    text: String
+    origin: String?
+    created_at: Timestamp
+    epoch_id: String
+    parent_id: String?
+    provenance: Map?
+    usage: Map?
+
+    @guidance
+        -- TranscriptMessage is the projection shape served to clients.
+        -- `parts` is the ordered list of renderable content.
+        -- `text` is a convenience projection: concatenated text from all
+        -- text-type parts. Clients that only need plain text can use this
+        -- without parsing parts.
+        --
+        -- Derived from the existing Store.Message entity. The `content`
+        -- JSONB array is mapped to `parts` with stable typing.
+        -- Orientation-origin messages are excluded from client projections.
+}
+
+value RoomState {
+    active_turn: ActiveTurn?
+    saturation: Float
+    turn_count: Integer
+    handoff_generating: Boolean
+    epoch_id: String
+    profile: String?
+
+    @guidance
+        -- Canonical room state derived from the current Epoch and Agent.
+        -- saturation is 0.0-1.0 (not percent).
+        -- active_turn is present when inference is in flight.
+}
+
+value ActiveTurn {
+    stream_id: String
+    started_at: Timestamp
+    conversation_id: String
+
+    @guidance
+        -- Represents an in-flight inference pass. Clients use this to
+        -- show activity indicators and know whether to expect streaming
+        -- events for this room.
+}
+
+value RoomSummary {
+    room_id: String
+    title: String
+    latest_message_preview: String?
+    latest_message_at: Timestamp?
+    has_active_turn: Boolean
+    unread: Boolean
+
+    @guidance
+        -- Lightweight projection for the room list. Clients should be
+        -- able to render the full room list from a list of RoomSummary
+        -- values without subscribing to detailed events for every room.
+        -- `unread` is derived from read markers if Cranium owns them,
+        -- or always false until read markers are implemented.
+}
+
+value Cursor {
+    room_id: String
+    seq: Integer
+
+    @guidance
+        -- An opaque-to-clients cursor representing a consistency point
+        -- in a room's event stream. Returned with snapshots and event
+        -- batches. Clients store the cursor and present it on reconnect.
+        --
+        -- Internally this is the seq of the latest RoomEvent the snapshot
+        -- or batch includes. Clients should treat it as opaque and not
+        -- attempt arithmetic on it.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity RoomEvent {
+    event_id: String
+    room_id: String
+    seq: Integer
+    type: String
+    occurred_at: Timestamp
+    correlation_id: String?
+    payload: Map
+
+    -- Relationships
+    room: Room with room_id
+
+    @guidance
+        -- Append-only durable event log. One table in Postgres.
+        -- seq is assigned at insert time, monotonically increasing per room.
+        -- All room-scoped state changes produce a RoomEvent.
+        --
+        -- Events are the canonical record of what happened. Projections
+        -- (transcript, room state, room summaries) are derived from events
+        -- but may be served from pre-materialized state for performance.
+        --
+        -- Events age out on a generous schedule (configurable horizon).
+        -- Clients whose cursor is older than the horizon receive a
+        -- `cursor_expired` response and must re-fetch the snapshot.
+        --
+        -- Index: (room_id, seq) is the primary query path.
+        -- Index: (room_id, type) for filtered replay if needed later.
+}
+
+entity ReadMarker {
+    room_id: String
+    last_read_event_seq: Integer
+    updated_at: Timestamp
+
+    @guidance
+        -- Server-owned read position per room. Updated when client
+        -- explicitly marks a room as read. Used to derive `unread`
+        -- in RoomSummary.
+        -- Single-tenant: one marker per room, no user dimension.
+        -- Deferred: can ship without read markers and add later.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- Room event types (v0 taxonomy)
+--
+-- Turn lifecycle:
+--   turn.started
+--   turn.completed
+--   turn.cancelled
+--   turn.errored
+--
+-- Message lifecycle:
+--   message.created
+--   message.part.appended
+--   message.part.updated
+--
+-- Audio lifecycle:
+--   audio.segment.available
+--
+-- Room state:
+--   room.state.updated
+--   room.epoch.cleared
+--   room.epoch.created
+--
+-- Handoff lifecycle:
+--   handoff.started
+--   handoff.completed
+--
+-- Context:
+--   context.saturation.updated
+--
+-- @guidance
+--     Not all event types need to be emitted on day one. The taxonomy
+--     is defined up front so the envelope shape is stable and clients
+--     can ignore unknown types without breaking.
+--
+--     Clients MUST ignore event types they don't recognize.
+--     Cranium MAY add new event types without a version bump.
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    event_replay_horizon_hours: Integer = 168
+    snapshot_recent_message_count: Integer = 50
+    max_transcript_page_size: Integer = 200
+    event_stream_keepalive_seconds: Integer = 30
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Event Emission ==
+
+rule EmitRoomEvent {
+    when: a room-scoped state mutation occurs (message persisted,
+          turn started/completed, epoch cleared, saturation updated, etc.)
+
+    let seq = next_seq(room_id)
+
+    ensures: RoomEvent.created(
+        event_id: new_id(),
+        room_id: room_id,
+        seq: seq,
+        type: event_type,
+        occurred_at: now(),
+        correlation_id: source_command_id,
+        payload: event_specific_payload
+    )
+
+    ensures: event is broadcast on Cranium.Events for room_id
+
+    @guidance
+        -- This is the integration point with the existing system.
+        -- Existing code paths that mutate room state (PassReactor,
+        -- Harness, Store, HandoffWriter, etc.) gain an additional
+        -- step: after persisting state, emit a RoomEvent.
+        --
+        -- The RoomEvent is written to Postgres AND broadcast via
+        -- the in-process Events registry. The DB write is the durable
+        -- record; the broadcast is the live push to connected clients.
+        --
+        -- seq assignment must be serialized per room to maintain
+        -- monotonicity. Options: a Postgres sequence per room,
+        -- a SELECT MAX(seq)+1 within a transaction, or a lightweight
+        -- GenServer per room that assigns seqs. The per-room GenServer
+        -- approach fits Cranium's existing architecture (one supervisor
+        -- tree per conversation).
+        --
+        -- Events are emitted on the EXISTING Cranium.Events bus using
+        -- the existing {:conversation, room_id} topic. New event types
+        -- are added alongside existing internal events. Legacy consumers
+        -- ignore the new events; new consumers (the sync SSE endpoint)
+        -- filter for RoomEvent-shaped messages.
+}
+
+-- == Snapshot ==
+
+rule ServeRoomSnapshot {
+    when: GET /v1/rooms/:room_id/snapshot
+
+    let epoch = current_active_epoch(room_id)
+    let messages = recent_messages(room_id, config.snapshot_recent_message_count)
+    let state = compose_room_state(epoch, agent_status(room_id))
+    let cursor = latest_event_seq(room_id)
+
+    ensures: response contains {
+        room: { id: room_id, title: room_id },
+        state: RoomState,
+        recent_transcript: List<TranscriptMessage>,
+        cursor: Cursor,
+        has_more: Boolean
+    }
+
+    @guidance
+        -- Snapshot is computed at request time from current DB state.
+        -- It is NOT a pre-materialized artifact.
+        --
+        -- recent_transcript returns messages in chronological order
+        -- (oldest first within the page), using the TranscriptMessage
+        -- shape with parts. This is the same shape as transcript
+        -- scrollback, just anchored at "most recent N".
+        --
+        -- has_more indicates whether older messages exist beyond the
+        -- returned page (for triggering scrollback fetch).
+        --
+        -- The cursor represents the snapshot's consistency point.
+        -- A client that subscribes to events with since=cursor will
+        -- not miss any events that occurred after the snapshot was
+        -- assembled.
+        --
+        -- If no epoch exists for the room, one is created (matching
+        -- existing get_or_create_epoch behavior).
+}
+
+-- == Transcript Scrollback ==
+
+rule ServeTranscriptPage {
+    when: GET /v1/rooms/:room_id/transcript?before=:message_id&limit=:n
+
+    let limit = clamp(n, 1, config.max_transcript_page_size)
+    let messages = messages_before(room_id, message_id, limit)
+
+    ensures: response contains {
+        messages: List<TranscriptMessage>,
+        has_more: Boolean
+    }
+
+    @guidance
+        -- Paginated scrollback from the materialized transcript.
+        -- Returns messages in reverse chronological order (newest first)
+        -- consistent with the existing list_messages behavior.
+        --
+        -- The `before` cursor is a message ID, not an event seq.
+        -- Transcript pagination operates on the messages table directly;
+        -- it does not replay events.
+        --
+        -- Orientation-origin messages are excluded.
+        --
+        -- Also supports `after=:message_id` for forward pagination
+        -- (jump-to-message, search results).
+}
+
+-- == Event Stream ==
+
+rule ServeEventStream {
+    when: GET /v1/rooms/:room_id/events?since=:cursor
+
+    requires: cursor is valid (parseable, non-negative)
+
+    -- Phase 1: Replay
+    let missed_events = room_events_after(room_id, cursor.seq)
+
+    if cursor.seq < oldest_available_seq(room_id):
+        ensures: response is { type: "cursor_expired", refresh: true }
+        -- Client must re-fetch snapshot
+
+    else:
+        -- Send any missed durable events as initial batch
+        ensures: each missed_event is sent as SSE event
+
+        -- Phase 2: Live
+        -- Subscribe to Cranium.Events for {:conversation, room_id}
+        -- Forward RoomEvent-typed messages as SSE events
+        ensures: live events are forwarded as they occur
+        ensures: keepalive comments sent every config.event_stream_keepalive_seconds
+
+    @guidance
+        -- This is a NEW SSE endpoint, separate from the legacy firehose.
+        -- The legacy firehose (/v1/conversations/:id/events and /v1/events)
+        -- remains untouched.
+        --
+        -- The gap-free guarantee: a client that obtains cursor C from a
+        -- snapshot and then connects to this endpoint with since=C will
+        -- receive every event that occurred after C. The replay phase
+        -- covers the window between snapshot assembly and SSE connection.
+        --
+        -- If replay + live subscription races (an event is both replayed
+        -- from DB and received live), the client should deduplicate by
+        -- event_id. Events are delivered at-least-once, not exactly-once.
+        --
+        -- Keepalive SSE comments (": keepalive\n\n") prevent proxy/mobile
+        -- timeouts from silently dropping the connection.
+        --
+        -- The event stream carries the full EventEnvelope shape. Clients
+        -- filter by event type for rendering.
+}
+
+-- == Commands ==
+
+rule SubmitMessage {
+    when: POST /v1/rooms/:room_id/messages
+        with { text: String, client_command_id: String?, attachments: List? }
+
+    ensures: command is accepted with { accepted: true, command_id: correlation_id }
+    ensures: message submission flows through existing SubmitTextPass path
+    ensures: RoomEvent(type: "message.created") is emitted for the user message
+    ensures: RoomEvent(type: "turn.started") is emitted when inference begins
+
+    @guidance
+        -- Command responses are boring acknowledgements. The canonical
+        -- rendering of the user message comes from the event stream or
+        -- the next snapshot, not from the command response.
+        --
+        -- client_command_id enables idempotent retry: if the same
+        -- client_command_id is submitted twice, Cranium returns the
+        -- original accepted response without creating a duplicate message.
+        --
+        -- Attachments support images (as in the existing image upload path).
+}
+
+rule SubmitAudioTake {
+    when: POST /v1/rooms/:room_id/audio-takes
+        with multipart audio data and { client_command_id: String? }
+
+    ensures: command is accepted with { accepted: true, take_id: String, command_id: correlation_id }
+    ensures: audio take flows through existing TakeCollector path
+
+    @guidance
+        -- Audio takes follow the existing media pipeline. The sync API
+        -- just provides a room-scoped entry point that returns a
+        -- correlation ID for the client to track.
+}
+
+rule CancelTurn {
+    when: POST /v1/rooms/:room_id/turns/:turn_id/cancel
+
+    ensures: active inference for room is cancelled
+    ensures: RoomEvent(type: "turn.cancelled") is emitted
+
+    @guidance
+        -- Delegates to existing CancelInference. The turn_id in the URL
+        -- is the stream_id from ActiveTurn. If no active turn or wrong
+        -- turn_id, returns 404/409.
+}
+
+rule MarkRead {
+    when: POST /v1/rooms/:room_id/read-marker
+        with { cursor: Cursor }
+
+    ensures: ReadMarker for room_id is updated to cursor.seq
+
+    @guidance
+        -- Deferred: not required for v0. When implemented, drives
+        -- the `unread` field in RoomSummary.
+}
+
+-- == Room List ==
+
+rule ServeRoomList {
+    when: GET /v1/rooms
+
+    let rooms = all_rooms_with_summaries()
+
+    ensures: response contains {
+        rooms: List<RoomSummary>,
+        cursor: Cursor
+    }
+
+    @guidance
+        -- Returns lightweight summaries for all rooms, sorted by
+        -- latest activity (most recent first).
+        --
+        -- The cursor here is a global cursor (latest event seq across
+        -- all rooms, or a global counter). Clients can use it with
+        -- the global activity stream to stay updated without polling.
+        --
+        -- Room creation is implicit in Cranium (first message to a
+        -- conversation_id creates it). The room list is derived from
+        -- distinct conversation_ids in the epochs table.
+}
+
+-- == Global Activity Stream ==
+
+rule ServeGlobalActivityStream {
+    when: GET /v1/activity?since=:cursor
+
+    ensures: SSE stream of room-summary-level events:
+        - room.activity (latest message changed)
+        - room.turn.active / room.turn.idle
+        - room.created
+        - system.status (health, failover, version)
+
+    @guidance
+        -- Deferred: not required for v0. Hearth can poll /v1/rooms
+        -- on foreground transitions initially.
+        --
+        -- When implemented, this replaces the need for Hearth to
+        -- subscribe to every room's detailed event stream just to
+        -- show a room list. Events here are coarse summaries, not
+        -- detailed room events.
+        --
+        -- system.status events cover non-room-scoped concerns:
+        -- service restart, failover, read-only mode, version changes.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant EventSeqMonotonic {
+    for r in Rooms:
+        RoomEvents for r are strictly monotonically increasing by seq
+
+    @guidance
+        -- No gaps, no reordering. If a client sees seq 42, the next
+        -- event for that room will be seq 43+. Gaps in seq (from
+        -- deleted/expired events) are acceptable at the old end of
+        -- the log, but not within the replay horizon.
+        --
+        -- Enforced by serialized seq assignment per room.
+}
+
+invariant SnapshotCursorGapFree {
+    A client with snapshot cursor C can either:
+        (a) replay all events after C via the event stream, or
+        (b) receive a cursor_expired instruction to re-fetch snapshot
+
+    It must never silently miss events.
+
+    @guidance
+        -- This is the core correctness property of the sync model.
+        -- The snapshot cursor and event stream together provide a
+        -- gap-free view of room state changes.
+        --
+        -- Implementation: the snapshot query fetches latest_event_seq
+        -- AFTER assembling the snapshot state. Any event that occurred
+        -- during snapshot assembly will have seq <= cursor and will be
+        -- reflected in the snapshot state OR have seq > cursor and will
+        -- be delivered via the event stream.
+        --
+        -- Edge case: if an event is committed between the snapshot
+        -- state queries and the cursor fetch, the snapshot may not
+        -- reflect it but the event stream will deliver it. This is
+        -- safe: the client applies the event on top of the snapshot.
+}
+
+invariant CommandIdempotency {
+    A command with client_command_id X submitted twice produces
+    at most one state mutation
+
+    @guidance
+        -- Cranium stores recent client_command_ids (per room, TTL-based)
+        -- and returns the original response on duplicate submission.
+        -- This handles mobile retry-after-timeout without duplicate
+        -- messages appearing in the transcript.
+        --
+        -- Deferred: can ship without idempotency keys and add them
+        -- when mobile reliability becomes a real problem. The risk
+        -- without them is duplicate user messages on flaky networks.
+}
+
+invariant LiveAndHistoricalShapeMatch {
+    The TranscriptMessage shape returned by snapshot/transcript endpoints
+    is identical to the shape constructed from event stream events
+
+    @guidance
+        -- This is the rendering convergence guarantee. A Hearth client
+        -- renders the same UI component whether it received the message
+        -- live via events or loaded it from scrollback.
+        --
+        -- Specifically: a message.created event's payload, when
+        -- projected to TranscriptMessage, produces the same parts
+        -- array as the transcript endpoint returns for that message.
+        --
+        -- message.part.appended and message.part.updated events allow
+        -- incremental rendering during a live turn. When the turn
+        -- completes, the assembled parts match the persisted message.
+}
+
+invariant EventsAreAppendOnly {
+    RoomEvents are never updated or deleted within the replay horizon
+
+    @guidance
+        -- Events may be purged beyond the replay horizon by a
+        -- periodic cleanup job. Within the horizon, they are immutable.
+        -- This guarantees that cursor-based replay is deterministic.
+}
+
+invariant LegacyFirehoseUntouched {
+    This spec does not modify the behavior of the existing firehose
+    endpoints (/v1/conversations/:id/events, /v1/events)
+
+    @guidance
+        -- The legacy firehose continues to serve Matrix/Headjack/Maw
+        -- consumers exactly as before. Room sync is a parallel,
+        -- additive API surface. Migration of legacy consumers to the
+        -- new API is a future concern, not a prerequisite.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface RoomSyncAPI {
+    facing caller: HearthClient
+
+    -- Snapshot and scrollback
+    provides: GET /v1/rooms/:room_id/snapshot -> RoomSnapshot
+    provides: GET /v1/rooms/:room_id/transcript -> List<TranscriptMessage>
+
+    -- Event stream
+    provides: GET /v1/rooms/:room_id/events?since=cursor -> SSE<EventEnvelope>
+
+    -- Commands
+    provides: POST /v1/rooms/:room_id/messages -> CommandAck
+    provides: POST /v1/rooms/:room_id/audio-takes -> CommandAck
+    provides: POST /v1/rooms/:room_id/turns/:turn_id/cancel -> CommandAck
+    provides: POST /v1/rooms/:room_id/read-marker -> CommandAck
+
+    -- Room list
+    provides: GET /v1/rooms -> List<RoomSummary>
+
+    -- Global activity (deferred)
+    provides: GET /v1/activity?since=cursor -> SSE<ActivityEvent>
+
+    @guidance
+        -- All endpoints are authenticated. Single-tenant: no user
+        -- dimension in queries. Auth is orthogonal to this spec.
+        --
+        -- Hearth is the primary consumer. Maw (web) is a future consumer.
+        -- Desktop agent could also consume this API.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Seq assignment mechanism" {
+    -- Options: Postgres sequence per room (heavy if many rooms),
+    -- MAX(seq)+1 in a transaction (gap-free but serialized),
+    -- GenServer per room (fits architecture, loses durability guarantee
+    -- if process crashes between assign and DB write).
+    -- Recommendation: transaction-based MAX+1 for correctness at
+    -- this scale. Revisit if write throughput becomes a concern.
+}
+
+open question "Event payload size" {
+    -- Should event payloads contain the full data (e.g., complete
+    -- message content for message.created) or just IDs/refs that
+    -- the client resolves against projections?
+    -- Full payloads are simpler for clients and avoid extra round-trips.
+    -- At this scale, payload size is not a concern.
+    -- Recommendation: full payloads in v0.
+}
+
+open question "Streaming text delta events" {
+    -- RESOLVED: Content-block granularity is the durable event.
+    -- message.part.appended is the durable RoomEvent emitted when a
+    -- content block (text paragraph, tool call, etc.) is complete.
+    --
+    -- Token-level streaming remains ephemeral on the in-process Events
+    -- bus for latency-sensitive consumers (audio pipeline, live typing
+    -- indicators). These do NOT hit the room_events table.
+    --
+    -- This is a two-way door: if a future model produces monolithic
+    -- 5-paragraph blocks, finer-grained durable events can be added
+    -- (e.g., message.delta) without changing the envelope or breaking
+    -- existing clients. Clients MUST ignore unknown event types, so
+    -- new granularity levels are additive.
+    --
+    -- Rationale: chunked token-level rendering feels jittery. Content-
+    -- block-level rendering is smoother. Durable events should match
+    -- the rendering granularity clients actually want.
+}
+open question "Audio segment event shape" {
+    -- Audio segments are currently served via manifest polling.
+    -- audio.segment.available events will contain a segment URL so
+    -- Hearth can fetch audio directly via the event stream.
+    --
+    -- However, the manifest system runs in parallel until legacy Hearth
+    -- is retired. Both paths coexist: new Hearth uses events, legacy
+    -- Hearth uses manifest polling. No manifest removal until legacy
+    -- app is fully decommissioned.
+}
+
+open question "Read marker ownership" {
+    -- Should Cranium own read markers (server-canonical) or should
+    -- Hearth track read state locally?
+    -- Server-canonical enables cross-device unread sync.
+    -- Local is simpler and sufficient for single-device use.
+    -- Recommendation: server-canonical but deferred. Ship without
+    -- read markers in v0; add when multi-device matters.
+}
+
+open question "Global cursor semantics" {
+    -- The room list endpoint returns a cursor. What is it?
+    -- Options: latest event seq across all rooms (requires a global
+    -- counter), latest timestamp, or composite (room_id, seq) of
+    -- the most recently active room.
+    -- This matters for the global activity stream (deferred).
+    -- Recommendation: defer until global activity stream is designed.
+    -- Room list polling is fine for v0.
+}
