@@ -28,7 +28,7 @@ defmodule Cranium.Store do
 
   import Ecto.Query
 
-  alias Cranium.Store.{Repo, Epoch, Message, Summary, EnsembleSelection}
+  alias Cranium.Store.{Repo, Epoch, Message, Summary, EnsembleSelection, RoomEvent}
 
   defstruct locks: %{}
 
@@ -225,6 +225,50 @@ defmodule Cranium.Store do
   @spec list_transcripts(keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_transcripts(opts \\ []) do
     GenServer.call(__MODULE__, {:list_transcripts, opts}, 30_000)
+  end
+
+  # Room event operations
+
+  @doc """
+  Emit a durable room event.
+
+  Assigns the next seq for the room within a transaction (MAX(seq)+1)
+  and inserts the event. Returns the created event with its assigned seq.
+  """
+  @spec emit_room_event(String.t(), String.t(), map(), String.t() | nil) ::
+          {:ok, map()} | {:error, :db_error}
+  def emit_room_event(room_id, type, payload, correlation_id \\ nil) do
+    GenServer.call(__MODULE__, {:emit_room_event, room_id, type, payload, correlation_id})
+  end
+
+  @doc """
+  Fetch room events after a given seq for cursor-based replay.
+
+  Returns events in ascending seq order. If `since_seq` is 0,
+  returns from the beginning of available history.
+  """
+  @spec list_room_events(String.t(), integer(), keyword()) ::
+          {:ok, [map()]} | {:error, :db_error}
+  def list_room_events(room_id, since_seq, opts \\ []) do
+    GenServer.call(__MODULE__, {:list_room_events, room_id, since_seq, opts})
+  end
+
+  @doc """
+  Get the latest event seq for a room. Returns 0 if no events exist.
+  Used by snapshot endpoint to stamp the cursor.
+  """
+  @spec latest_room_event_seq(String.t()) :: {:ok, integer()} | {:error, :db_error}
+  def latest_room_event_seq(room_id) do
+    GenServer.call(__MODULE__, {:latest_room_event_seq, room_id})
+  end
+
+  @doc """
+  Delete room events older than the given timestamp.
+  Used by the age-out cleanup job.
+  """
+  @spec purge_room_events_before(DateTime.t()) :: {:ok, integer()} | {:error, :db_error}
+  def purge_room_events_before(before) do
+    GenServer.call(__MODULE__, {:purge_room_events_before, before}, 30_000)
   end
 
   # --- GenServer Implementation ---
@@ -663,6 +707,85 @@ defmodule Cranium.Store do
     {:reply, result, state}
   end
 
+
+  # --- Room Event Handlers ---
+
+  defp do_handle_call({:emit_room_event, room_id, type, payload, correlation_id}, _from, state) do
+    result =
+      Repo.transaction(fn ->
+        next_seq =
+          from(e in RoomEvent,
+            where: e.room_id == ^room_id,
+            select: max(e.seq)
+          )
+          |> Repo.one()
+          |> case do
+            nil -> 1
+            max -> max + 1
+          end
+
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+        %RoomEvent{}
+        |> RoomEvent.changeset(%{
+          room_id: room_id,
+          seq: next_seq,
+          type: type,
+          occurred_at: now,
+          correlation_id: correlation_id,
+          payload: payload
+        })
+        |> Repo.insert!()
+      end)
+
+    case result do
+      {:ok, event} ->
+        {:reply, {:ok, room_event_to_map(event)}, state}
+
+      {:error, reason} ->
+        Logger.error("Failed to emit room event: #{inspect(reason)}", stage: :store)
+        {:reply, {:error, :db_error}, state}
+    end
+  end
+
+  defp do_handle_call({:list_room_events, room_id, since_seq, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 500) |> min(5000) |> max(1)
+
+    events =
+      from(e in RoomEvent,
+        where: e.room_id == ^room_id and e.seq > ^since_seq,
+        order_by: [asc: e.seq],
+        limit: ^limit
+      )
+      |> Repo.all()
+      |> Enum.map(&room_event_to_map/1)
+
+    {:reply, {:ok, events}, state}
+  end
+
+  defp do_handle_call({:latest_room_event_seq, room_id}, _from, state) do
+    seq =
+      from(e in RoomEvent,
+        where: e.room_id == ^room_id,
+        select: max(e.seq)
+      )
+      |> Repo.one()
+      |> case do
+        nil -> 0
+        max -> max
+      end
+
+    {:reply, {:ok, seq}, state}
+  end
+
+  defp do_handle_call({:purge_room_events_before, before}, _from, state) do
+    {count, _} =
+      from(e in RoomEvent, where: e.occurred_at < ^before)
+      |> Repo.delete_all()
+
+    {:reply, {:ok, count}, state}
+  end
+
   # --- Private ---
 
   defp do_apply_tiamat_normalization_delta(_conversation_id, _epoch_id, _request_messages, nil),
@@ -1037,5 +1160,17 @@ defmodule Cranium.Store do
       String.contains?(content, "error") -> false
       true -> true
     end
+  end
+
+  defp room_event_to_map(%RoomEvent{} = e) do
+    %{
+      event_id: e.id,
+      room_id: e.room_id,
+      seq: e.seq,
+      type: e.type,
+      occurred_at: e.occurred_at,
+      correlation_id: e.correlation_id,
+      payload: e.payload
+    }
   end
 end
