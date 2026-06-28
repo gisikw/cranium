@@ -140,10 +140,20 @@ defmodule Cranium.Backend.LLM.Tiamat do
     existing_fingerprints = message_fingerprints(existing_messages)
     stored_count = length(existing_messages)
 
+    in_memory_messages = Enum.map(messages, &stringify_in_memory_message/1)
+    candidate_messages = Enum.drop(in_memory_messages, stored_count)
+
+    Logger.warning("Tiamat in-memory append pre-dedupe",
+      persisted_count: length(existing_messages),
+      in_memory_count: length(in_memory_messages),
+      dropped_count: stored_count,
+      persisted_tail: inspect(message_summaries(Enum.take(existing_messages, -6))),
+      in_memory: inspect(message_summaries(in_memory_messages)),
+      candidates_after_drop: inspect(message_summaries(candidate_messages))
+    )
+
     {additions, _ids, _fingerprints} =
-      messages
-      |> Enum.drop(stored_count)
-      |> Enum.map(&stringify_in_memory_message/1)
+      candidate_messages
       |> Enum.reduce({[], existing_ids, existing_fingerprints}, fn message,
                                                                    {acc, ids, fingerprints} ->
         id = message["id"]
@@ -162,7 +172,16 @@ defmodule Cranium.Backend.LLM.Tiamat do
         end
       end)
 
-    Map.update!(request, "messages", &(&1 ++ Enum.reverse(additions)))
+    final_messages = existing_messages ++ Enum.reverse(additions)
+
+    Logger.warning("Tiamat in-memory append final",
+      additions_count: length(additions),
+      final_count: length(final_messages),
+      additions: inspect(message_summaries(Enum.reverse(additions))),
+      final_tail: inspect(message_summaries(Enum.take(final_messages, -10)))
+    )
+
+    Map.put(request, "messages", final_messages)
   end
 
   defp append_in_memory_messages(request, _messages), do: request
@@ -179,6 +198,49 @@ defmodule Cranium.Backend.LLM.Tiamat do
     |> Enum.map(&message_fingerprint/1)
     |> MapSet.new()
   end
+
+  defp message_summaries(messages) do
+    Enum.map(messages, fn message ->
+      %{
+        id: short_id(message["id"]),
+        role: message["role"],
+        blocks: content_block_summaries(message["content"] || [])
+      }
+    end)
+  end
+
+  defp short_id(id) when is_binary(id), do: String.slice(id, 0, 12)
+  defp short_id(other), do: other
+
+  defp content_block_summaries(blocks) when is_list(blocks) do
+    Enum.map(blocks, fn block ->
+      type = block["type"]
+
+      case type do
+        "text" ->
+          %{type: type, text: String.slice(to_string(block["text"] || ""), 0, 80)}
+
+        "tool_use" ->
+          %{
+            type: type,
+            id: short_id(block["tool_use_id"] || block["id"]),
+            name: block["tool_name"] || block["name"]
+          }
+
+        "tool_result" ->
+          %{
+            type: type,
+            for: short_id(block["tool_result_for"] || block["tool_use_id"]),
+            content: String.slice(inspect(block["tool_output"] || block["content"] || ""), 0, 120)
+          }
+
+        _ ->
+          %{type: type, keys: Map.keys(block || %{})}
+      end
+    end)
+  end
+
+  defp content_block_summaries(other), do: [%{type: :non_list, value: inspect(other)}]
 
   defp message_fingerprint(message) do
     {message["role"], canonical_content(message["content"] || [])}
