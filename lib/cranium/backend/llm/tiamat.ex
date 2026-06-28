@@ -143,13 +143,14 @@ defmodule Cranium.Backend.LLM.Tiamat do
     in_memory_messages = Enum.map(messages, &stringify_in_memory_message/1)
     candidate_messages = Enum.drop(in_memory_messages, stored_count)
 
-    Logger.warning("Tiamat in-memory append pre-dedupe",
-      persisted_count: length(existing_messages),
-      in_memory_count: length(in_memory_messages),
-      dropped_count: stored_count,
-      persisted_tail: inspect(message_summaries(Enum.take(existing_messages, -6))),
-      in_memory: inspect(message_summaries(in_memory_messages)),
-      candidates_after_drop: inspect(message_summaries(candidate_messages))
+    Logger.warning(
+      "Tiamat in-memory append pre-dedupe " <>
+        "persisted_count=#{length(existing_messages)} " <>
+        "in_memory_count=#{length(in_memory_messages)} " <>
+        "dropped_count=#{stored_count} " <>
+        "persisted_tail=#{inspect(message_summaries(Enum.take(existing_messages, -6)))} " <>
+        "in_memory=#{inspect(message_summaries(in_memory_messages))} " <>
+        "candidates_after_drop=#{inspect(message_summaries(candidate_messages))}"
     )
 
     {additions, _ids, _fingerprints} =
@@ -174,11 +175,12 @@ defmodule Cranium.Backend.LLM.Tiamat do
 
     final_messages = existing_messages ++ Enum.reverse(additions)
 
-    Logger.warning("Tiamat in-memory append final",
-      additions_count: length(additions),
-      final_count: length(final_messages),
-      additions: inspect(message_summaries(Enum.reverse(additions))),
-      final_tail: inspect(message_summaries(Enum.take(final_messages, -10)))
+    Logger.warning(
+      "Tiamat in-memory append final " <>
+        "additions_count=#{length(additions)} " <>
+        "final_count=#{length(final_messages)} " <>
+        "additions=#{inspect(message_summaries(Enum.reverse(additions)))} " <>
+        "final_tail=#{inspect(message_summaries(Enum.take(final_messages, -10)))}"
     )
 
     Map.put(request, "messages", final_messages)
