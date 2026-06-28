@@ -78,7 +78,7 @@ defmodule Cranium.Effects.HandoffWriter do
 
   defp generate_generic(conversation_id, epoch_id, profile) do
     case resolve_backend(profile) do
-      {:ok, backend, model, backend_config} ->
+      {:ok, backend, model, router_profile, backend_config} ->
         Logger.info("Generating handoff (generic path, profile=#{profile})",
           conversation_id: conversation_id,
           stage: :effects
@@ -111,12 +111,15 @@ defmodule Cranium.Effects.HandoffWriter do
               ]
 
           system = build_handoff_system_prompt()
-
           opts = [
             system: system,
             model: model,
             max_tokens: 4096,
-            backend_config: backend_config
+            backend_config: backend_config,
+            conversation_id: conversation_id,
+            epoch_id: epoch_id,
+            router_profile: router_profile,
+            tools_disabled: true
           ]
 
           case backend.stream_chat(messages, opts) do
@@ -180,13 +183,12 @@ defmodule Cranium.Effects.HandoffWriter do
         {:error, reason}
     end
   end
-
   defp resolve_backend(nil), do: {:error, :no_profile}
 
   defp resolve_backend(profile_name) do
     case Cranium.Config.resolve_profile(profile_name) do
       {:ok, resolved} ->
-        {:ok, resolved.backend_module, resolved.model, resolved.backend_config}
+        {:ok, resolved.backend_module, resolved.model, resolved.router_profile, resolved.backend_config}
 
       {:error, :not_found} ->
         {:error, :profile_not_found}
