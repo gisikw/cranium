@@ -454,6 +454,9 @@ defmodule Cranium.Backend.LLM.Tiamat do
     part_id = Events.part_id(envelope)
 
     cond do
+      text_delta_streamed?() ->
+        :ok
+
       streamed_text_part?(part_id) ->
         :ok
 
@@ -467,6 +470,11 @@ defmodule Cranium.Backend.LLM.Tiamat do
             :ok
         end
     end
+  end
+
+  defp text_delta_streamed? do
+    Process.get(:tiamat_stream_result, %{})
+    |> Map.get(:emitted_text, false)
   end
 
   defp remember_text_delta_part(envelope) do

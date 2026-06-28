@@ -105,6 +105,31 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
           }
 
           send_retrospective_native_sse(conn, request, response)
+
+        :mismatched_text_part_replay ->
+          response = native_text_replay_response(request)
+
+          send_text_replay_native_sse(conn, request, response, %{
+            "attempt_id" => "att_1",
+            "message_id" => "msg_1",
+            "part_id" => "part_completed_different",
+            "index" => 0,
+            "content_type" => "text",
+            "completion_status" => "completed",
+            "content" => %{"type" => "text", "text" => "streamed text"}
+          })
+
+        :missing_text_part_replay ->
+          response = native_text_replay_response(request)
+
+          send_text_replay_native_sse(conn, request, response, %{
+            "attempt_id" => "att_1",
+            "message_id" => "msg_1",
+            "index" => 0,
+            "content_type" => "text",
+            "completion_status" => "completed",
+            "content" => %{"type" => "text", "text" => "streamed text"}
+          })
       end
     end
 
@@ -217,6 +242,49 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
         }),
         native_event(request, 4, "turn_response", %{"response" => response}),
         native_event(request, 5, "stream_closed", %{"status" => "closed"})
+      ]
+
+      send_native_events(conn, events)
+    end
+
+    defp native_text_replay_response(request) do
+      %{
+        "schema" => "tiamat.turn.response.v1",
+        "response_id" => Ecto.UUID.generate(),
+        "request_id" => request["request_id"],
+        "status" => "completed",
+        "transcript_delta" => [
+          %{
+            "role" => "assistant",
+            "content" => [%{"type" => "text", "text" => "streamed text"}]
+          }
+        ]
+      }
+    end
+
+    defp send_text_replay_native_sse(conn, request, response, completed_payload) do
+      events = [
+        native_event(request, 1, "turn_started", %{
+          "received_at" => "2026-06-23T22:19:04.123Z",
+          "router_profile" => request["router_profile"]
+        }),
+        native_event(request, 2, "content_part_delta", %{
+          "attempt_id" => "att_1",
+          "message_id" => "msg_1",
+          "part_id" => "part_delta",
+          "content_type" => "text",
+          "delta" => %{"text" => "streamed "}
+        }),
+        native_event(request, 3, "content_part_delta", %{
+          "attempt_id" => "att_1",
+          "message_id" => "msg_1",
+          "part_id" => "part_delta",
+          "content_type" => "text",
+          "delta" => %{"text" => "text"}
+        }),
+        native_event(request, 4, "content_part_completed", completed_payload),
+        native_event(request, 5, "turn_response", %{"response" => response}),
+        native_event(request, 6, "stream_closed", %{"status" => "closed"})
       ]
 
       send_native_events(conn, events)
@@ -383,6 +451,54 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     assert_receive {:llm_usage, %{input_tokens: 5, output_tokens: 2}}
     assert_receive {:llm_stop, "tool_use"}
     refute_receive {:llm_tool_use, %{id: "toolu_native"}}, 50
+    refute_receive {:llm_text, "streamed text"}, 50
+  end
+
+  test "suppresses completed text replay when completed part id differs after text deltas", %{
+    endpoint: endpoint
+  } do
+    :persistent_term.put({TestRouter, :mode}, :mismatched_text_part_replay)
+
+    conversation_id = "tiamat-mismatched-text-replay-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    assert {:ok, _pid} =
+             Tiamat.stream_chat([],
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+             )
+
+    assert_receive {:tiamat_request, _request}
+    assert_receive {:llm_text, "streamed "}
+    assert_receive {:llm_text, "text"}
+    assert_receive {:llm_stop, "end_turn"}
+    refute_receive {:llm_text, "streamed text"}, 50
+  end
+
+  test "suppresses completed text replay when completed part id is missing after text deltas", %{
+    endpoint: endpoint
+  } do
+    :persistent_term.put({TestRouter, :mode}, :missing_text_part_replay)
+
+    conversation_id = "tiamat-missing-text-replay-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    assert {:ok, _pid} =
+             Tiamat.stream_chat([],
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+             )
+
+    assert_receive {:tiamat_request, _request}
+    assert_receive {:llm_text, "streamed "}
+    assert_receive {:llm_text, "text"}
+    assert_receive {:llm_stop, "end_turn"}
     refute_receive {:llm_text, "streamed text"}, 50
   end
 
