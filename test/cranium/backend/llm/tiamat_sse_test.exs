@@ -412,7 +412,19 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
              )
 
     assert_receive {:tiamat_request, request}
-    assert [%{"role" => "user", "content" => ^user_content}] = request["messages"]
+    assert [
+             %{"role" => "user", "content" => ^user_content},
+             %{
+               "role" => "system",
+               "content" => [%{"type" => "text", "text" => "in-memory-only prelude"}]
+             }
+           ] = request["messages"]
+
+    refute Enum.any?(request["messages"], fn message ->
+             message["role"] == "user" and message["content"] == user_content and
+               String.starts_with?(message["id"] || "", "agent-memory-")
+           end)
+
     refute_receive {:tiamat_request, _}, 50
   end
 
