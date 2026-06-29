@@ -12,6 +12,19 @@ defmodule Cranium.RoomSync.EventStream do
   between the DB read and the subscription starting. The dedup
   window handles the overlap (events that arrive via subscription
   during the DB read).
+
+  ## Ephemeral events
+
+  In addition to durable RoomEvents (persisted, replayable), the stream
+  forwards ephemeral mid-turn events from the Agent:
+
+  - `turn.delta` — text chunk during streaming
+  - `turn.tool_use` — tool call started (name, input, id)
+  - `turn.tool_result` — tool call completed (result, is_error)
+
+  These use the same SSE envelope shape but carry `seq: null` to signal
+  they are not replayable. Reconnecting clients recover mid-turn state
+  from the enriched `active_turn` in the snapshot instead.
   """
 
   require Logger
@@ -43,7 +56,7 @@ defmodule Cranium.RoomSync.EventStream do
     # 4. Send catchup events
     {conn, last_seq} =
       Enum.reduce(catchup_events, {conn, since_seq}, fn event, {conn, _seq} ->
-        case send_event(conn, event) do
+        case send_durable_event(conn, event) do
           {:ok, conn} -> {conn, event.seq}
           {:error, _} -> throw({:client_gone, conn})
         end
@@ -63,8 +76,10 @@ defmodule Cranium.RoomSync.EventStream do
 
   defp live_loop(conn, room_id, last_seq) do
     receive do
+      # --- Durable room events (persisted, replayable) ---
+
       {:room_event, %{seq: seq} = event} when seq > last_seq ->
-        case send_event(conn, event) do
+        case send_durable_event(conn, event) do
           {:ok, conn} ->
             live_loop(conn, room_id, seq)
 
@@ -81,6 +96,40 @@ defmodule Cranium.RoomSync.EventStream do
         # Dedupe: already sent during catchup
         live_loop(conn, room_id, last_seq)
 
+      # --- Ephemeral turn events (NOT persisted, live rendering only) ---
+
+      {:chunk, _stream_id, text} when is_binary(text) ->
+        case send_ephemeral_event(conn, room_id, "turn.delta", %{content: text}) do
+          {:ok, conn} -> live_loop(conn, room_id, last_seq)
+          {:error, _} -> conn
+        end
+
+      {:chunk, _stream_id, {:tool_use, tool_data}} ->
+        payload = %{
+          id: tool_data[:id] || tool_data["id"],
+          name: tool_data[:name] || tool_data["name"],
+          input: tool_data[:input] || tool_data["input"]
+        }
+
+        case send_ephemeral_event(conn, room_id, "turn.tool_use", payload) do
+          {:ok, conn} -> live_loop(conn, room_id, last_seq)
+          {:error, _} -> conn
+        end
+
+      {:chunk, _stream_id, {:tool_result, result_data}} ->
+        payload = %{
+          tool_use_id: result_data[:tool_use_id] || result_data["tool_use_id"],
+          content: result_data[:content] || result_data["content"],
+          is_error: result_data[:is_error] || result_data["is_error"] || false
+        }
+
+        case send_ephemeral_event(conn, room_id, "turn.tool_result", payload) do
+          {:ok, conn} -> live_loop(conn, room_id, last_seq)
+          {:error, _} -> conn
+        end
+
+      # --- Keepalive ---
+
       :keepalive ->
         case Plug.Conn.chunk(conn, ": keepalive\n\n") do
           {:ok, conn} ->
@@ -91,19 +140,34 @@ defmodule Cranium.RoomSync.EventStream do
             conn
         end
 
-      # Ignore other conversation-topic messages (chunks, stream events, etc.)
+      # Ignore other conversation-topic messages (markers, stream_start/end, etc.)
       _other ->
         live_loop(conn, room_id, last_seq)
     end
   end
 
-  defp send_event(conn, event) do
+  # Durable events carry their own seq as the SSE id
+  defp send_durable_event(conn, event) do
     data = Jason.encode!(event)
 
     Plug.Conn.chunk(
       conn,
       "id: #{event.seq}\nevent: #{event.type}\ndata: #{data}\n\n"
     )
+  end
+
+  # Ephemeral events have seq: null and no SSE id (not replayable)
+  defp send_ephemeral_event(conn, room_id, type, payload) do
+    data =
+      Jason.encode!(%{
+        type: type,
+        room_id: room_id,
+        seq: nil,
+        occurred_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+        payload: payload
+      })
+
+    Plug.Conn.chunk(conn, "event: #{type}\ndata: #{data}\n\n")
   end
 
   defp schedule_keepalive do

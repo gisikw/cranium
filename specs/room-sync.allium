@@ -127,13 +127,26 @@ value RoomState {
 
 value ActiveTurn {
     stream_id: String
-    started_at: Timestamp
     conversation_id: String
+    started_at: Timestamp
+    accumulated_text: String?
+    accumulated_parts: List<MessagePart>?
+    pending_tool_calls: List<Map>?
 
     @guidance
         -- Represents an in-flight inference pass. Clients use this to
         -- show activity indicators and know whether to expect streaming
         -- events for this room.
+        --
+        -- When returned in a snapshot, accumulated_text/accumulated_parts/
+        -- pending_tool_calls represent the current state of the in-progress
+        -- turn. This is how reconnecting clients catch up on a live turn
+        -- without replaying ephemeral mid-turn events.
+        --
+        -- stream_id is required for correlating ephemeral streaming events
+        -- with this turn.
+        --
+        -- When no turn is active, active_turn is null.
 }
 
 value RoomSummary {
@@ -218,6 +231,8 @@ entity ReadMarker {
 
 -- Room event types (v0 taxonomy)
 --
+-- === Durable events (persisted to room_events table + broadcast) ===
+--
 -- Turn lifecycle:
 --   turn.started
 --   turn.completed
@@ -226,11 +241,6 @@ entity ReadMarker {
 --
 -- Message lifecycle:
 --   message.created
---   message.part.appended
---   message.part.updated
---
--- Audio lifecycle:
---   audio.segment.available
 --
 -- Room state:
 --   room.state.updated
@@ -244,6 +254,18 @@ entity ReadMarker {
 -- Context:
 --   context.saturation.updated
 --
+-- === Ephemeral events (broadcast only, NOT persisted) ===
+--
+-- Live turn rendering:
+--   turn.delta            — text chunk during streaming
+--   turn.tool_use         — tool call started (name, input, id)
+--   turn.tool_result      — tool call completed (result, is_error)
+--
+-- Ephemeral events use the same SSE envelope shape but carry seq: null
+-- to signal they are not replayable. Clients render them for live UX
+-- but must not depend on replaying them after reconnect. Reconnect
+-- recovery uses the enriched active_turn in the snapshot instead.
+--
 -- @guidance
 --     Not all event types need to be emitted on day one. The taxonomy
 --     is defined up front so the envelope shape is stable and clients
@@ -251,6 +273,13 @@ entity ReadMarker {
 --
 --     Clients MUST ignore event types they don't recognize.
 --     Cranium MAY add new event types without a version bump.
+--
+--     The durable/ephemeral split is load-bearing: intermediate
+--     messages (tool call/result pairs during a CC turn) are not
+--     persisted until end_turn, so mid-turn durable events would
+--     reference messages that don't exist in the DB yet. Ephemeral
+--     events avoid this structural problem while still giving
+--     clients real-time rendering capability.
 
 ------------------------------------------------------------
 -- Config
@@ -682,23 +711,33 @@ open question "Event payload size" {
 }
 
 open question "Streaming text delta events" {
-    -- RESOLVED: Content-block granularity is the durable event.
-    -- message.part.appended is the durable RoomEvent emitted when a
-    -- content block (text paragraph, tool call, etc.) is complete.
+    -- RESOLVED: Three-tier event model.
     --
-    -- Token-level streaming remains ephemeral on the in-process Events
-    -- bus for latency-sensitive consumers (audio pipeline, live typing
-    -- indicators). These do NOT hit the room_events table.
+    -- Durable events (persisted + broadcast): state transitions only.
+    -- message.created is emitted when a complete message is persisted
+    -- at end_turn. No mid-turn durable events for content blocks.
     --
-    -- This is a two-way door: if a future model produces monolithic
-    -- 5-paragraph blocks, finer-grained durable events can be added
-    -- (e.g., message.delta) without changing the envelope or breaking
-    -- existing clients. Clients MUST ignore unknown event types, so
-    -- new granularity levels are additive.
+    -- Ephemeral events (broadcast only, NOT persisted): live rendering.
+    -- turn.delta, turn.tool_use, turn.tool_result are forwarded from
+    -- the existing Events bus onto the room event SSE stream. They use
+    -- the same SSE envelope shape but carry seq: null.
     --
-    -- Rationale: chunked token-level rendering feels jittery. Content-
-    -- block-level rendering is smoother. Durable events should match
-    -- the rendering granularity clients actually want.
+    -- Reconnect recovery: enriched active_turn in snapshot carries
+    -- accumulated text, parts, and pending tool calls. Clients that
+    -- reconnect mid-turn get current state from the snapshot instead
+    -- of replaying ephemeral events.
+    --
+    -- Why not durable message.part.appended (the original resolution):
+    -- Intermediate messages (tool call/result pairs during a CC turn)
+    -- are not persisted until end_turn. A durable event referencing a
+    -- message that doesn't exist in the DB is structurally broken.
+    -- Making intermediate persistence eager would be a large change
+    -- to the turn model for marginal benefit — clients don't need to
+    -- replay mid-turn blocks, they need current accumulated state.
+    --
+    -- This is still a two-way door: if intermediate messages become
+    -- eagerly persisted in the future, durable content-block events
+    -- can be added without breaking existing clients.
 }
 open question "Audio segment event shape" {
     -- Audio segments are currently served via manifest polling.
