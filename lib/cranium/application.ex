@@ -58,6 +58,9 @@ defmodule Cranium.Application do
       # Must start before any actor that subscribes
       Cranium.Events,
 
+      # Room event age-out cleanup (periodic purge of old sync events)
+      Cranium.RoomSync.EventCleanup,
+
       # Profile configuration — must start before Inference (TurnAssembler depends on it)
       Cranium.Config,
 
