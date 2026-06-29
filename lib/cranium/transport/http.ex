@@ -414,6 +414,21 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  get "/v1/rooms/:room_id/snapshot" do
+    case Cranium.RoomSync.Snapshot.build(room_id) do
+      {:ok, snapshot} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(snapshot))
+
+      {:error, reason} ->
+        Logger.error("Snapshot build failed: #{inspect(reason)}", room_id: room_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(500, Jason.encode!(%{"error" => "snapshot build failed"}))
+    end
+  end
   get "/v1/conversations/:id" do
     conversation_id = id
 

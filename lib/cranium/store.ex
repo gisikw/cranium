@@ -100,6 +100,18 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:list_messages, conversation_id, opts})
   end
 
+  @doc """
+  Recent messages as raw Message structs for TranscriptMessage projection.
+
+  Returns `{:ok, %{messages: [Message.t()], has_more: boolean()}}`.
+  Messages are in chronological order (oldest first).
+  """
+  @spec recent_message_structs(String.t(), keyword()) ::
+          {:ok, %{messages: [Message.t()], has_more: boolean()}} | {:error, :db_error}
+  def recent_message_structs(conversation_id, opts \\ []) do
+    GenServer.call(__MODULE__, {:recent_message_structs, conversation_id, opts})
+  end
+
   # Handoff operations
 
   @spec save_handoff(String.t(), String.t()) :: :ok
@@ -415,6 +427,33 @@ defmodule Cranium.Store do
 
     has_more = length(rows) > limit
     messages = rows |> Enum.take(limit) |> Enum.map(&message_to_api_map/1)
+
+    {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
+  end
+
+  defp do_handle_call({:recent_message_structs, conversation_id, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
+
+    # Fetch limit+1 to derive has_more
+    fetch = limit + 1
+
+    # Exclude orientation messages
+    base =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id,
+        where: m.origin != "orientation" or is_nil(m.origin)
+      )
+
+    # Get most recent N, then reverse to chronological order
+    recent =
+      from(m in base, order_by: [desc: m.inserted_at, desc: m.id], limit: ^fetch)
+
+    rows =
+      from(m in subquery(recent), order_by: [asc: m.inserted_at, asc: m.id])
+      |> Repo.all()
+
+    has_more = length(rows) > limit
+    messages = Enum.take(rows, limit)
 
     {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
   end
