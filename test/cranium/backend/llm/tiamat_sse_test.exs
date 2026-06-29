@@ -325,8 +325,8 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     :persistent_term.put({TestRouter, :test_pid}, self())
     :persistent_term.put({TestRouter, :mode}, :completed)
 
-    port = 45_000 + :rand.uniform(10_000)
-    {:ok, server} = Bandit.start_link(plug: TestRouter, port: port)
+    {:ok, server} = Bandit.start_link(plug: TestRouter, port: 0, startup_log: false)
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
 
     on_exit(fn ->
       :persistent_term.erase({TestRouter, :test_pid})

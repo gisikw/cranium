@@ -83,9 +83,8 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
   setup do
     :persistent_term.put({TestRouter, :test_pid}, self())
 
-    port = 46_000 + :rand.uniform(5_000)
-    {:ok, server} = Bandit.start_link(plug: TestRouter, port: port)
-
+    {:ok, server} = Bandit.start_link(plug: TestRouter, port: 0, startup_log: false)
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
     tools_before = Application.get_env(:cranium, :tools, [])
     Cranium.Inference.Agent.ToolRouter.register("echo", __MODULE__.EchoTool)
 
