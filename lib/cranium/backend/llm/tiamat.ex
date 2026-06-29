@@ -138,18 +138,19 @@ defmodule Cranium.Backend.LLM.Tiamat do
     existing_messages = request["messages"] || []
     existing_ids = message_ids(existing_messages)
     existing_fingerprints = message_fingerprints(existing_messages)
+    stored_count = length(existing_messages)
 
     in_memory_messages = Enum.map(messages, &stringify_in_memory_message/1)
-    candidate_messages = in_memory_messages
+    candidate_messages = Enum.drop(in_memory_messages, stored_count)
 
     Logger.warning(
       "Tiamat in-memory append pre-dedupe " <>
         "persisted_count=#{length(existing_messages)} " <>
         "in_memory_count=#{length(in_memory_messages)} " <>
-        "positional_drop_disabled=true " <>
+        "dropped_count=#{stored_count} " <>
         "persisted_tail=#{inspect(message_summaries(Enum.take(existing_messages, -6)))} " <>
         "in_memory=#{inspect(message_summaries(in_memory_messages))} " <>
-        "candidates=#{inspect(message_summaries(candidate_messages))}"
+        "candidates_after_drop=#{inspect(message_summaries(candidate_messages))}"
     )
 
     {additions, _ids, _fingerprints} =
