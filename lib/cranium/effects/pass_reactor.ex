@@ -34,10 +34,16 @@ defmodule Cranium.Effects.PassReactor do
         {:pass_complete, cid, stream_id, %{reason: :complete} = payload},
         state
       ) do
+    output = payload[:output] || ""
+    epoch_id = payload[:epoch_id]
+    turn_count = payload[:turn_count] || 0
+    saturation = payload[:saturation] || 0.0
+    cc_session_id = payload[:cc_session_id]
+
     unless payload[:ephemeral] do
       # Persist intermediate messages (assistant + tool_result pairs from tool loop)
       for msg <- payload[:intermediate_messages] || [] do
-        Cranium.Store.append_message(cid, payload.epoch_id, %{
+        Cranium.Store.append_message(cid, epoch_id, %{
           role: msg[:role] || msg["role"],
           content: msg[:content] || msg["content"],
           origin: payload[:origin]
@@ -46,11 +52,11 @@ defmodule Cranium.Effects.PassReactor do
 
       final_message_content = payload[:final_message_content]
 
-      if payload.output != "" or final_message_content not in [nil, []] do
+      if output != "" or final_message_content not in [nil, []] do
         # Persist final assistant message as content blocks
-        Cranium.Store.append_message(cid, payload.epoch_id, %{
+        Cranium.Store.append_message(cid, epoch_id, %{
           role: :assistant,
-          content: final_message_content || [%{"type" => "text", "text" => payload.output}],
+          content: final_message_content || [%{"type" => "text", "text" => output}],
           origin: payload[:origin],
           usage: payload[:usage]
         })
@@ -58,8 +64,8 @@ defmodule Cranium.Effects.PassReactor do
         # Emit room event for assistant message
         Cranium.RoomEvents.message_created(cid, %{
           role: :assistant,
-          text: payload.output,
-          epoch_id: payload.epoch_id,
+          text: output,
+          epoch_id: epoch_id,
           origin: payload[:origin]
         })
       else
@@ -73,15 +79,15 @@ defmodule Cranium.Effects.PassReactor do
 
       summary_interval = Application.get_env(:cranium, :pipeline)[:summary_interval] || 10
 
-      if summary_interval > 0 and rem(payload.turn_count, summary_interval) == 0 do
-        Cranium.Effects.generate_summary(cid, payload.cc_session_id, payload[:profile])
+      if summary_interval > 0 and rem(turn_count, summary_interval) == 0 do
+        Cranium.Effects.generate_summary(cid, cc_session_id, payload[:profile])
       end
 
-      Cranium.Store.update_epoch(payload.epoch_id, %{
+      Cranium.Store.update_epoch(epoch_id, %{
         status: "active",
-        saturation: payload.saturation,
-        turn_count: payload.turn_count,
-        cc_session_id: payload.cc_session_id,
+        saturation: saturation,
+        turn_count: turn_count,
+        cc_session_id: cc_session_id,
         profile: payload[:profile],
         interrupted_context: nil
       })
@@ -89,18 +95,18 @@ defmodule Cranium.Effects.PassReactor do
       # Emit turn.completed room event
       Cranium.RoomEvents.turn_completed(cid, %{
         stream_id: stream_id,
-        epoch_id: payload.epoch_id,
-        turn_count: payload.turn_count,
-        saturation: payload.saturation
+        epoch_id: epoch_id,
+        turn_count: turn_count,
+        saturation: saturation
       })
 
       # Notify plugins of assistant output (e.g., glossary mention tracking)
-      if payload.output != "" do
+      if output != "" do
         after_pass_context = %{
           conversation_id: cid,
-          epoch_id: payload.epoch_id,
-          output: payload.output,
-          turn_count: payload.turn_count
+          epoch_id: epoch_id,
+          output: output,
+          turn_count: turn_count
         }
 
         Cranium.Plugin.ConversationSupervisor.dispatch_after_pass_complete(
