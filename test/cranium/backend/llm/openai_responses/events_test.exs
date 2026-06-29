@@ -159,7 +159,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.EventsTest do
         data:
           Jason.encode!(%{
             "response" => %{
-              "error" => %{"code" => "rate_limit_exceeded", "message" => "slow down"}
+              "error" => %{"code" => "rate_limit_exceeded", "message" => "[test] synthetic rate limit error"}
             }
           })
       }
@@ -168,7 +168,7 @@ defmodule Cranium.Backend.LLM.OpenAIResponses.EventsTest do
 
       assert_received {:llm_stop,
                        {:error, :response_failed,
-                        %{"code" => "rate_limit_exceeded", "message" => "slow down"}}}
+                        %{"code" => "rate_limit_exceeded", "message" => "[test] synthetic rate limit error"}}}
     end
 
     test "sends error on response.incomplete" do
