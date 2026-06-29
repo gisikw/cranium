@@ -112,6 +112,24 @@ defmodule Cranium.Store do
     GenServer.call(__MODULE__, {:recent_message_structs, conversation_id, opts})
   end
 
+  @doc """
+  Paginated transcript scrollback as raw Message structs.
+
+  Options:
+  - `:before` — message ID cursor; returns messages older than this
+  - `:after` — message ID cursor; returns messages newer than this
+  - `:limit` — max messages to return (default 50, clamped 1..200)
+
+  With `:before`, returns messages in reverse chronological order (newest first).
+  With `:after`, returns messages in chronological order (oldest first).
+  Returns `{:ok, %{messages: [Message.t()], has_more: boolean()}}`.
+  """
+  @spec transcript_page(String.t(), keyword()) ::
+          {:ok, %{messages: [Message.t()], has_more: boolean()}} | {:error, :db_error}
+  def transcript_page(conversation_id, opts \\ []) do
+    GenServer.call(__MODULE__, {:transcript_page, conversation_id, opts})
+  end
+
   # Handoff operations
 
   @spec save_handoff(String.t(), String.t()) :: :ok
@@ -454,6 +472,77 @@ defmodule Cranium.Store do
 
     has_more = length(rows) > limit
     messages = Enum.take(rows, limit)
+
+    {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
+  end
+
+  defp do_handle_call({:transcript_page, conversation_id, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
+    before_id = Keyword.get(opts, :before)
+    after_id = Keyword.get(opts, :after)
+
+    fetch = limit + 1
+
+    # Exclude orientation messages
+    base =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id,
+        where: m.origin != "orientation" or is_nil(m.origin)
+      )
+
+    {rows, reverse?} =
+      cond do
+        is_binary(before_id) ->
+          # Look up the cursor message's inserted_at for the compound sort
+          cursor = Repo.get(Message, before_id)
+
+          if cursor do
+            query =
+              from(m in base,
+                where:
+                  m.inserted_at < ^cursor.inserted_at or
+                    (m.inserted_at == ^cursor.inserted_at and m.id < ^before_id),
+                order_by: [desc: m.inserted_at, desc: m.id],
+                limit: ^fetch
+              )
+
+            {Repo.all(query), false}
+          else
+            {[], false}
+          end
+
+        is_binary(after_id) ->
+          cursor = Repo.get(Message, after_id)
+
+          if cursor do
+            query =
+              from(m in base,
+                where:
+                  m.inserted_at > ^cursor.inserted_at or
+                    (m.inserted_at == ^cursor.inserted_at and m.id > ^after_id),
+                order_by: [asc: m.inserted_at, asc: m.id],
+                limit: ^fetch
+              )
+
+            {Repo.all(query), false}
+          else
+            {[], false}
+          end
+
+        true ->
+          # No cursor — return most recent, newest first
+          query =
+            from(m in base,
+              order_by: [desc: m.inserted_at, desc: m.id],
+              limit: ^fetch
+            )
+
+          {Repo.all(query), false}
+      end
+
+    has_more = length(rows) > limit
+    messages = Enum.take(rows, limit)
+    messages = if reverse?, do: Enum.reverse(messages), else: messages
 
     {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
   end

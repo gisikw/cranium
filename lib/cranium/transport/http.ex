@@ -414,6 +414,50 @@ defmodule Cranium.Transport.HTTP do
     end
   end
 
+  get "/v1/rooms/:room_id/transcript" do
+    params = URI.decode_query(conn.query_string)
+
+    limit =
+      case params["limit"] do
+        nil -> 50
+        str -> str |> String.to_integer() |> min(200) |> max(1)
+      end
+
+    opts = [limit: limit]
+
+    opts =
+      case params["before"] do
+        nil -> opts
+        id -> Keyword.put(opts, :before, id)
+      end
+
+    opts =
+      case params["after"] do
+        nil -> opts
+        id -> Keyword.put(opts, :after, id)
+      end
+
+    case Cranium.Store.transcript_page(room_id, opts) do
+      {:ok, %{messages: message_structs, has_more: has_more}} ->
+        transcript = Cranium.RoomSync.TranscriptMessage.project_many(message_structs)
+
+        body = %{
+          messages: transcript,
+          has_more: has_more
+        }
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(body))
+
+      {:error, reason} ->
+        Logger.error("Transcript page failed: #{inspect(reason)}", room_id: room_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(500, Jason.encode!(%{"error" => "transcript query failed"}))
+    end
+  end
   get "/v1/rooms/:room_id/snapshot" do
     case Cranium.RoomSync.Snapshot.build(room_id) do
       {:ok, snapshot} ->
