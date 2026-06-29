@@ -26,50 +26,51 @@ defmodule Cranium.RoomSync.Snapshot do
   @spec build(String.t()) :: {:ok, map()} | {:error, :db_error}
   def build(room_id) do
     # 1. Ensure epoch exists (get or create)
-    {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(room_id)
+    with {:ok, epoch_ctx} <- Cranium.Store.get_or_create_epoch(room_id),
+         # 2. Fetch recent messages as structs for TranscriptMessage projection
+         {:ok, %{messages: message_structs, has_more: has_more}} <-
+           Cranium.Store.recent_message_structs(room_id, limit: @default_message_count) do
+      # 3. Project messages to TranscriptMessage shape
+      transcript = TranscriptMessage.project_many(message_structs)
 
-    # 2. Fetch recent messages as structs for TranscriptMessage projection
-    {:ok, %{messages: message_structs, has_more: has_more}} =
-      Cranium.Store.recent_message_structs(room_id, limit: @default_message_count)
+      # 4. Detect active turn via Registry
+      active_turn = detect_active_turn(room_id)
 
-    # 3. Project messages to TranscriptMessage shape
-    transcript = TranscriptMessage.project_many(message_structs)
+      # 5. Compose room state
+      state = %{
+        epoch_id: epoch_ctx.epoch_id,
+        saturation: epoch_ctx.saturation || 0.0,
+        turn_count: epoch_ctx.turn_count || 0,
+        handoff_generating: handoff_generating?(room_id),
+        active_turn: active_turn,
+        profile: epoch_ctx[:profile]
+      }
 
-    # 4. Detect active turn via Registry
-    active_turn = detect_active_turn(room_id)
+      # 6. Fetch cursor AFTER state assembly (SnapshotCursorGapFree invariant)
+      cursor_seq =
+        case Cranium.Store.latest_room_event_seq(room_id) do
+          {:ok, seq} -> seq
+          {:error, _} -> 0
+        end
 
-    # 5. Compose room state
-    state = %{
-      epoch_id: epoch_ctx.epoch_id,
-      saturation: epoch_ctx.saturation || 0.0,
-      turn_count: epoch_ctx.turn_count || 0,
-      handoff_generating: handoff_generating?(room_id),
-      active_turn: active_turn,
-      profile: epoch_ctx[:profile]
-    }
+      snapshot = %{
+        room: %{
+          id: room_id,
+          title: room_id
+        },
+        state: state,
+        recent_transcript: transcript,
+        cursor: %{
+          room_id: room_id,
+          seq: cursor_seq
+        },
+        has_more: has_more
+      }
 
-    # 6. Fetch cursor AFTER state assembly (SnapshotCursorGapFree invariant)
-    cursor_seq =
-      case Cranium.Store.latest_room_event_seq(room_id) do
-        {:ok, seq} -> seq
-        {:error, _} -> 0
-      end
-
-    snapshot = %{
-      room: %{
-        id: room_id,
-        title: room_id
-      },
-      state: state,
-      recent_transcript: transcript,
-      cursor: %{
-        room_id: room_id,
-        seq: cursor_seq
-      },
-      has_more: has_more
-    }
-
-    {:ok, snapshot}
+      {:ok, snapshot}
+    else
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # Detect if inference is currently running for this room
