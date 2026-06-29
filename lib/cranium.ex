@@ -54,6 +54,12 @@ defmodule Cranium do
           {:epoch_cleared, conversation_id, %{epoch_id: epoch.id, source: source}}
         )
 
+        # Emit room.epoch.cleared room event
+        Cranium.RoomEvents.epoch_cleared(conversation_id, %{
+          epoch_id: epoch.id,
+          source: source
+        })
+
         Cranium.Effects.generate_handoff(conversation_id, epoch.id, epoch.cc_session_id, epoch.profile)
         :ok
 

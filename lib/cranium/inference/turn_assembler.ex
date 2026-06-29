@@ -444,6 +444,16 @@ defmodule Cranium.Inference.TurnAssembler do
         content: current_content,
         origin: header.origin
       })
+
+      # Emit room event for user message
+      unless header.origin == "orientation" do
+        Cranium.RoomEvents.message_created(header.conversation_id, %{
+          role: :user,
+          text: text,
+          epoch_id: epoch_id,
+          origin: header.origin
+        })
+      end
     end
 
     # 10. Build Dispatch for OutputSegmenter metadata
@@ -503,6 +513,14 @@ defmodule Cranium.Inference.TurnAssembler do
     case Registry.lookup(@registry, {header.conversation_id, :harness}) do
       [{pid, _}] ->
         send(pid, {:turn_ready, turn})
+
+        # Emit turn.started room event (skip orientation passes)
+        unless header.origin == "orientation" do
+          Cranium.RoomEvents.turn_started(header.conversation_id, %{
+            stream_id: stream_id,
+            epoch_id: epoch_id
+          })
+        end
 
       [] ->
         Logger.error("TurnAssembler: no Harness found for conversation=#{header.conversation_id}")

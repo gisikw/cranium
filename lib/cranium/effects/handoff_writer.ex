@@ -168,6 +168,11 @@ defmodule Cranium.Effects.HandoffWriter do
             {:handoff_complete, conversation_id, %{epoch_id: epoch_id}}
           )
 
+          # Emit handoff.completed room event
+          Cranium.RoomEvents.handoff_completed(conversation_id, %{
+            epoch_id: epoch_id
+          })
+
           Logger.info("Handoff complete",
             conversation_id: conversation_id,
             stage: :effects,

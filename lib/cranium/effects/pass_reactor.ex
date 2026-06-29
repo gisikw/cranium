@@ -54,6 +54,14 @@ defmodule Cranium.Effects.PassReactor do
           origin: payload[:origin],
           usage: payload[:usage]
         })
+
+        # Emit room event for assistant message
+        Cranium.RoomEvents.message_created(cid, %{
+          role: :assistant,
+          text: payload.output,
+          epoch_id: payload.epoch_id,
+          origin: payload[:origin]
+        })
       else
         if (payload[:intermediate_messages] || []) == [] do
           Logger.warning("Inference completed with empty output",
@@ -76,6 +84,14 @@ defmodule Cranium.Effects.PassReactor do
         cc_session_id: payload.cc_session_id,
         profile: payload[:profile],
         interrupted_context: nil
+      })
+
+      # Emit turn.completed room event
+      Cranium.RoomEvents.turn_completed(cid, %{
+        stream_id: stream_id,
+        epoch_id: payload.epoch_id,
+        turn_count: payload.turn_count,
+        saturation: payload.saturation
       })
 
       # Notify plugins of assistant output (e.g., glossary mention tracking)
@@ -131,6 +147,12 @@ defmodule Cranium.Effects.PassReactor do
         cc_session_id: payload[:cc_session_id],
         interrupted_context: interrupted
       })
+
+      # Emit turn.cancelled room event
+      Cranium.RoomEvents.turn_cancelled(cid, %{
+        stream_id: stream_id,
+        epoch_id: payload.epoch_id
+      })
     end
 
     signal_pass_done(cid, stream_id)
@@ -146,6 +168,12 @@ defmodule Cranium.Effects.PassReactor do
       ) do
     unless payload[:ephemeral] do
       Cranium.Store.update_epoch(payload[:epoch_id], %{status: "active"})
+
+      # Emit turn.errored room event
+      Cranium.RoomEvents.turn_errored(cid, %{
+        stream_id: stream_id,
+        epoch_id: payload[:epoch_id]
+      })
     end
 
     signal_pass_done(cid, stream_id)
