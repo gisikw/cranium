@@ -8,6 +8,9 @@ defmodule Cranium.Transport.HTTP do
   - `GET /v1/streams/:id/manifest` — segment manifest with current status
   - `GET /v1/streams/:id/segments/:n/:rendition` — individual segment content
   - `GET /v1/rooms` — list available rooms [{id, name, description}]
+  - `GET /v1/rooms/:room_id/snapshot` — room snapshot (state, transcript, cursor)
+  - `GET /v1/rooms/:room_id/events?since=cursor` — resumable room event SSE stream
+  - `GET /v1/rooms/:room_id/transcript` — paginated transcript scrollback
   - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
   - `GET /v1/conversations/:id/events` — conversation-level SSE (all passes)
   - `GET /v1/events` — global SSE firehose (all conversations)
@@ -472,6 +475,15 @@ defmodule Cranium.Transport.HTTP do
         |> put_resp_content_type("application/json")
         |> send_resp(500, Jason.encode!(%{"error" => "snapshot build failed"}))
     end
+  end
+  get "/v1/rooms/:room_id/events" do
+    since_seq =
+      case conn.query_params["since"] do
+        nil -> 0
+        s -> String.to_integer(s)
+      end
+
+    Cranium.RoomSync.EventStream.serve(conn, room_id, since_seq)
   end
   get "/v1/conversations/:id" do
     conversation_id = id
