@@ -2,7 +2,6 @@ defmodule Cranium.Transport.HTTP do
   @moduledoc """
   HTTP transport for cranium.
 
-  Endpoints:
   - `POST /v1/submit` — accept input, create epoch, return stream_id
   - `GET /v1/streams/:id/events` — per-stream SSE (single pass)
   - `GET /v1/streams/:id/manifest` — segment manifest with current status
@@ -11,6 +10,9 @@ defmodule Cranium.Transport.HTTP do
   - `GET /v1/rooms/:room_id/snapshot` — room snapshot (state, transcript, cursor)
   - `GET /v1/rooms/:room_id/events?since=cursor` — resumable room event SSE stream
   - `GET /v1/rooms/:room_id/transcript` — paginated transcript scrollback
+  - `POST /v1/rooms/:room_id/messages` — send a text message to a room
+  - `POST /v1/rooms/:room_id/audio-takes` — open a chunked audio take in a room
+  - `POST /v1/rooms/:room_id/cancel` — cancel the active turn in a room
   - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
   - `GET /v1/conversations/:id/events` — conversation-level SSE (all passes)
   - `GET /v1/events` — global SSE firehose (all conversations)
@@ -33,6 +35,41 @@ defmodule Cranium.Transport.HTTP do
 
   post "/v1/submit" do
     drain_submit(conn)
+  end
+
+  # --- Room sync: command endpoints ---
+
+  post "/v1/rooms/:room_id/messages" do
+    if Cranium.Drain.draining?() do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(503, Jason.encode!(%{"error" => "server is shutting down"}))
+    else
+      do_room_message(conn, room_id)
+    end
+  end
+
+  post "/v1/rooms/:room_id/audio-takes" do
+    if Cranium.Drain.draining?() do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(503, Jason.encode!(%{"error" => "server is shutting down"}))
+    else
+      do_room_audio_take(conn, room_id)
+    end
+  end
+
+  post "/v1/rooms/:room_id/cancel" do
+    result = Cranium.cancel(room_id)
+
+    Logger.info("Room cancel: #{inspect(result)}",
+      room_id: room_id,
+      transport: :http
+    )
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{"command" => "cancel"}))
   end
 
   # Extracted so drain guard can use early return
@@ -180,6 +217,100 @@ defmodule Cranium.Transport.HTTP do
         |> put_resp_content_type("application/json")
         |> send_resp(400, Jason.encode!(%{"error" => "missing text or audio"}))
     end
+  end
+
+  # Room-addressed message submission.
+  # Mirrors do_submit_pass but takes room_id from the URL path.
+  defp do_room_message(conn, room_id) do
+    text = conn.body_params["text"]
+    origin = conn.body_params["origin"]
+    disposition = parse_disposition(conn.body_params["disposition"])
+    model = conn.body_params["model"]
+    profile = conn.body_params["profile"]
+    ephemeral = conn.body_params["ephemeral"] == true
+    depth = conn.body_params["depth"]
+    image_attachments = image_attachments(conn.body_params)
+
+    if (is_binary(text) and text != "") or image_attachments != [] do
+      text = text || ""
+      stream_id = Cranium.Stage.new_stream_id()
+      pass_id = Cranium.Stage.new_stream_id()
+
+      Cranium.Transport.Manifest.init_stream(stream_id, room_id, disposition: disposition)
+
+      header = %Cranium.Messages.PassHeader{
+        pass_id: pass_id,
+        conversation_id: room_id,
+        stream_id: stream_id,
+        origin: origin,
+        model: model,
+        profile: profile,
+        ephemeral: ephemeral,
+        disposition: disposition,
+        depth: depth
+      }
+
+      Logger.info(
+        "Room message: room=#{room_id} stream=#{stream_id} text=#{inspect(String.slice(text, 0..80))} images=#{length(image_attachments)}",
+        transport: :http
+      )
+
+      Cranium.Inference.Conversation.start_or_get(room_id)
+      Cranium.Events.broadcast({:pass_header, header})
+
+      Cranium.Events.broadcast(
+        {:text_input,
+         %Cranium.Messages.TextInput{
+           pass_id: pass_id,
+           text: text,
+           attachments: image_attachments
+         }}
+      )
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(202, Jason.encode!(%{"stream_id" => stream_id}))
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "missing text"}))
+    end
+  end
+
+  # Room-addressed audio take opening.
+  # Mirrors POST /v1/input/start but takes room_id from the URL path.
+  defp do_room_audio_take(conn, room_id) do
+    origin = conn.body_params["origin"]
+    profile = conn.body_params["profile"]
+    disposition = parse_disposition(conn.body_params["disposition"])
+
+    take_id = Cranium.Stage.new_stream_id()
+    stream_id = Cranium.Stage.new_stream_id()
+
+    :ok =
+      Cranium.Transport.SegmentRegistry.open(take_id, stream_id, room_id, disposition,
+        origin: origin
+      )
+
+    :ok =
+      Cranium.Transport.Manifest.init_stream(stream_id, room_id, disposition: disposition)
+
+    header = %Cranium.Messages.PassHeader{
+      pass_id: take_id,
+      conversation_id: room_id,
+      stream_id: stream_id,
+      take_id: take_id,
+      disposition: disposition,
+      origin: origin,
+      profile: profile
+    }
+
+    Cranium.Inference.Conversation.start_or_get(room_id)
+    Cranium.Events.broadcast({:pass_header, header})
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{"take_id" => take_id, "stream_id" => stream_id}))
   end
 
   get "/v1/streams/:id/events" do
