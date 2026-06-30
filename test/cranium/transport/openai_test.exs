@@ -72,7 +72,7 @@ defmodule Cranium.Transport.OpenAITest do
 
       names = Enum.map(json["data"], & &1["id"])
       assert "test" in names
-      assert "test-ollama" in names
+      assert "test-tiamat" in names
 
       first = hd(json["data"])
       assert first["object"] == "model"

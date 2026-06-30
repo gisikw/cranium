@@ -459,9 +459,6 @@ defmodule Cranium.Inference.TurnAssembler do
     # 10. Build Dispatch for OutputSegmenter metadata
     harness_type =
       case backend_module do
-        Cranium.Backend.LLM.ClaudeCode -> :claude_code
-        Cranium.Backend.LLM.Anthropic -> :api
-        Cranium.Backend.LLM.Ollama -> :ollama
         Cranium.Backend.LLM.Tiamat -> :tiamat
         _ -> nil
       end

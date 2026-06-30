@@ -63,7 +63,7 @@ defmodule Cranium.Config do
     @type t :: %__MODULE__{
             name: String.t(),
             backend:
-              :claudecode | :anthropic | :ollama | :openai_compat | :openai_responses | :tiamat,
+              :tiamat,
             model: String.t() | nil,
             identity_paths: [String.t()],
             tools_prompt: boolean(),
@@ -275,14 +275,9 @@ defmodule Cranium.Config do
       for {name, config} <- profiles_raw, into: %{} do
         backend =
           case config["backend"] do
-            "claudecode" -> :claudecode
-            "anthropic" -> :anthropic
-            "ollama" -> :ollama
-            "openai_compat" -> :openai_compat
-            "openai_responses" -> :openai_responses
             "tiamat" -> :tiamat
             "mock" -> :mock
-            other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'"
+            other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'. Only 'tiamat' is supported."
           end
 
         unless backend != :tiamat or valid_router_profile?(config["router_profile"]) do
@@ -371,7 +366,7 @@ defmodule Cranium.Config do
       end
     end
 
-    # Ollama URL
+    # Ollama URL (retained for sidecar evaluations)
     if url = yaml["ollama_url"] do
       :ets.insert(@table, {:ollama_url, url})
     end
@@ -413,11 +408,6 @@ defmodule Cranium.Config do
 
   defp parse_plugins(_), do: []
 
-  defp backend_module(:claudecode), do: Cranium.Backend.LLM.ClaudeCode
-  defp backend_module(:anthropic), do: Cranium.Backend.LLM.Anthropic
-  defp backend_module(:ollama), do: Cranium.Backend.LLM.Ollama
-  defp backend_module(:openai_compat), do: Cranium.Backend.LLM.OpenAICompat
-  defp backend_module(:openai_responses), do: Cranium.Backend.LLM.OpenAIResponses
   defp backend_module(:tiamat), do: Cranium.Backend.LLM.Tiamat
   # Dynamic construction avoids compile-time xref warning — Mock only exists in test env.
   defp backend_module(:mock), do: Module.concat([Cranium.Backend.LLM, Mock])

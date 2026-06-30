@@ -310,14 +310,6 @@ defmodule Cranium.Transport.OpenAI do
         Process.demonitor(ref, [:flush])
         {conn, Process.get(:openai_usage), []}
 
-      {:cc_session, _session_id} ->
-        stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
-
-      {:cc_tool_use, _} ->
-        stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
-
-      {:cc_tool_result, _} ->
-        stream_receive_loop(conn, llm_pid, ref, completion_id, model_name)
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
         {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
@@ -423,14 +415,6 @@ defmodule Cranium.Transport.OpenAI do
         Process.demonitor(ref, [:flush])
         {acc |> Enum.reverse() |> Enum.join(), usage, []}
 
-      {:cc_session, _} ->
-        buffered_receive_loop(llm_pid, ref, acc, usage)
-
-      {:cc_tool_use, _} ->
-        buffered_receive_loop(llm_pid, ref, acc, usage)
-
-      {:cc_tool_result, _} ->
-        buffered_receive_loop(llm_pid, ref, acc, usage)
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
         {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}

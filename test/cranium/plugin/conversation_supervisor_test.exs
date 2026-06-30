@@ -167,7 +167,7 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
     turn_count: 3,
     profile_name: "exo",
     backend: :anthropic,
-    backend_module: Cranium.Backend.LLM.Anthropic,
+    backend_module: Cranium.Backend.LLM.Mock,
     model: "claude-opus-4-6",
     identity: "I am exo",
     thinking: nil,

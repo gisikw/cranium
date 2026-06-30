@@ -108,7 +108,7 @@ defmodule Cranium.Plugin.ServerTest do
       turn_count: 3,
       profile_name: "exo",
       backend: :anthropic,
-      backend_module: Cranium.Backend.LLM.Anthropic,
+      backend_module: Cranium.Backend.LLM.Mock,
       model: "claude-opus-4-6",
       identity: "I am exo",
       thinking: nil,
@@ -118,13 +118,13 @@ defmodule Cranium.Plugin.ServerTest do
     }
 
     test "returns modified context from swapper plugin" do
-      metadata = %{@metadata | plugin_config: %{model: "gemma4-cranium", backend: :ollama, backend_module: Cranium.Backend.LLM.Ollama}}
+      metadata = %{@metadata | plugin_config: %{model: "gemma4-cranium", backend: :mock, backend_module: Cranium.Backend.LLM.Mock}}
       {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfileSwapper, session_metadata: metadata)
 
       assert {:ok, result} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
       assert result.model == "gemma4-cranium"
-      assert result.backend == :ollama
-      assert result.backend_module == Cranium.Backend.LLM.Ollama
+      assert result.backend == :mock
+      assert result.backend_module == Cranium.Backend.LLM.Mock
       # Unmodified fields preserved
       assert result.conversation_id == "test-conv"
       assert result.identity == "I am exo"

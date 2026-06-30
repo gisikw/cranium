@@ -1458,6 +1458,6 @@ defmodule Cranium.Inference.Agent do
   end
 
   defp backend_module do
-    Application.get_env(:cranium, :backends)[:llm] || Cranium.Backend.LLM.Anthropic
+    Application.get_env(:cranium, :backends)[:llm] || Cranium.Backend.LLM.Tiamat
   end
 end

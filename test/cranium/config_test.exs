@@ -13,18 +13,6 @@ defmodule Cranium.ConfigTest do
       assert resolved.identity == nil
     end
 
-    test "resolves ollama profile" do
-      assert {:ok, resolved} = Config.resolve_profile("test-ollama")
-      assert resolved.backend == :ollama
-      assert resolved.backend_module == Cranium.Backend.LLM.Ollama
-      assert resolved.model == "test-ollama-model"
-    end
-
-    test "resolves claudecode profile" do
-      assert {:ok, resolved} = Config.resolve_profile("test-cc")
-      assert resolved.backend == :claudecode
-      assert resolved.backend_module == Cranium.Backend.LLM.ClaudeCode
-    end
 
     test "resolves tiamat router profile" do
       assert {:ok, resolved} = Config.resolve_profile("test-tiamat")
@@ -83,8 +71,8 @@ defmodule Cranium.ConfigTest do
       profiles = Config.list_profiles()
       assert is_list(profiles)
       assert "test" in profiles
-      assert "test-ollama" in profiles
-      assert "test-cc" in profiles
+      assert "test" in profiles
+      assert "test-tiamat" in profiles
       assert profiles == Enum.sort(profiles)
     end
   end
@@ -148,7 +136,6 @@ defmodule Cranium.ConfigTest do
   describe "room_default_profile/1" do
     test "returns profile for configured room" do
       assert Config.room_default_profile("personal-chat") == "test-with-identity"
-      assert Config.room_default_profile("cranium") == "test-cc"
     end
 
     test "returns nil for unconfigured room" do

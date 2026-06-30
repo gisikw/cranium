@@ -31,7 +31,7 @@ defmodule Cranium.Plugins.EnsembleTest do
     turn_count: 1,
     profile_name: "exo",
     backend: :claudecode,
-    backend_module: Cranium.Backend.LLM.ClaudeCode,
+    backend_module: Cranium.Backend.LLM.Mock,
     model: "claude-opus-4-6",
     identity: "You are Exo.",
     thinking: nil,
