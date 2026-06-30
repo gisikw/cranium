@@ -774,10 +774,11 @@ defmodule Cranium.Transport.HTTP do
   get "/v1/rooms" do
     excluded = Application.get_env(:cranium, :excluded_rooms, [])
     rooms = Cranium.Inference.Landscape.list_rooms(exclude: excluded)
+    enriched = Cranium.RoomSync.RoomList.enrich(rooms)
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(rooms))
+    |> send_resp(200, Jason.encode!(enriched))
   end
 
   # --- OpenAI-compatible endpoints ---
