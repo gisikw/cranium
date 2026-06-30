@@ -73,15 +73,27 @@ defmodule Cranium.RoomSync.Snapshot do
     end
   end
 
-  # Detect if inference is currently running for this room
+  # Detect if inference is currently running for this room,
+  # and if so, return enriched turn state from the Registry.
   defp detect_active_turn(room_id) do
     registry = Cranium.Inference.ConversationRegistry
 
     case Registry.lookup(registry, {room_id, :agent}) do
       [{_pid, _agent_pid}] ->
+        # Agent is running — read accumulated turn state
+        turn_state =
+          case Registry.lookup(registry, {room_id, :turn_state}) do
+            [{_pid, ts}] -> ts
+            [] -> %{}
+          end
+
         %{
+          stream_id: turn_state[:stream_id],
           conversation_id: room_id,
-          started_at: DateTime.utc_now()
+          started_at: turn_state[:started_at] || DateTime.utc_now(),
+          accumulated_text: turn_state[:accumulated_text],
+          accumulated_parts: turn_state[:accumulated_parts],
+          pending_tool_calls: turn_state[:pending_tool_calls]
         }
 
       [] ->

@@ -154,6 +154,19 @@ defmodule Cranium.Inference.Agent do
 
     emit(stream_id, state.conversation_id, {:stream_start, stream_id, metadata})
 
+    # Register turn state for snapshot reconnect recovery (crn-a0f5).
+    # This lets Snapshot.detect_active_turn read accumulated state
+    # without calling into the blocked GenServer.
+    turn_state = %{
+      stream_id: stream_id,
+      started_at: DateTime.utc_now(),
+      accumulated_text: "",
+      accumulated_parts: [],
+      pending_tool_calls: []
+    }
+
+    register_turn_state(state.conversation_id, turn_state)
+
     # Start the LLM backend stream — skip tool definitions for managed-loop backends
     # or when tools are explicitly disabled (e.g. orientation passes).
     # CC manages its own tool loop, so orientation gets a read-only whitelist string.
@@ -238,6 +251,8 @@ defmodule Cranium.Inference.Agent do
       emit(stream_id, state.conversation_id, {:stream_end, stream_id})
     end
 
+    # Clean up turn state registration (crn-a0f5)
+    unregister_turn_state(state.conversation_id)
     case result do
       {:ok, :cleared} ->
         # Return success with empty output — the handoff/continuation flow handles the rest
@@ -369,6 +384,11 @@ defmodule Cranium.Inference.Agent do
       {:llm_text, text} ->
         emit(stream_id, state.conversation_id, {:chunk, stream_id, text})
         state = %{state | partial_output: [text | state.partial_output]}
+
+        update_turn_state(state.conversation_id, fn ts ->
+          %{ts | accumulated_text: ts.accumulated_text <> text}
+        end)
+
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:llm_assistant_content, content_blocks} when is_list(content_blocks) ->
@@ -442,6 +462,15 @@ defmodule Cranium.Inference.Agent do
             intermediate_messages: state.intermediate_messages ++ [assistant_msg]
         }
 
+        update_turn_state(state.conversation_id, fn ts ->
+          %{ts |
+            accumulated_text: "",
+            pending_tool_calls: ts.pending_tool_calls ++ [
+              %{id: tool_data.id, name: tool_data.name, status: "running"}
+            ]
+          }
+        end)
+
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_tool_result, result_data} ->
@@ -459,6 +488,18 @@ defmodule Cranium.Inference.Agent do
         }
 
         state = %{state | intermediate_messages: state.intermediate_messages ++ [user_msg]}
+
+        update_turn_state(state.conversation_id, fn ts ->
+          tool_use_id = result_data.tool_use_id
+
+          updated_calls =
+            Enum.map(ts.pending_tool_calls, fn tc ->
+              if tc.id == tool_use_id, do: %{tc | status: "complete"}, else: tc
+            end)
+
+          %{ts | pending_tool_calls: updated_calls}
+        end)
+
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:cc_session, session_id} ->
@@ -1385,6 +1426,26 @@ defmodule Cranium.Inference.Agent do
   defp merge_usage(_existing, new), do: new
 
   # --- Private ---
+
+  # --- Turn state for snapshot reconnect recovery (crn-a0f5) ---
+
+  defp update_turn_state(conversation_id, fun) when is_function(fun, 1) do
+    Registry.update_value(@registry, {conversation_id, :turn_state}, fun)
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp unregister_turn_state(conversation_id) do
+    Registry.unregister(@registry, {conversation_id, :turn_state})
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp register_turn_state(conversation_id, turn_state) do
+    Registry.register(@registry, {conversation_id, :turn_state}, turn_state)
+  rescue
+    ArgumentError -> {:error, :no_registry}
+  end
 
   defp emit(stream_id, conversation_id, event) do
     # Silent passes (e.g. orientation) suppress raw stream events from the
