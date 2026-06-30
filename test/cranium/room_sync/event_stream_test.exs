@@ -162,13 +162,68 @@ defmodule Cranium.RoomSync.EventStreamTest do
     end
   end
 
+  describe "cursor_expired handling" do
+    test "sends cursor_expired when since_seq is older than oldest available event", %{
+      room_id: room_id,
+      port: port
+    } do
+      # Emit several events to build up a seq range
+      for i <- 1..5 do
+        Cranium.Store.emit_room_event(room_id, "test.event", %{i: i})
+      end
+
+      # Simulate age-out purge: delete events with seq <= 3 directly
+      import Ecto.Query
+      Cranium.Store.Repo.delete_all(
+        from(e in Cranium.Store.RoomEvent,
+          where: e.room_id == ^room_id and e.seq <= 3
+        )
+      )
+
+      # Now oldest_seq should be 4, and since_seq=2 falls in the gap
+      {:ok, oldest_seq} = Cranium.Store.oldest_room_event_seq(room_id)
+      assert oldest_seq == 4
+
+      events = with_sse_client(port, fn -> Process.sleep(100) end, since: 2)
+
+      expired = filter_events(events, "cursor_expired")
+      assert length(expired) >= 1
+
+      [event | _] = expired
+      assert event["type"] == "cursor_expired"
+      assert event["payload"]["refresh"] == true
+      assert event["seq"] == nil
+    end
+
+    test "does not send cursor_expired when since_seq is within available range", %{
+      room_id: room_id,
+      port: port
+    } do
+      # Emit an event and use since=0 (fresh client)
+      Cranium.Store.emit_room_event(room_id, "test.event", %{i: 1})
+
+      events = with_sse_client(port, fn ->
+        Cranium.Store.emit_room_event(room_id, "test.event", %{i: 2})
+        Process.sleep(100)
+      end, since: 0)
+
+      expired = filter_events(events, "cursor_expired")
+      assert expired == []
+
+      # Should have received the regular events instead
+      test_events = filter_events(events, "test.event")
+      assert length(test_events) >= 1
+    end
+  end
+
   # --- Test helpers ---
 
   # Connect an SSE client, run the given function (which should broadcast
   # events), then collect and return all parsed SSE events.
-  defp with_sse_client(port, fun) do
+  defp with_sse_client(port, fun, opts \\ []) do
     collector = self()
-    url = "http://127.0.0.1:#{port}/events"
+    since = Keyword.get(opts, :since, 0)
+    url = "http://127.0.0.1:#{port}/events?since=#{since}"
 
     client_task =
       Task.async(fn ->
@@ -241,7 +296,9 @@ defmodule Cranium.RoomSync.EventStreamTest do
     @impl true
     def call(%{path_info: ["events"]} = conn, opts) do
       room_id = :persistent_term.get(opts[:room_id_key])
-      EventStream.serve(conn, room_id, 0)
+      params = Plug.Conn.fetch_query_params(conn).query_params
+      since_seq = String.to_integer(Map.get(params, "since", "0"))
+      EventStream.serve(conn, room_id, since_seq)
     end
 
     def call(conn, _opts) do

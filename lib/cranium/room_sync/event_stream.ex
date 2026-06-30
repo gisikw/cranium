@@ -42,29 +42,43 @@ defmodule Cranium.RoomSync.EventStream do
     # 1. Subscribe BEFORE DB read (gap-free invariant)
     Cranium.Events.subscribe({:conversation, room_id})
 
-    # 2. Catch up from DB
-    {:ok, catchup_events} = Cranium.Store.list_room_events(room_id, since_seq)
+    # 2. Check cursor expiry — if client's cursor is older than
+    #    the oldest available event, they must re-fetch the snapshot
+    {:ok, oldest_seq} = Cranium.Store.oldest_room_event_seq(room_id)
 
-    # 3. Open chunked SSE response
-    conn =
+    if oldest_seq != nil and since_seq > 0 and since_seq < oldest_seq do
+      # Cursor expired — events between since_seq and oldest_seq are gone
       conn
       |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
       |> Plug.Conn.put_resp_header("cache-control", "no-cache")
       |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
       |> Plug.Conn.send_chunked(200)
+      |> send_cursor_expired(room_id)
+    else
+      # 3. Catch up from DB
+      {:ok, catchup_events} = Cranium.Store.list_room_events(room_id, since_seq)
 
-    # 4. Send catchup events
-    {conn, last_seq} =
-      Enum.reduce(catchup_events, {conn, since_seq}, fn event, {conn, _seq} ->
-        case send_durable_event(conn, event) do
-          {:ok, conn} -> {conn, event.seq}
-          {:error, _} -> throw({:client_gone, conn})
-        end
-      end)
+      # 4. Open chunked SSE response
+      conn =
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+        |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+        |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
+        |> Plug.Conn.send_chunked(200)
 
-    # 5. Enter live loop — dedup anything with seq <= last_seq
-    schedule_keepalive()
-    live_loop(conn, room_id, last_seq)
+      # 5. Send catchup events
+      {conn, last_seq} =
+        Enum.reduce(catchup_events, {conn, since_seq}, fn event, {conn, _seq} ->
+          case send_durable_event(conn, event) do
+            {:ok, conn} -> {conn, event.seq}
+            {:error, _} -> throw({:client_gone, conn})
+          end
+        end)
+
+      # 6. Enter live loop — dedup anything with seq <= last_seq
+      schedule_keepalive()
+      live_loop(conn, room_id, last_seq)
+    end
   catch
     {:client_gone, conn} ->
       Logger.debug("Room event stream client disconnected during catchup",
@@ -168,6 +182,24 @@ defmodule Cranium.RoomSync.EventStream do
       })
 
     Plug.Conn.chunk(conn, "event: #{type}\ndata: #{data}\n\n")
+  end
+
+  # cursor_expired tells the client their cursor is too old — events have
+  # been purged. They must re-fetch the snapshot to get current state.
+  defp send_cursor_expired(conn, room_id) do
+    data =
+      Jason.encode!(%{
+        type: "cursor_expired",
+        room_id: room_id,
+        seq: nil,
+        occurred_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+        payload: %{refresh: true}
+      })
+
+    case Plug.Conn.chunk(conn, "event: cursor_expired\ndata: #{data}\n\n") do
+      {:ok, conn} -> conn
+      {:error, _} -> conn
+    end
   end
 
   defp schedule_keepalive do

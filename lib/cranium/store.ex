@@ -293,6 +293,15 @@ defmodule Cranium.Store do
   end
 
   @doc """
+  Get the oldest (minimum) event seq for a room. Returns nil if no events exist.
+  Used by EventStream to detect cursor_expired condition.
+  """
+  @spec oldest_room_event_seq(String.t()) :: {:ok, integer() | nil}
+  def oldest_room_event_seq(room_id) do
+    GenServer.call(__MODULE__, {:oldest_room_event_seq, room_id})
+  end
+
+  @doc """
   Delete room events older than the given timestamp.
   Used by the age-out cleanup job.
   """
@@ -902,6 +911,17 @@ defmodule Cranium.Store do
         nil -> 0
         max -> max
       end
+
+    {:reply, {:ok, seq}, state}
+  end
+
+  defp do_handle_call({:oldest_room_event_seq, room_id}, _from, state) do
+    seq =
+      from(e in RoomEvent,
+        where: e.room_id == ^room_id,
+        select: min(e.seq)
+      )
+      |> Repo.one()
 
     {:reply, {:ok, seq}, state}
   end
