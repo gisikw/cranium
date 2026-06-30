@@ -8,7 +8,7 @@ defmodule Cranium.Plugins.Ensemble.Evaluators.TurnGatedTest do
     epoch_id: "00000000-0000-0000-0000-000000000000",
     turn_count: 0,
     current_profile: "exo-local",
-    current_backend: :ollama,
+    current_backend: :mock,
     current_model: "gemma4-cranium"
   }
 

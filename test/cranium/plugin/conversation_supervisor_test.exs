@@ -183,7 +183,7 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
         backend: :mock,
         model: "test-model",
         plugins: [
-          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium", backend: :ollama}}
+          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium", backend: :mock}}
         ]
       }
 
@@ -201,7 +201,7 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
       result = ConversationSupervisor.dispatch_after_resolve_profile(cid, context)
 
       assert result.model == "gemma4-cranium"
-      assert result.backend == :ollama
+      assert result.backend == :mock
       # Unmodified fields preserved
       assert result.identity == "I am exo"
       assert result.profile_name == "exo"

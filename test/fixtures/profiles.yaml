@@ -83,7 +83,9 @@ profiles:
     identity: test/fixtures/test-identity.txt
     tools_prompt: true
 
-ollama_url: http://localhost:11434
+  sidecar:
+    backend: mock
+    model: sidecar-test-model
 
 room_defaults:
   personal-chat: test-with-identity

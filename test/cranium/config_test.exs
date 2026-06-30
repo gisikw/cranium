@@ -60,11 +60,6 @@ defmodule Cranium.ConfigTest do
     end
   end
 
-  describe "ollama_url/0" do
-    test "returns the configured URL" do
-      assert Config.ollama_url() == "http://localhost:11434"
-    end
-  end
 
   describe "list_profiles/0" do
     test "returns all profile names sorted" do

@@ -9,17 +9,14 @@ defmodule Cranium.Config do
   ## Profile structure
 
       default: exo
-      ollama_url: http://lordhenry.tail95401.ts.net:11434
-
       profiles:
         exo:
-          backend: claudecode
-          model: claude-opus-4-6
+          backend: tiamat
+          router_profile: exo
           identity: /home/dev/Projects/exocortex/EXO.md
-        exo-local:
-          backend: ollama
-          model: gemma4-cranium
-          identity: /home/dev/Projects/exocortex/EXO.md
+        sidecar:
+          backend: tiamat
+          router_profile: qwen-local
 
   Crashes on startup if profiles.yaml is missing or malformed.
   """
@@ -175,14 +172,6 @@ defmodule Cranium.Config do
     |> Enum.into(%{}, fn [room, profile] -> {room, profile} end)
   end
 
-  @doc "Ollama API base URL from config."
-  @spec ollama_url() :: String.t()
-  def ollama_url do
-    case :ets.lookup(@table, :ollama_url) do
-      [{_, url}] -> url
-      [] -> "http://localhost:11434"
-    end
-  end
 
   @doc "Read and cache an identity file by path. Returns content or nil on failure."
   @spec read_identity(String.t()) :: String.t() | nil
@@ -364,11 +353,6 @@ defmodule Cranium.Config do
 
         :ets.insert(@table, {{:room_default, room}, profile_name})
       end
-    end
-
-    # Ollama URL (retained for sidecar evaluations)
-    if url = yaml["ollama_url"] do
-      :ets.insert(@table, {:ollama_url, url})
     end
 
     Logger.info("Config: loaded #{map_size(profiles)} profiles (default: #{default_name})")
