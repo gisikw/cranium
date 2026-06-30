@@ -2,7 +2,7 @@ defmodule Cranium.Macro.Sidecar do
   @moduledoc """
   Async sidecar evaluation for macro condition learning.
 
-  Dispatches condition evaluation to a sidecar model (via Ollama),
+  Dispatches condition evaluation to a sidecar model via a Cranium profile,
   tracks in-flight state per macro instance, and stores results
   for consumption on the next turn.
 
@@ -218,24 +218,11 @@ defmodule Cranium.Macro.Sidecar do
         |> String.replace("%{conditions}", conditions_text)
         |> String.replace("%{lookback}", lookback_text)
 
-      {model, endpoint} = resolve_sidecar(sidecar_config.model)
+      profile = sidecar_config.model || "sidecar"
 
-      body = %{
-        model: model,
-        messages: [%{role: "user", content: prompt}],
-        stream: false,
-        format: "json"
-      }
-
-      case Req.post("#{endpoint}/api/chat",
-             json: body,
-             receive_timeout: 60_000
-           ) do
-        {:ok, %{status: 200, body: resp}} ->
-          parse_response(resp)
-
-        {:ok, %{status: status, body: body}} ->
-          {:error, {:http_error, status, body}}
+      case Cranium.Backend.Sidecar.chat(prompt, profile: profile, timeout: 60_000) do
+        {:ok, text} ->
+          parse_response(text)
 
         {:error, reason} ->
           {:error, reason}
@@ -245,22 +232,8 @@ defmodule Cranium.Macro.Sidecar do
     e -> {:error, {:raised, Exception.message(e)}}
   end
 
-  defp resolve_sidecar(nil), do: {"gemma4", Cranium.Config.ollama_url()}
-
-  defp resolve_sidecar(profile_name) do
-    case Cranium.Config.resolve_profile(profile_name) do
-      {:ok, profile} ->
-        {profile.model || "gemma4", Cranium.Config.ollama_url()}
-
-      {:error, _} ->
-        Logger.warning("Macro.Sidecar: profile '#{profile_name}' not found, using default")
-        {"gemma4", Cranium.Config.ollama_url()}
-    end
-  end
-
-  # Ollama response: %{"message" => %{"content" => json_string}}
-  defp parse_response(%{"message" => %{"content" => content}}) when is_binary(content) do
-    case Jason.decode(content) do
+  defp parse_response(text) when is_binary(text) do
+    case Jason.decode(text) do
       {:ok, indices} when is_list(indices) ->
         {:ok, Enum.filter(indices, &is_integer/1)}
 
@@ -269,19 +242,6 @@ defmodule Cranium.Macro.Sidecar do
 
       {:error, _} ->
         {:error, :invalid_json}
-    end
-  end
-
-  # Direct JSON response (test mode)
-  defp parse_response(indices) when is_list(indices) do
-    {:ok, Enum.filter(indices, &is_integer/1)}
-  end
-
-  # String response that needs decoding
-  defp parse_response(resp) when is_binary(resp) do
-    case Jason.decode(resp) do
-      {:ok, parsed} -> parse_response(parsed)
-      {:error, _} -> {:error, :invalid_json}
     end
   end
 

@@ -8,7 +8,7 @@ defmodule Cranium.Macro.Revision do
   bumps the version, and triggers a Registry reload.
 
   Follows the glossary plugin's revision pattern: fire-and-forget Task.start,
-  atomic tmp+rename file write, sidecar model call via Ollama.
+  atomic tmp+rename file write, sidecar model call via Cranium profile.
   """
 
   require Logger
@@ -83,24 +83,11 @@ defmodule Cranium.Macro.Revision do
         |> String.replace("%{messages}", messages_text)
 
       # Call sidecar model
-      {model, endpoint} = resolve_sidecar(sidecar_model)
+      profile = sidecar_model || "sidecar"
 
-      body = %{
-        model: model,
-        messages: [%{role: "user", content: prompt}],
-        stream: false,
-        format: "json"
-      }
-
-      case Req.post("#{endpoint}/api/chat",
-             json: body,
-             receive_timeout: 120_000
-           ) do
-        {:ok, %{status: 200, body: resp}} ->
-          handle_revision_response(resp, source_path, current_def, current_version, macro_name)
-
-        {:ok, %{status: status, body: err_body}} ->
-          {:error, {:http_error, status, err_body}}
+      case Cranium.Backend.Sidecar.chat(prompt, profile: profile, timeout: 120_000) do
+        {:ok, text} ->
+          handle_revision_response(text, source_path, current_def, current_version, macro_name)
 
         {:error, reason} ->
           {:error, reason}
@@ -147,15 +134,8 @@ defmodule Cranium.Macro.Revision do
     end
   end
 
-  defp parse_response(%{"message" => %{"content" => content}}) when is_binary(content) do
-    case Jason.decode(content) do
-      {:ok, parsed} -> parse_revision_payload(parsed)
-      {:error, _} -> {:error, :invalid_json}
-    end
-  end
-
-  defp parse_response(resp) when is_binary(resp) do
-    case Jason.decode(resp) do
+  defp parse_response(text) when is_binary(text) do
+    case Jason.decode(text) do
       {:ok, parsed} -> parse_revision_payload(parsed)
       {:error, _} -> {:error, :invalid_json}
     end
@@ -190,19 +170,6 @@ defmodule Cranium.Macro.Revision do
       {:error, reason} ->
         File.rm(tmp_path)
         {:error, {:write_failed, reason}}
-    end
-  end
-
-  defp resolve_sidecar(nil), do: {"gemma4", Cranium.Config.ollama_url()}
-
-  defp resolve_sidecar(profile_name) do
-    case Cranium.Config.resolve_profile(profile_name) do
-      {:ok, profile} ->
-        {profile.model || "gemma4", Cranium.Config.ollama_url()}
-
-      {:error, _} ->
-        Logger.warning("Macro.Revision: profile '#{profile_name}' not found, using default")
-        {"gemma4", Cranium.Config.ollama_url()}
     end
   end
 end

@@ -85,7 +85,7 @@ defmodule Cranium.Plugins.Glossary do
         file_mtimes: file_mtimes,
         room_name: metadata.room_name,
         update_model: update_model,
-        ollama_endpoint: config["ollama_endpoint"] || Cranium.Config.ollama_url(),
+        sidecar_profile: config["sidecar_profile"] || "sidecar",
         window_radius: config["window_radius"] || @default_window_radius,
         req_opts: config["req_opts"] || [],
         async: Map.get(config, "async", true)
@@ -429,22 +429,11 @@ defmodule Cranium.Plugins.Glossary do
     {"update": false}
     """
 
-    body = %{
-      model: state.update_model,
-      messages: [%{role: "user", content: prompt}],
-      stream: false,
-      format: "json"
-    }
+    profile = state.sidecar_profile
 
-    req_opts =
-      [json: body, receive_timeout: 60_000] ++ state.req_opts
-
-    case Req.post("#{state.ollama_endpoint}/api/chat", req_opts) do
-      {:ok, %{status: 200, body: resp}} ->
-        parse_update_response(resp)
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:http_error, status, body}}
+    case Cranium.Backend.Sidecar.chat(prompt, profile: profile, timeout: 60_000) do
+      {:ok, text} ->
+        parse_update_response(text)
 
       {:error, reason} ->
         {:error, reason}
@@ -454,22 +443,11 @@ defmodule Cranium.Plugins.Glossary do
       {:error, {:raised, Exception.message(e)}}
   end
 
-  defp parse_update_response(resp) when is_binary(resp) do
-    case Jason.decode(resp) do
-      {:ok, parsed} -> parse_update_response(parsed)
-      {:error, _} -> {:error, :invalid_json}
-    end
-  end
-
-  defp parse_update_response(%{"message" => %{"content" => content}}) when is_binary(content) do
-    case Jason.decode(content) do
+  defp parse_update_response(text) when is_binary(text) do
+    case Jason.decode(text) do
       {:ok, parsed} -> parse_update_payload(parsed)
       {:error, _} -> {:error, :invalid_json}
     end
-  end
-
-  defp parse_update_response(%{} = payload) do
-    parse_update_payload(payload)
   end
 
   defp parse_update_response(_), do: {:error, :unexpected_response}

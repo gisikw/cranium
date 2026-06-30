@@ -419,24 +419,11 @@ defmodule Cranium.Plugins.Agenda do
         |> String.replace("%{criteria}", criteria_text)
         |> String.replace("%{lookback}", lookback_text)
 
-      {model, endpoint} = resolve_sidecar(sidecar_profile)
+      profile = sidecar_profile || "sidecar"
 
-      body = %{
-        model: model,
-        messages: [%{role: "user", content: prompt}],
-        stream: false,
-        format: "json"
-      }
-
-      case Req.post("#{endpoint}/api/chat",
-             json: body,
-             receive_timeout: 60_000
-           ) do
-        {:ok, %{status: 200, body: resp}} ->
-          parse_sidecar_response(resp)
-
-        {:ok, %{status: status, body: body}} ->
-          {:error, {:http_error, status, body}}
+      case Cranium.Backend.Sidecar.chat(prompt, profile: profile, timeout: 60_000) do
+        {:ok, text} ->
+          parse_sidecar_response(text)
 
         {:error, reason} ->
           {:error, reason}
@@ -446,28 +433,8 @@ defmodule Cranium.Plugins.Agenda do
     e -> {:error, {:raised, Exception.message(e)}}
   end
 
-  defp resolve_sidecar(nil), do: {"gemma4", Cranium.Config.ollama_url()}
-
-  defp resolve_sidecar(profile_name) do
-    case Cranium.Config.resolve_profile(profile_name) do
-      {:ok, profile} ->
-        {profile.model || "gemma4", Cranium.Config.ollama_url()}
-
-      {:error, _} ->
-        Logger.warning("Agenda: sidecar profile '#{profile_name}' not found, using default")
-        {"gemma4", Cranium.Config.ollama_url()}
-    end
-  end
-
-  defp parse_sidecar_response(resp) when is_binary(resp) do
-    case Jason.decode(resp) do
-      {:ok, parsed} -> parse_sidecar_response(parsed)
-      {:error, _} -> {:error, :invalid_json}
-    end
-  end
-
-  defp parse_sidecar_response(%{"message" => %{"content" => content}}) when is_binary(content) do
-    case Jason.decode(content) do
+  defp parse_sidecar_response(text) when is_binary(text) do
+    case Jason.decode(text) do
       {:ok, indices} when is_list(indices) ->
         {:ok, Enum.filter(indices, &is_integer/1)}
 
@@ -477,15 +444,6 @@ defmodule Cranium.Plugins.Agenda do
       {:error, _} ->
         {:error, :invalid_json}
     end
-  end
-
-  defp parse_sidecar_response(%{} = payload) when is_map_key(payload, "message") do
-    {:error, :unexpected_response}
-  end
-
-  # Direct JSON response (test mode)
-  defp parse_sidecar_response(indices) when is_list(indices) do
-    {:ok, Enum.filter(indices, &is_integer/1)}
   end
 
   defp parse_sidecar_response(_), do: {:error, :unexpected_response}
