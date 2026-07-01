@@ -40,7 +40,7 @@ defmodule Cranium.RoomSync.RoomList do
         last_activity_at: room[:last_activity_at],
         latest_message_preview: preview_from_message(latest),
         latest_message_at: if(latest, do: latest.inserted_at),
-        has_active_turn: MapSet.member?(active_turns, room.id),
+        has_active_turn: room.id in active_turns,
         unread: false
       }
     end)
@@ -82,9 +82,8 @@ defmodule Cranium.RoomSync.RoomList do
         _ -> false
       end
     end)
-    |> MapSet.new()
   rescue
-    ArgumentError -> MapSet.new()
+    ArgumentError -> []
   end
 
   defp preview_from_message(nil), do: nil

@@ -141,13 +141,6 @@ defmodule Cranium.Macro.Revision do
     end
   end
 
-  # Direct map response (test mode)
-  defp parse_response(%{"update" => _} = payload) do
-    parse_revision_payload(payload)
-  end
-
-  defp parse_response(_), do: {:error, :unexpected_response}
-
   defp parse_revision_payload(%{"update" => true, "definition" => definition})
        when is_map(definition) do
     {:ok, {:update, definition}}

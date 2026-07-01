@@ -450,8 +450,6 @@ defmodule Cranium.Plugins.Glossary do
     end
   end
 
-  defp parse_update_response(_), do: {:error, :unexpected_response}
-
   defp parse_update_payload(%{"update" => true, "summary" => summary, "rationale" => rationale})
        when is_binary(summary) and is_binary(rationale) do
     {:update, summary, rationale}

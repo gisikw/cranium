@@ -446,8 +446,6 @@ defmodule Cranium.Plugins.Agenda do
     end
   end
 
-  defp parse_sidecar_response(_), do: {:error, :unexpected_response}
-
   # --- Eval Result Consumption ---
 
   defp consume_eval_results(state) do

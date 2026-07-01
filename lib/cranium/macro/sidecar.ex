@@ -244,6 +244,4 @@ defmodule Cranium.Macro.Sidecar do
         {:error, :invalid_json}
     end
   end
-
-  defp parse_response(_), do: {:error, :unexpected_response}
 end
