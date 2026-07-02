@@ -51,7 +51,14 @@ defmodule Cranium.RoomEvents do
 
   # --- Convenience emitters for each event type ---
 
-  @doc "A message was persisted (user or assistant)."
+  @doc """
+  A message was persisted (user or assistant).
+
+  Pass the persisted `Cranium.Store.Message` struct as `:message` so the
+  payload carries `message_id` and the full TranscriptMessage projection —
+  clients build the durable message from the event without a transcript
+  refetch.
+  """
   def message_created(room_id, %{role: role} = attrs, correlation_id \\ nil) do
     payload = %{
       role: to_string(role),
@@ -64,6 +71,17 @@ defmodule Cranium.RoomEvents do
       case attrs[:text] do
         t when is_binary(t) and t != "" ->
           Map.put(payload, :preview, String.slice(t, 0, 200))
+
+        _ ->
+          payload
+      end
+
+    payload =
+      case attrs[:message] do
+        %Cranium.Store.Message{} = message ->
+          payload
+          |> Map.put(:message_id, message.id)
+          |> Map.put(:message, Cranium.RoomSync.TranscriptMessage.project(message))
 
         _ ->
           payload

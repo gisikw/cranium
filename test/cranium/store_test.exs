@@ -16,19 +16,19 @@ defmodule CraniumTest.StoreTest do
     end
 
     test "inserts messages and retrieves them in insertion order", %{epoch_id: epoch_id} do
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
           role: :user,
           content: text_block("hello")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
           role: :assistant,
           content: text_block("hi there")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
           role: :user,
           content: text_block("how are you?")
@@ -58,7 +58,7 @@ defmodule CraniumTest.StoreTest do
         "provider_message_id" => "msg-456"
       }
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-msg", epoch_id, %{
           role: :assistant,
           content: text_block("with provenance"),
@@ -83,7 +83,7 @@ defmodule CraniumTest.StoreTest do
 
     test "respects the limit option, returning most recent", %{epoch_id: epoch_id} do
       for i <- 1..10 do
-        :ok =
+        {:ok, _} =
           Cranium.Store.append_message("conv-msg", epoch_id, %{
             role: :user,
             content: text_block("msg #{i}")
@@ -110,13 +110,13 @@ defmodule CraniumTest.StoreTest do
       {:ok, epoch_a} = Cranium.Store.create_epoch("conv-a")
       {:ok, epoch_b} = Cranium.Store.create_epoch("conv-b")
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-a", epoch_a, %{
           role: :user,
           content: text_block("alpha")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-b", epoch_b, %{
           role: :user,
           content: text_block("bravo")
@@ -137,13 +137,13 @@ defmodule CraniumTest.StoreTest do
       conversation_id = "conv-normalize"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("one")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: text_block("two")
@@ -198,7 +198,7 @@ defmodule CraniumTest.StoreTest do
       conversation_id = "conv-normalize-tools"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: [
@@ -206,7 +206,7 @@ defmodule CraniumTest.StoreTest do
           ]
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :tool,
           content: [%{"type" => "tool_result", "tool_output" => %{"stdout" => "/tmp"}}]
@@ -250,7 +250,7 @@ defmodule CraniumTest.StoreTest do
 
       parent_id = Ecto.UUID.generate()
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("one"),
@@ -287,7 +287,7 @@ defmodule CraniumTest.StoreTest do
       parent_id = Ecto.UUID.generate()
       provenance = %{"origin" => "tiamat", "model" => "test-model"}
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-api", epoch_id, %{
           role: :assistant,
           content: text_block("api visible"),
@@ -311,7 +311,7 @@ defmodule CraniumTest.StoreTest do
       parent_id = Ecto.UUID.generate()
       provenance = %{"origin" => "tiamat", "provider_request_id" => "req-789"}
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-transcript", epoch_id, %{
           role: :assistant,
           content: text_block("export me"),
@@ -335,7 +335,7 @@ defmodule CraniumTest.StoreTest do
       conversation_id = "conv-transcript-tools"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: [
@@ -348,7 +348,7 @@ defmodule CraniumTest.StoreTest do
           ]
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :tool,
           content: [
@@ -373,13 +373,13 @@ defmodule CraniumTest.StoreTest do
       conversation_id = "conv-transcript-cursor"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("first")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("second")
@@ -481,7 +481,7 @@ defmodule CraniumTest.StoreTest do
     test "returns the timestamp of the most recent message" do
       {:ok, epoch_id} = Cranium.Store.create_epoch("conv-ts")
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-ts", epoch_id, %{
           role: :user,
           content: text_block("first")
@@ -489,7 +489,7 @@ defmodule CraniumTest.StoreTest do
 
       Process.sleep(10)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message("conv-ts", epoch_id, %{
           role: :assistant,
           content: text_block("second")

@@ -441,11 +441,12 @@ defmodule Cranium.Inference.TurnAssembler do
 
     # 9. Persist enriched user message (after history fetch)
     unless ephemeral do
-      Cranium.Store.append_message(header.conversation_id, epoch_id, %{
-        role: :user,
-        content: current_content,
-        origin: header.origin
-      })
+      {:ok, message} =
+        Cranium.Store.append_message(header.conversation_id, epoch_id, %{
+          role: :user,
+          content: current_content,
+          origin: header.origin
+        })
 
       # Emit room event for user message
       unless header.origin == "orientation" do
@@ -453,7 +454,8 @@ defmodule Cranium.Inference.TurnAssembler do
           role: :user,
           text: text,
           epoch_id: epoch_id,
-          origin: header.origin
+          origin: header.origin,
+          message: message
         })
       end
     end

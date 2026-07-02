@@ -341,7 +341,7 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     conversation_id = "tiamat-sse-#{System.unique_integer([:positive])}"
     {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-    :ok =
+    {:ok, _} =
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :user,
         content: [%{"type" => "text", "text" => "hello"}],
@@ -390,7 +390,7 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
 
     user_content = [%{"type" => "text", "text" => "latest user"}]
 
-    :ok =
+    {:ok, _} =
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :user,
         content: user_content,

@@ -103,7 +103,7 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
     conversation_id = "tiamat-agent-#{System.unique_integer([:positive])}"
     {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-    :ok =
+    {:ok, _} =
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :user,
         content: [%{"type" => "text", "text" => "use echo"}],
@@ -187,7 +187,7 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
     conversation_id = "tiamat-agent-envelope-#{System.unique_integer([:positive])}"
     {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-    :ok =
+    {:ok, _} =
       Cranium.Store.append_message(conversation_id, epoch_id, %{
         role: :user,
         content: [%{"type" => "text", "text" => "read the screenshot"}],

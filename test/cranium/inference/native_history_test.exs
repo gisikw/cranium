@@ -13,7 +13,7 @@ defmodule Cranium.Inference.NativeHistoryTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
       parent_id = Ecto.UUID.generate()
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: text_block("hello"),
@@ -43,7 +43,7 @@ defmodule Cranium.Inference.NativeHistoryTest do
       conversation_id = "native-history-tools-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: [
@@ -70,7 +70,7 @@ defmodule Cranium.Inference.NativeHistoryTest do
       conversation_id = "native-history-result-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: [
@@ -96,19 +96,19 @@ defmodule Cranium.Inference.NativeHistoryTest do
       conversation_id = "native-history-order-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("one")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: text_block("two")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("three")
@@ -128,13 +128,13 @@ defmodule Cranium.Inference.NativeHistoryTest do
       {:ok, epoch_a} = Cranium.Store.create_epoch(conversation_id)
       {:ok, epoch_b} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_a, %{
           role: :user,
           content: text_block("old")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_b, %{
           role: :user,
           content: text_block("new")

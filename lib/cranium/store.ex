@@ -57,7 +57,7 @@ defmodule Cranium.Store do
 
   # Message operations
 
-  @spec append_message(String.t(), String.t(), map()) :: :ok
+  @spec append_message(String.t(), String.t(), map()) :: {:ok, Cranium.Store.Message.t()}
   def append_message(conversation_id, epoch_id, message) do
     GenServer.call(__MODULE__, {:append_message, conversation_id, epoch_id, message})
   end
@@ -377,20 +377,21 @@ defmodule Cranium.Store do
   end
 
   defp do_handle_call({:append_message, conversation_id, epoch_id, message}, _from, state) do
-    %Message{}
-    |> Message.changeset(%{
-      conversation_id: conversation_id,
-      epoch_id: epoch_id,
-      role: to_string(message[:role] || "user"),
-      content: message[:content] || [],
-      origin: message[:origin],
-      usage: message[:usage],
-      parent_id: message[:parent_id],
-      provenance: message[:provenance]
-    })
-    |> Repo.insert!()
+    inserted =
+      %Message{}
+      |> Message.changeset(%{
+        conversation_id: conversation_id,
+        epoch_id: epoch_id,
+        role: to_string(message[:role] || "user"),
+        content: message[:content] || [],
+        origin: message[:origin],
+        usage: message[:usage],
+        parent_id: message[:parent_id],
+        provenance: message[:provenance]
+      })
+      |> Repo.insert!()
 
-    {:reply, :ok, state}
+    {:reply, {:ok, inserted}, state}
   end
 
   defp do_handle_call({:get_messages, conversation_id, opts}, _from, state) do
@@ -846,7 +847,6 @@ defmodule Cranium.Store do
 
     {:reply, result, state}
   end
-
 
   # --- Room Event Handlers ---
 

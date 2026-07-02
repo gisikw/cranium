@@ -236,7 +236,7 @@ data: {"event_id":"...","room_id":"cranium","seq":143,"type":"message.created","
 | `turn.completed` | `stream_id`, `epoch_id`, `turn_count`, `saturation` | Inference finishes. `saturation` is a 0..1 fraction |
 | `turn.cancelled` | `stream_id` | Turn cancelled |
 | `turn.errored` | `stream_id`, `epoch_id`, `error` | Turn failed. `error` is a human-readable string (≤500 chars), `null` when no detail is available |
-| `message.created` | `role`, `text`, `origin`, `epoch_id` | Message persisted |
+| `message.created` | `message_id`, `message`, `role`, `origin`, `epoch_id`, `preview` | Message persisted. `message` is the full TranscriptMessage projection (see above); `preview` is the first 200 chars of the message text, omitted when empty |
 | `room.state.updated` | Varies | Room state changed |
 | `room.epoch.cleared` | `old_epoch_id` | Epoch cleared |
 | `room.epoch.created` | `epoch_id` | New epoch started |
@@ -465,7 +465,7 @@ Standard SSE ([spec](https://html.spec.whatwg.org/multipage/server-sent-events.h
 ```
 id: 143
 event: message.created
-data: {"event_id":"evt_...","room_id":"cranium","seq":143,"type":"message.created","occurred_at":"2026-06-29T04:30:00Z","correlation_id":null,"payload":{"role":"user","text":"Hello"}}
+data: {"event_id":"evt_...","room_id":"cranium","seq":143,"type":"message.created","occurred_at":"2026-06-29T04:30:00Z","correlation_id":null,"payload":{"message_id":"a1b2c3d4-...","role":"user","preview":"Hello","message":{ /* TranscriptMessage */ }}}
 
 ```
 

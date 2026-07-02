@@ -47,6 +47,46 @@ defmodule Cranium.Effects.PassReactorTest do
       assert epoch.status == "active"
     end
 
+    test "emits message.created with message_id and full TranscriptMessage projection" do
+      conversation_id = "test-effects-msg-event-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-1",
+         %{
+           reason: :complete,
+           epoch_id: ctx.epoch_id,
+           output: "hello world",
+           saturation: 0.5,
+           turn_count: 1,
+           cc_session_id: nil,
+           origin: "test",
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+      [persisted] = Enum.filter(messages, &(&1.role == :assistant))
+
+      {:ok, events} = Cranium.Store.list_room_events(conversation_id, 0)
+      assert [event] = Enum.filter(events, &(&1.type == "message.created"))
+
+      assert event.payload["message_id"] == persisted.id
+      assert event.payload["preview"] == "hello world"
+      assert event.payload["role"] == "assistant"
+
+      message = event.payload["message"]
+      assert message["id"] == persisted.id
+      assert message["room_id"] == conversation_id
+      assert message["text"] == "hello world"
+      assert [%{"type" => "text", "text" => "hello world", "id" => part_id}] = message["parts"]
+      assert part_id == "#{persisted.id}:0"
+    end
+
     test "skips Store mutations for ephemeral passes" do
       conversation_id = "test-effects-eph-#{System.unique_integer([:positive])}"
 

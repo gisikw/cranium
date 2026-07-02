@@ -54,19 +54,21 @@ defmodule Cranium.Effects.PassReactor do
 
       if output != "" or final_message_content not in [nil, []] do
         # Persist final assistant message as content blocks
-        Cranium.Store.append_message(cid, epoch_id, %{
-          role: :assistant,
-          content: final_message_content || [%{"type" => "text", "text" => output}],
-          origin: payload[:origin],
-          usage: payload[:usage]
-        })
+        {:ok, message} =
+          Cranium.Store.append_message(cid, epoch_id, %{
+            role: :assistant,
+            content: final_message_content || [%{"type" => "text", "text" => output}],
+            origin: payload[:origin],
+            usage: payload[:usage]
+          })
 
         # Emit room event for assistant message
         Cranium.RoomEvents.message_created(cid, %{
           role: :assistant,
           text: output,
           epoch_id: epoch_id,
-          origin: payload[:origin]
+          origin: payload[:origin],
+          message: message
         })
       else
         if (payload[:intermediate_messages] || []) == [] do

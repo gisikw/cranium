@@ -13,7 +13,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
       parent_id = Ecto.UUID.generate()
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: text_block("previous"),
@@ -84,7 +84,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       conversation_id = "tiamat-request-current-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("first")
@@ -126,7 +126,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
         }
       }
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: [image_block, %{"type" => "text", "text" => "what is this?"}],
@@ -158,19 +158,19 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       conversation_id = "tiamat-request-empty-message-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("first")
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: [%{"type" => "text", "text" => ""}]
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: text_block("second")
@@ -203,7 +203,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
         }
       }
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: [image_block, %{"type" => "text", "text" => ""}],
@@ -249,7 +249,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
           ]
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :assistant,
           content: [
@@ -258,7 +258,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
           origin: "cranium"
         })
 
-      :ok =
+      {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: [
