@@ -245,6 +245,31 @@ defmodule Cranium.Effects.PassReactorTest do
       {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
       assert epoch.status == "active"
     end
+
+    test "emits turn.errored room event with error detail" do
+      conversation_id = "test-effects-error-detail-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-err",
+         %{
+           reason: :error,
+           epoch_id: ctx.epoch_id,
+           error: "{:http_error, 500, \"upstream exploded\"}",
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      {:ok, events} = Cranium.Store.list_room_events(conversation_id, 0)
+      assert [event] = Enum.filter(events, &(&1.type == "turn.errored"))
+      assert event.payload["stream_id"] == "stream-err"
+      assert event.payload["epoch_id"] == ctx.epoch_id
+      assert event.payload["error"] == "{:http_error, 500, \"upstream exploded\"}"
+    end
   end
 
   describe "pass_done signaling" do

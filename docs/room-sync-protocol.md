@@ -233,7 +233,7 @@ data: {"event_id":"...","room_id":"cranium","seq":143,"type":"message.created","
 | `turn.started` | `stream_id`, `epoch_id` | Inference begins |
 | `turn.completed` | `stream_id`, `epoch_id`, `turn_count`, `saturation` | Inference finishes |
 | `turn.cancelled` | `stream_id` | Turn cancelled |
-| `turn.errored` | `stream_id`, `error` | Turn failed |
+| `turn.errored` | `stream_id`, `epoch_id`, `error` | Turn failed. `error` is a human-readable string (≤500 chars), `null` when no detail is available |
 | `message.created` | `role`, `text`, `origin`, `epoch_id` | Message persisted |
 | `room.state.updated` | Varies | Room state changed |
 | `room.epoch.cleared` | `old_epoch_id` | Epoch cleared |

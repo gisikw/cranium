@@ -225,7 +225,7 @@ defmodule Cranium.Inference.Harness do
     )
   end
 
-  defp handle_inference_result({:error, _reason}, turn, _state) do
+  defp handle_inference_result({:error, reason}, turn, _state) do
     cid = turn.conversation_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
@@ -238,9 +238,22 @@ defmodule Cranium.Inference.Harness do
        %{
          reason: :error,
          epoch_id: turn.epoch_id,
+         error: format_error(reason),
          ephemeral: ephemeral
        }}
     )
+  end
+
+  # Room events persist payloads as JSON, so the error must be a bounded string.
+  @error_detail_max_length 500
+
+  defp format_error(reason) do
+    reason
+    |> case do
+      text when is_binary(text) -> text
+      other -> inspect(other)
+    end
+    |> String.slice(0, @error_detail_max_length)
   end
 
   # --- Helpers ---

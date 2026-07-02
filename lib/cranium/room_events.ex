@@ -101,10 +101,11 @@ defmodule Cranium.RoomEvents do
   end
 
   @doc "Inference errored."
-  def turn_errored(room_id, %{stream_id: stream_id, epoch_id: epoch_id}) do
+  def turn_errored(room_id, %{stream_id: stream_id, epoch_id: epoch_id} = attrs) do
     emit(room_id, "turn.errored", %{
       stream_id: stream_id,
-      epoch_id: epoch_id
+      epoch_id: epoch_id,
+      error: attrs[:error]
     })
   end
 

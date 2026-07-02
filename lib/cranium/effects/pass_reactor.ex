@@ -178,7 +178,8 @@ defmodule Cranium.Effects.PassReactor do
       # Emit turn.errored room event
       Cranium.RoomEvents.turn_errored(cid, %{
         stream_id: stream_id,
-        epoch_id: payload[:epoch_id]
+        epoch_id: payload[:epoch_id],
+        error: payload[:error]
       })
     end
 
