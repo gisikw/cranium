@@ -57,7 +57,14 @@ defmodule Cranium.Inference.Agent.ToolExecutor do
 
   @doc false
   def truncate_result(result) when byte_size(result) > @result_max_size do
-    String.slice(result, 0, @result_max_size) <> "\n... (truncated)"
+    # Content envelopes must never be byte-sliced: truncating base64
+    # mid-stream corrupts the request for the entire turn. Their size is
+    # bounded by the emitting tool's caps (4 MB/image, 6 MB total).
+    if Cranium.Inference.ToolResultEnvelope.envelope?(result) do
+      result
+    else
+      String.slice(result, 0, @result_max_size) <> "\n... (truncated)"
+    end
   end
 
   def truncate_result(result), do: result

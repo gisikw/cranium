@@ -229,6 +229,61 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
              ]
     end
 
+    test "delivers persisted tool_result envelope strings byte-identical" do
+      conversation_id = "tiamat-request-envelope-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      envelope =
+        Jason.encode!(%{
+          "type" => "content",
+          "content" => [
+            %{"type" => "text", "text" => "screenshot.png: image/png, 60000 bytes"},
+            %{
+              "type" => "image",
+              "source" => %{
+                "type" => "base64",
+                "media_type" => "image/png",
+                "data" => Base.encode64(:crypto.strong_rand_bytes(60_000))
+              }
+            }
+          ]
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :assistant,
+          content: [
+            %{"type" => "tool_use", "id" => "toolu_img", "name" => "read", "input" => %{}}
+          ],
+          origin: "cranium"
+        })
+
+      :ok =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: [
+            %{"type" => "tool_result", "tool_use_id" => "toolu_img", "content" => envelope}
+          ],
+          origin: "cranium"
+        })
+
+      request =
+        TiamatTurnRequest.assemble(
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          router_profile: "exo",
+          tools_disabled: true
+        )
+
+      [_tool_use_message, tool_message] = request["messages"]
+      assert tool_message["role"] == "tool"
+
+      assert [tool_result_block] = tool_message["content"]
+      assert tool_result_block["type"] == "tool_result"
+      assert tool_result_block["tool_result_for"] == "toolu_img"
+      assert tool_result_block["tool_output"] == %{"content" => envelope}
+    end
+
     test "includes tool definitions unless disabled" do
       conversation_id = "tiamat-request-tools-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)

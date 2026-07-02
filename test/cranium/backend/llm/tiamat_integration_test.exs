@@ -179,6 +179,53 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
     assert content =~ "from tiamat"
   end
 
+  test "oversize tool_result envelopes reach the follow-up Tiamat request byte-identical", %{
+    endpoint: endpoint
+  } do
+    Cranium.Inference.Agent.ToolRouter.register("echo", __MODULE__.EnvelopeTool)
+
+    conversation_id = "tiamat-agent-envelope-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    :ok =
+      Cranium.Store.append_message(conversation_id, epoch_id, %{
+        role: :user,
+        content: [%{"type" => "text", "text" => "read the screenshot"}],
+        origin: "test"
+      })
+
+    {:ok, agent} = Agent.start_link(conversation_id: conversation_id, llm_backend: Tiamat)
+
+    result =
+      Agent.infer(agent, %{
+        conversation_id: conversation_id,
+        epoch_id: epoch_id,
+        router_profile: "exo",
+        stream_id: "s-tiamat-envelope",
+        system: "Flattened fallback prompt",
+        messages: [
+          %{role: "user", content: [%{"type" => "text", "text" => "read the screenshot"}]}
+        ],
+        backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+      })
+
+    assert {:ok, %{status: :complete}} = result
+
+    envelope = __MODULE__.EnvelopeTool.envelope()
+    assert byte_size(envelope) > 50_000
+
+    assert_receive {:tiamat_request, _first_request}
+    assert_receive {:tiamat_request, second_request}
+
+    assert [tool_result_message] =
+             Enum.filter(second_request["messages"], &tool_result_message?/1)
+
+    assert [tool_result_block] =
+             Enum.filter(tool_result_message["content"], &(Map.get(&1, "type") == "tool_result"))
+
+    assert tool_result_block["tool_output"] == envelope
+  end
+
   defp tool_result_message?(%{"content" => content}) when is_list(content) do
     Enum.any?(content, &(Map.get(&1, "type") == "tool_result"))
   end
@@ -191,6 +238,42 @@ defmodule Cranium.Backend.LLM.TiamatIntegrationTest do
   end
 
   defp assistant_tool_use_message?(_), do: false
+
+  defmodule EnvelopeTool do
+    @behaviour Cranium.Inference.Agent.Tool
+
+    def envelope do
+      Jason.encode!(%{
+        "type" => "content",
+        "content" => [
+          %{"type" => "text", "text" => "screenshot.png: image/png, 60000 bytes"},
+          %{
+            "type" => "image",
+            "source" => %{
+              "type" => "base64",
+              "media_type" => "image/png",
+              "data" => Base.encode64(String.duplicate("x", 60_000))
+            }
+          }
+        ]
+      })
+    end
+
+    @impl true
+    def execute(_input, _opts), do: {:ok, envelope()}
+
+    @impl true
+    def name, do: "echo"
+
+    @impl true
+    def schema do
+      %{
+        name: "echo",
+        description: "Returns a multimodal content envelope",
+        input_schema: %{type: "object", properties: %{}}
+      }
+    end
+  end
 
   defmodule EchoTool do
     @behaviour Cranium.Inference.Agent.Tool

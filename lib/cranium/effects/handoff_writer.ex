@@ -96,7 +96,10 @@ defmodule Cranium.Effects.HandoffWriter do
         else
           messages =
             Enum.map(history, fn msg ->
-              %{"role" => to_string(msg.role), "content" => msg.content}
+              %{
+                "role" => to_string(msg.role),
+                "content" => Cranium.Inference.ToolResultEnvelope.redact_blocks(msg.content)
+              }
             end)
 
           messages =
@@ -111,6 +114,7 @@ defmodule Cranium.Effects.HandoffWriter do
               ]
 
           system = build_handoff_system_prompt()
+
           opts = [
             system: system,
             model: model,
@@ -188,12 +192,14 @@ defmodule Cranium.Effects.HandoffWriter do
         {:error, reason}
     end
   end
+
   defp resolve_backend(nil), do: {:error, :no_profile}
 
   defp resolve_backend(profile_name) do
     case Cranium.Config.resolve_profile(profile_name) do
       {:ok, resolved} ->
-        {:ok, resolved.backend_module, resolved.model, resolved.router_profile, resolved.backend_config}
+        {:ok, resolved.backend_module, resolved.model, resolved.router_profile,
+         resolved.backend_config}
 
       {:error, :not_found} ->
         {:error, :profile_not_found}
