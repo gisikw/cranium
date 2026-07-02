@@ -48,6 +48,8 @@ defmodule Cranium.Inference.Agent do
 
   require Logger
 
+  @registry Cranium.Inference.ConversationRegistry
+
   use TypedStruct
 
   typedstruct do
@@ -253,6 +255,7 @@ defmodule Cranium.Inference.Agent do
 
     # Clean up turn state registration (crn-a0f5)
     unregister_turn_state(state.conversation_id)
+
     case result do
       {:ok, :cleared} ->
         # Return success with empty output — the handoff/continuation flow handles the rest
@@ -463,11 +466,14 @@ defmodule Cranium.Inference.Agent do
         }
 
         update_turn_state(state.conversation_id, fn ts ->
-          %{ts |
-            accumulated_text: "",
-            pending_tool_calls: ts.pending_tool_calls ++ [
-              %{id: tool_data.id, name: tool_data.name, status: "running"}
-            ]
+          %{
+            ts
+            | accumulated_text: "",
+              pending_tool_calls:
+                ts.pending_tool_calls ++
+                  [
+                    %{id: tool_data.id, name: tool_data.name, status: "running"}
+                  ]
           }
         end)
 
@@ -1064,7 +1070,8 @@ defmodule Cranium.Inference.Agent do
 
       {:execute, module, input} ->
         case Cranium.Inference.Agent.ToolExecutor.execute(module, input,
-               depth: Keyword.get(opts, :depth)
+               depth: Keyword.get(opts, :depth),
+               conversation_id: conversation_id
              ) do
           {:ok, text} -> Cranium.Inference.Agent.ToolExecutor.truncate_result(text)
           {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
@@ -1193,7 +1200,7 @@ defmodule Cranium.Inference.Agent do
       {:execute, module, input} ->
         emit_tool_use(stream_id, conversation_id, tool_call, tool_call.name, input)
 
-        execute_opts = [depth: Keyword.get(opts, :depth)]
+        execute_opts = [depth: Keyword.get(opts, :depth), conversation_id: conversation_id]
 
         result =
           case ToolExecutor.execute(module, input, execute_opts) do

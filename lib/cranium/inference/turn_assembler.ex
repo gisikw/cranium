@@ -375,7 +375,19 @@ defmodule Cranium.Inference.TurnAssembler do
     {macro_injections, macro_announcements} =
       Cranium.Macro.Engine.evaluate_turn(turn_context)
 
-    plugin_injections = plugin_injections ++ macro_injections ++ macro_announcements
+    # 5e. Drain pending call responses (call/respond primitives, crn-7762).
+    #     Respond payloads addressed to this room arrive as pre-turn context
+    #     on its next turn. Skipped for orientation (private journaling) and
+    #     ephemeral passes (nothing persists — the injection would be lost).
+    call_injections =
+      if ephemeral or header.origin == "orientation" do
+        []
+      else
+        drain_call_injections(header.conversation_id)
+      end
+
+    plugin_injections =
+      plugin_injections ++ macro_injections ++ macro_announcements ++ call_injections
 
     # 6. Turn injections (merged with plugin injections)
     injection_message = %{
@@ -629,6 +641,20 @@ defmodule Cranium.Inference.TurnAssembler do
 
   defp resolve_tools_prompt(true), do: Cranium.Muse.tools_prompt()
   defp resolve_tools_prompt(_), do: nil
+
+  # Priority 25 slots call responses after landscape (20), before
+  # saturation warnings (30). A dead/absent Calls exchange must not take
+  # the conversation down — degrade to no injections.
+  @call_injection_priority 25
+
+  defp drain_call_injections(conversation_id) do
+    Cranium.Calls.drain_injections(conversation_id)
+    |> Enum.map(&%{priority: @call_injection_priority, content: &1})
+  catch
+    :exit, reason ->
+      Logger.warning("TurnAssembler: call injection drain failed: #{inspect(reason)}")
+      []
+  end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)
 end

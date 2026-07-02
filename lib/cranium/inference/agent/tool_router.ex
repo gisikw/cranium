@@ -43,6 +43,14 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       name in @marker_tools ->
         {:marker, String.to_atom(name), input}
 
+      # Call/respond are first-class primitives — routed ahead of muse so
+      # an external kernel tool can never shadow them.
+      name == "call" ->
+        {:execute, Cranium.Inference.Agent.Tools.Call, input}
+
+      name == "respond" ->
+        {:execute, Cranium.Inference.Agent.Tools.Respond, input}
+
       Cranium.Muse.handles?(name) ->
         {:muse, name, input}
 
@@ -65,6 +73,12 @@ defmodule Cranium.Inference.Agent.ToolRouter do
 
       name in @marker_tools ->
         {:marker, String.to_atom(name), input}
+
+      name == "call" ->
+        {:execute, Cranium.Inference.Agent.Tools.Call, input}
+
+      name == "respond" ->
+        {:execute, Cranium.Inference.Agent.Tools.Respond, input}
 
       Cranium.Muse.handles?(name) ->
         {:muse, name, input}
@@ -130,6 +144,12 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       }
     }
 
+    # Inter-agent call/respond primitives (crn-7762)
+    call_defs = [
+      Cranium.Inference.Agent.Tools.Call.schema(),
+      Cranium.Inference.Agent.Tools.Respond.schema()
+    ]
+
     muse_defs = Cranium.Muse.tool_definitions()
 
     plugin_defs =
@@ -158,7 +178,7 @@ defmodule Cranium.Inference.Agent.ToolRouter do
       end
 
     async_defs =
-      (muse_defs ++ plugin_defs ++ macro_defs ++ search_defs)
+      (call_defs ++ muse_defs ++ plugin_defs ++ macro_defs ++ search_defs)
       |> Enum.map(&add_async_mode/1)
 
     [clear_def | async_defs]

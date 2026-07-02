@@ -25,7 +25,7 @@ defmodule Cranium.Application do
       │   ├── OutputSegmenter
       │   ├── TTS.Cache
       │   └── TTS.Warmer
-      └── Cranium.Inference           # Inference actors
+      ├── Cranium.Inference           # Inference actors
           ├── NixEnv                  # Nix devShell PATH cache (for ClaudeCode backend)
           ├── TurnAssembly            # Singleton providers
           │   ├── SystemPrompt
@@ -37,6 +37,7 @@ defmodule Cranium.Application do
                   ├── Plugin.ConversationSupervisor
                   ├── TurnAssembler
                   └── Harness
+      └── Cranium.Calls               # Inter-agent call/respond exchange
 
   Agent processes are started per-conversation (inside Harness), not as
   top-level children.
@@ -75,11 +76,15 @@ defmodule Cranium.Application do
 
       # Macro sidecar — async condition evaluation tracking (ETS)
       Cranium.Macro.Sidecar,
-
       Cranium.Effects,
       Cranium.Transport,
       Cranium.Media,
-      Cranium.Inference
+      Cranium.Inference,
+
+      # Inter-agent call/respond exchange (crn-7762). Last in the tree:
+      # correlation state is in-memory and expendable, so its crash should
+      # not restart anything else.
+      Cranium.Calls
     ]
 
     opts = [strategy: :rest_for_one, name: Cranium.Supervisor]
@@ -90,7 +95,10 @@ defmodule Cranium.Application do
     end
 
     # Register built-in tools
-    Cranium.Inference.Agent.ToolRouter.register("subagent", Cranium.Inference.Agent.Tools.Subagent)
+    Cranium.Inference.Agent.ToolRouter.register(
+      "subagent",
+      Cranium.Inference.Agent.Tools.Subagent
+    )
 
     # Load external tool definitions and prompt from the muse kernel
     Cranium.Muse.load_tools!()

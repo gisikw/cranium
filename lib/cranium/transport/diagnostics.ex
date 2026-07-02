@@ -128,24 +128,6 @@ defmodule Cranium.Transport.Diagnostics do
     """
   end
 
-  defp error_html(message) do
-    """
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>cranium — error</title>
-      <style>body { font-family: system-ui; max-width: 400px; margin: 80px auto; text-align: center; color: #e0e0e0; background: #1a1a1a; } .err { color: #c44; }</style>
-    </head>
-    <body>
-      <h2>Error</h2>
-      <p class="err">#{esc(message)}</p>
-      <p><a href="/" style="color: #6a6;">Back to diagnostics</a></p>
-    </body>
-    </html>
-    """
-  end
-
   # --- Helpers ---
 
   defp profile_summary do

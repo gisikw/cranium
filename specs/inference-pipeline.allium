@@ -377,13 +377,20 @@ entity ToolRouter {
         -- decisions. Also provides the tool definition list sent to
         -- API/Ollama backends.
         --
-        -- Tool definitions include: clear_context (builtin) + all muse
-        -- tools (loaded from muse binary at boot). Marker tools are NOT
-        -- in the definition list — they're exposed to CC via MCP only.
+        -- Tool definitions include: clear_context (builtin) + call and
+        -- respond (builtin inter-agent primitives, see call-respond.allium)
+        -- + all muse tools (loaded from muse binary at boot). Marker tools
+        -- are NOT in the definition list — they're exposed to CC via MCP
+        -- only.
+        --
+        -- Routing order: call/respond classify as kind = execute AHEAD of
+        -- the muse check, so an external kernel tool can never shadow the
+        -- first-class primitives.
         --
         -- For async-capable backends, cranium augments eligible executable
         -- tool definitions with the reserved cranium_async_mode enum field.
-        -- Marker tools and clear_context are not async-eligible.
+        -- Marker tools and clear_context are not async-eligible; call and
+        -- respond, riding the execute route, are.
 }
 
 entity AsyncToolTask {

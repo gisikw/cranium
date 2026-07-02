@@ -46,6 +46,14 @@ defmodule Cranium.Inference.Agent.ToolRouterTest do
       assert {:execute, __MODULE__, %{"key" => "val"}} =
                ToolRouter.route(%{name: "my_tool", input: %{"key" => "val"}})
     end
+
+    test "routes call and respond to their builtin tool modules" do
+      assert {:execute, Cranium.Inference.Agent.Tools.Call, %{"room" => "beta"}} =
+               ToolRouter.route(%{name: "call", input: %{"room" => "beta"}})
+
+      assert {:execute, Cranium.Inference.Agent.Tools.Respond, %{"payload" => "x"}} =
+               ToolRouter.route(%{name: "respond", input: %{"payload" => "x"}})
+    end
   end
 
   describe "tool_definitions/0" do
@@ -63,6 +71,15 @@ defmodule Cranium.Inference.Agent.ToolRouterTest do
       defs = ToolRouter.tool_definitions()
       names = Enum.map(defs, & &1.name)
       refute "test_tool" in names
+    end
+
+    test "advertises call and respond with cranium_async_mode support" do
+      defs = ToolRouter.tool_definitions()
+
+      for name <- ["call", "respond"] do
+        assert tool_def = Enum.find(defs, &(&1.name == name)), "missing #{name} definition"
+        assert Map.has_key?(tool_def.input_schema.properties, :cranium_async_mode)
+      end
     end
   end
 end

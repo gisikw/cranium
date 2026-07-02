@@ -1,0 +1,351 @@
+-- allium: 3
+
+-- Call / Respond — Inter-Agent Communication Primitives (crn-7762)
+--
+-- First-class cross-room communication. One agent `call`s another room
+-- with a disposition (wait / notify / mute); the receiving agent's turn
+-- runs normally and may `respond` to designate which part of its work
+-- crosses back. Only the respond payload is delivered — never the
+-- receiver's full turn output. Receiver discretion via `respond` is the
+-- ONLY payload-selection mechanism; there are no caller-side truncation
+-- heuristics.
+--
+-- These primitives live in Cranium because call semantics are statements
+-- about rooms, epochs, and saturation — state only Cranium has.
+--
+-- Boundaries (do not cross):
+-- 1. No durability, no retry. Delivery guarantee is "it landed in the
+--    room queue," nothing more. Correlation state is in-memory and
+--    expendable. Durable/retried dispatch is a workflow's job, not this
+--    system's.
+-- 2. Deadlock backstop is the timeout, not cycle detection. A `wait`
+--    chain A -> B -> A jams until the caller's timeout fires. Accepted
+--    for v1.
+--
+-- Supersedes: the `--room` dispatch workaround (muse CLI), which
+-- returned the receiving agent's entire turn output as the tool result.
+-- That path is deprecated in favor of `call`; removal is a later
+-- decision.
+--
+-- Depends on: conversation-lifecycle.allium (Epoch, Pass, queueing),
+-- inference-pipeline.allium (tool registry, tool execution).
+
+use conversation-lifecycle
+use inference-pipeline
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_wait_timeout_ms: Integer = 600000
+    min_wait_timeout_ms: Integer = 1000
+    max_wait_timeout_ms: Integer = 1800000
+    call_saturation_threshold: Float = 0.9
+    injection_cap_per_room: Integer = 50
+    record_ttl_hours: Integer = 24
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Call {
+    correlation_id: String
+    caller_room: String
+    target_room: String
+    disposition: wait | notify | mute
+    status: pending | responded | no_reply_designated | timed_out
+    stream_id: String
+    responses: [String]
+
+    transitions status {
+        pending -> responded
+        pending -> no_reply_designated
+        pending -> timed_out
+        terminal: responded, no_reply_designated, timed_out
+    }
+
+    @guidance
+        -- correlation_id is auto-generated and stamped by Cranium — never
+        -- caller-supplied. Every call result carries it.
+        --
+        -- stream_id is the receiving pass's stream id — the handle that
+        -- ties this record to the receiver's turn boundary (pass_complete).
+        --
+        -- The status graph describes the caller-visible outcome of a
+        -- `wait` call. notify/mute records stay `pending` — their
+        -- delivery happens through the injection queue, not a blocked
+        -- caller — and `responses` keeps appending regardless of status
+        -- (late responds after timeout or no-reply still deliver as
+        -- injections; responds to mute calls are recorded, never
+        -- delivered).
+        --
+        -- Records are in-memory only and swept record_ttl_hours after
+        -- creation (never while a waiter is blocked; the timeout timer
+        -- guarantees waiters resolve first).
+}
+
+value PendingInjection {
+    caller_room: String
+    content: String
+
+    @guidance
+        -- A formatted respond payload awaiting the caller room's next
+        -- turn. Content carries the responding room and correlation id.
+        -- Per-room queue is FIFO, capped at injection_cap_per_room —
+        -- oldest entries drop (logged) so an abandoned room cannot
+        -- accumulate unbounded responses.
+}
+
+------------------------------------------------------------
+-- Rules: placing a call
+------------------------------------------------------------
+
+rule PlaceCall {
+    when: CallTool(caller_room, room, message, disposition, timeout_ms?)
+
+    requires: room != caller_room
+    requires: room has an active epoch  -- unknown rooms error; a typo must
+                                        -- not implicitly create a room
+    requires: epoch(room).saturation < call_saturation_threshold
+
+    let correlation_id = new_id()
+
+    ensures: Call.created(
+        correlation_id: correlation_id,
+        caller_room: caller_room,
+        target_room: room,
+        disposition: disposition,
+        status: pending,
+        stream_id: new_id(),
+        responses: []
+    )
+
+    -- Delivery: a normal pass submitted to the target room, subject to
+    -- existing queueing (a busy room queues it for the next turn
+    -- boundary). The message is wrapped with attribution: originating
+    -- room, correlation id, disposition, and a note that `respond` is
+    -- available for it.
+    ensures: Pass.created(
+        conversation_id: room,
+        origin: "call:" + caller_room,
+        depth: caller_depth + 1
+    )
+
+    @guidance
+        -- Depth threads through the delivered PassHeader so the existing
+        -- MUSE_ROOM_DEPTH recursion guard sees call-chains exactly as it
+        -- saw --room chains.
+        --
+        -- Symmetric peers: the receiver can itself call other rooms,
+        -- including calling back the originator — long async exchanges
+        -- compose as notify-call one way, notify-call back, correlation
+        -- ids threading the exchange.
+        --
+        -- Result by disposition:
+        --   wait   — block until responded / turn end / timeout (below)
+        --   notify — return {status: sent, correlation_id} immediately
+        --   mute   — return {status: sent, correlation_id} immediately
+}
+
+rule RejectSaturatedReceiver {
+    when: CallTool(caller_room, room, message, disposition, timeout_ms?)
+        where epoch(room).saturation >= call_saturation_threshold
+
+    ensures: caller receives {
+        status: receiver_saturated,
+        correlation_id: new_id(),
+        saturation: epoch(room).saturation
+    }
+
+    @guidance
+        -- Nothing is delivered and no Call record is kept — the receiver
+        -- never saw the call, so a respond against this correlation id
+        -- errors as unknown, which is accurate. Caller decides what to
+        -- do with the status. Saturation is checked at placement time
+        -- only; a queued call can still land on a room that saturates
+        -- mid-queue (open question below).
+}
+
+------------------------------------------------------------
+-- Rules: responding
+------------------------------------------------------------
+
+rule RespondToWaitingCaller {
+    when: RespondTool(responder_room, correlation_id, payload)
+
+    let call = Call with correlation_id = correlation_id
+
+    requires: call exists                       -- else error: unknown correlation id
+    requires: call.target_room = responder_room -- else error: foreign correlation id
+    requires: call.disposition = wait
+    requires: call.status = pending             -- caller still blocked
+
+    ensures: call.status = responded
+    ensures: call.responses = call.responses + [payload]
+    ensures: caller unblocked with {status: responded, correlation_id, payload}
+
+    @guidance
+        -- The first respond unblocks a wait caller. The receiver's turn
+        -- keeps running — respond marks the payload, it does not end the
+        -- turn. Only the receiver knows answer vs. workings.
+}
+
+rule RespondQueuesInjection {
+    when: RespondTool(responder_room, correlation_id, payload)
+
+    let call = Call with correlation_id = correlation_id
+
+    requires: call exists
+    requires: call.target_room = responder_room
+    requires: call.disposition = notify
+        or (call.disposition = wait and call.status != pending)
+
+    ensures: call.responses = call.responses + [payload]
+    ensures: PendingInjection.created(
+        caller_room: call.caller_room,
+        content: formatted(payload, call.target_room, correlation_id)
+    )
+
+    @guidance
+        -- Covers notify calls, wait calls after timeout (degraded to
+        -- notify semantics), and second-and-later responds after a wait
+        -- caller was already unblocked. Multiple responds with the same
+        -- correlation id append and deliver in order.
+}
+
+rule RespondToMuteCall {
+    when: RespondTool(responder_room, correlation_id, payload)
+
+    let call = Call with correlation_id = correlation_id
+
+    requires: call exists
+    requires: call.target_room = responder_room
+    requires: call.disposition = mute
+
+    ensures: call.responses = call.responses + [payload]
+    ensures: no delivery to the caller, ever
+
+    @guidance
+        -- Use case: the caller was near context exhaustion and could not
+        -- afford a reply. The respond is recorded on the Call only.
+}
+
+------------------------------------------------------------
+-- Rules: turn boundaries and timeouts
+------------------------------------------------------------
+
+rule ReceiverTurnEndsWithoutRespond {
+    when: PassComplete(stream_id)
+
+    let call = Call with stream_id = stream_id
+
+    requires: call exists
+    requires: call.disposition = wait
+    requires: call.status = pending
+
+    ensures: call.status = no_reply_designated
+    ensures: caller unblocked with {status: no_reply_designated, correlation_id}
+
+    @guidance
+        -- Any pass_complete reason (complete, cancelled, error) counts as
+        -- "turn ended". The caller NEVER receives a full-transcript
+        -- fallback — that would reintroduce the double token spend the
+        -- primitives exist to remove.
+}
+
+rule WaitTimeout {
+    when: call: Call.wait_timer_elapsed  -- timeout_ms after placement,
+                                         -- clamped min..max, default
+                                         -- default_wait_timeout_ms
+
+    requires: call.disposition = wait
+    requires: call.status = pending
+
+    ensures: call.status = timed_out
+    ensures: caller unblocked with {status: timed_out, correlation_id}
+
+    @guidance
+        -- The call degrades to notify semantics: the eventual respond,
+        -- if any, arrives as a PendingInjection on the caller's next
+        -- turn (RespondQueuesInjection).
+}
+
+rule DeliverInjectionsPreTurn {
+    when: AssembleTurn(header, input)
+        where PendingInjection with caller_room = header.conversation_id exists
+
+    requires: not header.ephemeral
+    requires: header.origin != "orientation"
+
+    ensures: all pending injections for the room are drained, in order,
+             and prepended to the turn as pre-turn context alongside
+             plugin injections
+
+    @guidance
+        -- Injection priority sits between landscape and saturation
+        -- warnings. Ephemeral turns skip the drain (nothing persists, the
+        -- injection would be consumed and lost); orientation passes are
+        -- private journaling and also skip. Delivery is passive — a
+        -- pending injection does not wake the caller room; it rides the
+        -- room's next available turn.
+}
+
+rule SweepExpiredRecords {
+    when: sweep timer elapses  -- hourly
+
+    requires: call.age > record_ttl_hours
+    requires: call has no blocked waiter
+
+    ensures: expired Call records removed
+}
+
+------------------------------------------------------------
+-- Tool surface
+------------------------------------------------------------
+
+surface CallTools {
+    facing agent: Agent
+
+    provides: CallTool(room, message, disposition, timeout_ms?)
+    provides: RespondTool(correlation_id, payload)
+
+    @guidance
+        -- Both tools are first-class builtins, routed ahead of external
+        -- kernel (muse) tools so nothing can shadow them, and advertised
+        -- to every room. respond errors cleanly on unknown/foreign
+        -- correlation ids rather than being conditionally advertised
+        -- (keeps tool definitions stable for prompt caching).
+        --
+        -- Both ride the standard execute route, so cranium_async_mode:
+        -- single_pass composes — a wait call can be backgrounded and its
+        -- result injected before the caller's pass completes.
+        --
+        -- Errors (unknown room, self-call, validation, unknown/foreign
+        -- correlation id) surface in-band as {"error": ...} tool results.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Saturation re-check at delivery" {
+    -- receiver_saturated reflects saturation at placement only. A call
+    -- queued behind a long turn can land on a room that saturated
+    -- mid-queue. Re-checking at dispatch would need TurnAssembler
+    -- cooperation; deferred until it bites.
+}
+
+open question "Room-event observability" {
+    -- call.placed / call.responded durable room events (the room-event
+    -- envelope already carries a correlation_id column) deliberately
+    -- deferred. The delivered pass already produces normal
+    -- message.created events with origin "call:<caller>".
+}
+
+open question "no_reply_designated outcome detail" {
+    -- The status does not distinguish the receiver's turn outcome
+    -- (completed vs errored vs cancelled). Could carry the pass_complete
+    -- reason if callers turn out to need it.
+}

@@ -18,6 +18,7 @@ Cranium.Transport.Manifest.start_link(name: Cranium.Transport.Manifest)
 Cranium.Media.TTS.Cache.start_link(name: Cranium.Media.TTS.Cache)
 Cranium.Transport.SegmentRegistry.start_link(name: Cranium.Transport.SegmentRegistry)
 Cranium.Media.OutputSegmenter.start_link([])
+Cranium.Calls.start_link([])
 
 ExUnit.start()
 
