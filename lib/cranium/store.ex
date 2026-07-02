@@ -178,6 +178,9 @@ defmodule Cranium.Store do
   last_landscape_at, interrupted_context. Also includes epoch_id, turn_count,
   and cc_session_id for TurnAssembler's broader context assembly needs.
 
+  Saturation is a 0..1 fraction — the canonical scale everywhere outside
+  TurnInjector, whose percent conversion happens at its call site.
+
   Returns :not_found if no active epoch exists.
   """
   @spec get_injection_context(String.t()) :: {:ok, map()} | :not_found
@@ -625,7 +628,7 @@ defmodule Cranium.Store do
            %{
              epoch_id: epoch.id,
              turn_count: epoch.turn_count || 0,
-             saturation: (epoch.saturation || 0.0) * 100,
+             saturation: epoch.saturation || 0.0,
              last_reminder_bucket: epoch.last_reminder_bucket || 0,
              last_landscape_at: epoch.last_landscape_at,
              interrupted_context: epoch.interrupted_context,
@@ -670,7 +673,7 @@ defmodule Cranium.Store do
        %{
          epoch_id: epoch.id,
          turn_count: epoch.turn_count || 0,
-         saturation: (epoch.saturation || 0.0) * 100,
+         saturation: epoch.saturation || 0.0,
          last_reminder_bucket: epoch.last_reminder_bucket || 0,
          last_landscape_at: epoch.last_landscape_at,
          interrupted_context: epoch.interrupted_context,

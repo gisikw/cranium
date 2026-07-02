@@ -34,6 +34,16 @@ defmodule Cranium.RoomSync.SnapshotTest do
       assert is_integer(snapshot.cursor.seq)
     end
 
+    test "serves saturation as a 0..1 fraction matching turn.completed scale", %{
+      room_id: room_id
+    } do
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(room_id)
+      :ok = Cranium.Store.update_epoch(ctx.epoch_id, %{saturation: 0.42})
+
+      assert {:ok, snapshot} = Snapshot.build(room_id)
+      assert snapshot.state.saturation == 0.42
+    end
+
     test "returns snapshot with messages after submitting content", %{room_id: room_id} do
       # Create epoch and append a message
       {:ok, ctx} = Cranium.Store.get_or_create_epoch(room_id)

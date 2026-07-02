@@ -388,7 +388,9 @@ defmodule Cranium.Inference.TurnAssembler do
       now: DateTime.utc_now(),
       epoch: %{
         last_invoked_at: epoch_ctx.last_invoked_at,
-        saturation: epoch_ctx.saturation,
+        # Saturation is a 0..1 fraction everywhere else; TurnInjector
+        # thresholds and reminder buckets are percent-scale.
+        saturation: (epoch_ctx.saturation || 0.0) * 100,
         last_reminder_bucket: epoch_ctx.last_reminder_bucket,
         last_landscape_at: epoch_ctx.last_landscape_at,
         interrupted_context: epoch_ctx.interrupted_context
