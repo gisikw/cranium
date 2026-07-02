@@ -24,6 +24,7 @@
       "FORT_ORIGIN=dev-sandbox"
       "MACROS_PATH=/home/dev/Projects/hoard/macros"
       "MACROS_STATE_PATH=/home/dev/.local/state/cranium/macros_state.json"
+    ] ++ (if config ? grottoUrl then [ "GROTTO_URL=${config.grottoUrl}" ] else [ ]) ++ [
       "PATH=/run/current-system/sw/bin:/run/overlays/bin:/run/managed-bin:/home/dev/.local/bin"
     ];
   };
