@@ -3,7 +3,10 @@ defmodule Cranium.Macro.StateTest do
 
   alias Cranium.Macro.State
 
-  @test_state_path Path.join(System.tmp_dir!(), "cranium_macro_state_test_#{System.unique_integer([:positive])}")
+  @test_state_path Path.join(
+                     System.tmp_dir!(),
+                     "cranium_macro_state_test_#{System.unique_integer([:positive])}"
+                   )
 
   setup do
     # Clean up any prior test state

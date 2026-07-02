@@ -205,7 +205,10 @@ defmodule Cranium.Plugins.EnsembleTest do
     test "low temperature sharpens distribution" do
       # With T=0.1, the higher-scoring candidate dominates even more
       metadata = put_in(@metadata.plugin_config["temperature"], 0.1)
-      metadata = Map.delete(metadata.plugin_config, "seed") |> then(&%{metadata | plugin_config: &1})
+
+      metadata =
+        Map.delete(metadata.plugin_config, "seed") |> then(&%{metadata | plugin_config: &1})
+
       {:ok, _, state} = Ensemble.init(metadata)
 
       results =
@@ -223,7 +226,10 @@ defmodule Cranium.Plugins.EnsembleTest do
 
     test "high temperature flattens distribution" do
       metadata = put_in(@metadata.plugin_config["temperature"], 10.0)
-      metadata = Map.delete(metadata.plugin_config, "seed") |> then(&%{metadata | plugin_config: &1})
+
+      metadata =
+        Map.delete(metadata.plugin_config, "seed") |> then(&%{metadata | plugin_config: &1})
+
       {:ok, _, state} = Ensemble.init(metadata)
 
       results =

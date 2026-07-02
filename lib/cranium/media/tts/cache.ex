@@ -167,7 +167,8 @@ defmodule Cranium.Media.TTS.Cache do
       )
     end
 
-    {:noreply, %{state | entries: Map.new(remaining), text_cache: text_remaining, cleanup_timers: timers}}
+    {:noreply,
+     %{state | entries: Map.new(remaining), text_cache: text_remaining, cleanup_timers: timers}}
   end
 
   @impl true

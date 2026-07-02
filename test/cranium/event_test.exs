@@ -27,7 +27,9 @@ defmodule Cranium.EventsTest do
       Cranium.Events.subscribe({:stream_raw, "s-3"})
       Cranium.Events.subscribe({:conversation, "conv-3"})
       Cranium.Events.subscribe()
-      event = {:pass_complete, "conv-3", "s-3", %{saturation: 0.5, turn_count: 1, reason: :complete}}
+
+      event =
+        {:pass_complete, "conv-3", "s-3", %{saturation: 0.5, turn_count: 1, reason: :complete}}
 
       Cranium.Events.broadcast("s-3", "conv-3", event)
 

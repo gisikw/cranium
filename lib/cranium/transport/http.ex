@@ -592,6 +592,7 @@ defmodule Cranium.Transport.HTTP do
         |> send_resp(500, Jason.encode!(%{"error" => "transcript query failed"}))
     end
   end
+
   get "/v1/rooms/:room_id/snapshot" do
     case Cranium.RoomSync.Snapshot.build(room_id) do
       {:ok, snapshot} ->
@@ -607,6 +608,7 @@ defmodule Cranium.Transport.HTTP do
         |> send_resp(500, Jason.encode!(%{"error" => "snapshot build failed"}))
     end
   end
+
   get "/v1/rooms/:room_id/events" do
     since_seq =
       case conn.query_params["since"] do
@@ -616,6 +618,7 @@ defmodule Cranium.Transport.HTTP do
 
     Cranium.RoomSync.EventStream.serve(conn, room_id, since_seq)
   end
+
   get "/v1/conversations/:id" do
     conversation_id = id
 

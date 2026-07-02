@@ -20,50 +20,71 @@ defmodule Cranium.Plugin.ServerTest do
 
   describe "start_link/1" do
     test "starts a plugin server" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
       assert Process.alive?(pid)
     end
 
     test "returns :ignore for plugins that decline" do
-      assert :ignore = Server.start_link(module: Cranium.TestPlugins.Ignorer, session_metadata: @metadata)
+      assert :ignore =
+               Server.start_link(module: Cranium.TestPlugins.Ignorer, session_metadata: @metadata)
     end
   end
 
   describe "call_hook/3" do
     test "returns injections from plugin" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
-      assert {:ok, [%{priority: 25, content: "<echo>echo-1</echo>"}]} = Server.call_hook(pid, :before_context_build, @turn_context)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
+      assert {:ok, [%{priority: 25, content: "<echo>echo-1</echo>"}]} =
+               Server.call_hook(pid, :before_context_build, @turn_context)
     end
 
     test "returns :skip from skipper plugin" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Skipper, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Skipper, session_metadata: @metadata)
+
       assert {:ok, :skip} = Server.call_hook(pid, :before_context_build, @turn_context)
     end
 
     test "returns :skip for unsubscribed hooks" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
       # Echo only subscribes to :before_context_build, not :after_pass_complete
       assert {:ok, :skip} = Server.call_hook(pid, :after_pass_complete, @turn_context)
     end
 
     test "handles crash in callback gracefully" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Crasher, session_metadata: @metadata)
-      assert {:error, {:raised, %RuntimeError{}}} = Server.call_hook(pid, :before_context_build, @turn_context)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Crasher, session_metadata: @metadata)
+
+      assert {:error, {:raised, %RuntimeError{}}} =
+               Server.call_hook(pid, :before_context_build, @turn_context)
+
       # Server should still be alive
       assert Process.alive?(pid)
     end
 
     test "maintains state across calls" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
-      assert {:ok, [%{content: "<echo>echo-1</echo>"}]} = Server.call_hook(pid, :before_context_build, @turn_context)
-      assert {:ok, [%{content: "<echo>echo-2</echo>"}]} = Server.call_hook(pid, :before_context_build, @turn_context)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
+      assert {:ok, [%{content: "<echo>echo-1</echo>"}]} =
+               Server.call_hook(pid, :before_context_build, @turn_context)
+
+      assert {:ok, [%{content: "<echo>echo-2</echo>"}]} =
+               Server.call_hook(pid, :before_context_build, @turn_context)
     end
   end
 
   describe "on_epoch_end hook" do
     test "dispatches epoch_end to subscribed plugin" do
       metadata = %{@metadata | plugin_config: %{"test_pid" => self()}}
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochEndTracker, session_metadata: metadata)
+
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.EpochEndTracker, session_metadata: metadata)
 
       epoch_end_context = %{
         conversation_id: "test-conv",
@@ -76,7 +97,11 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "handles crash in on_epoch_end gracefully" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochEndCrasher, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(
+          module: Cranium.TestPlugins.EpochEndCrasher,
+          session_metadata: @metadata
+        )
 
       epoch_end_context = %{
         conversation_id: "test-conv",
@@ -84,12 +109,15 @@ defmodule Cranium.Plugin.ServerTest do
         messages: []
       }
 
-      assert {:error, {:raised, %RuntimeError{}}} = Server.call_hook(pid, :on_epoch_end, epoch_end_context)
+      assert {:error, {:raised, %RuntimeError{}}} =
+               Server.call_hook(pid, :on_epoch_end, epoch_end_context)
+
       assert Process.alive?(pid)
     end
 
     test "returns :skip for plugins not subscribed to on_epoch_end" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
 
       epoch_end_context = %{
         conversation_id: "test-conv",
@@ -118,8 +146,17 @@ defmodule Cranium.Plugin.ServerTest do
     }
 
     test "returns modified context from swapper plugin" do
-      metadata = %{@metadata | plugin_config: %{model: "gemma4-cranium", backend: :mock, backend_module: Cranium.Backend.LLM.Mock}}
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfileSwapper, session_metadata: metadata)
+      metadata = %{
+        @metadata
+        | plugin_config: %{
+            model: "gemma4-cranium",
+            backend: :mock,
+            backend_module: Cranium.Backend.LLM.Mock
+          }
+      }
+
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ProfileSwapper, session_metadata: metadata)
 
       assert {:ok, result} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
       assert result.model == "gemma4-cranium"
@@ -131,36 +168,52 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "returns context unchanged from passthrough plugin" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfilePassthrough, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(
+          module: Cranium.TestPlugins.ProfilePassthrough,
+          session_metadata: @metadata
+        )
 
       assert {:ok, result} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
       assert result == @profile_context
     end
 
     test "handles crash gracefully" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ProfileCrasher, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ProfileCrasher, session_metadata: @metadata)
 
-      assert {:error, {:raised, %RuntimeError{}}} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
+      assert {:error, {:raised, %RuntimeError{}}} =
+               Server.call_hook(pid, :after_resolve_profile, @profile_context)
+
       assert Process.alive?(pid)
     end
 
     test "returns :skip for plugins not subscribed to after_resolve_profile" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
       assert {:ok, :skip} = Server.call_hook(pid, :after_resolve_profile, @profile_context)
     end
   end
 
   describe "info/1" do
     test "returns module, hooks, and empty tool_definitions" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
 
       assert {:ok,
-              %{module: Cranium.TestPlugins.Echo, hooks: [:before_context_build], tool_definitions: []}} =
+              %{
+                module: Cranium.TestPlugins.Echo,
+                hooks: [:before_context_build],
+                tool_definitions: []
+              }} =
                Server.info(pid)
     end
 
     test "returns tool_definitions when plugin declares tools" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
       assert {:ok, %{tool_definitions: tools}} = Server.info(pid)
       assert length(tools) == 2
       assert Enum.any?(tools, &(&1.name == "greet"))
@@ -170,7 +223,9 @@ defmodule Cranium.Plugin.ServerTest do
 
   describe "tool_definitions/1" do
     test "returns tool definitions from plugin" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
       defs = Server.tool_definitions(pid)
       assert length(defs) == 2
       names = Enum.map(defs, & &1.name)
@@ -179,14 +234,17 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "returns empty list for plugin without tools" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
       assert [] = Server.tool_definitions(pid)
     end
   end
 
   describe "call_tool/2" do
     test "dispatches tool call to plugin handle_tool_call" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
 
       tool_call_context = %{
         conversation_id: "test-conv",
@@ -202,7 +260,8 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "returns error from plugin" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
 
       tool_call_context = %{
         conversation_id: "test-conv",
@@ -217,7 +276,8 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "handles crash in handle_tool_call gracefully" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolCrasher, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolCrasher, session_metadata: @metadata)
 
       tool_call_context = %{
         conversation_id: "test-conv",
@@ -233,7 +293,8 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "maintains state across tool calls" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
 
       for name <- ["Alice", "Bob"] do
         ctx = %{
@@ -265,7 +326,12 @@ defmodule Cranium.Plugin.ServerTest do
   describe "on_epoch_start hook" do
     test "dispatches epoch_start to subscribed plugin" do
       metadata = %{@metadata | plugin_config: %{"test_pid" => self()}}
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.EpochStartTracker, session_metadata: metadata)
+
+      {:ok, pid} =
+        Server.start_link(
+          module: Cranium.TestPlugins.EpochStartTracker,
+          session_metadata: metadata
+        )
 
       epoch_start_context = %{
         conversation_id: "test-conv",
@@ -279,7 +345,8 @@ defmodule Cranium.Plugin.ServerTest do
     end
 
     test "returns :skip for plugins not subscribed to on_epoch_start" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
 
       assert {:ok, :skip} =
                Server.call_hook(pid, :on_epoch_start, %{
@@ -293,13 +360,17 @@ defmodule Cranium.Plugin.ServerTest do
 
   describe "init with tool definitions" do
     test "stores tool definitions from 4-tuple init return" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.ToolProvider, session_metadata: @metadata)
+
       assert {:ok, %{tool_definitions: tools}} = Server.info(pid)
       assert length(tools) == 2
     end
 
     test "stores empty tool definitions from 3-tuple init return" do
-      {:ok, pid} = Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+      {:ok, pid} =
+        Server.start_link(module: Cranium.TestPlugins.Echo, session_metadata: @metadata)
+
       assert {:ok, %{tool_definitions: []}} = Server.info(pid)
     end
   end

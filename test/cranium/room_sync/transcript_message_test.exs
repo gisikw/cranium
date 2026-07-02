@@ -23,7 +23,9 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
 
   describe "project/2" do
     test "projects a simple text message" do
-      msg = make_message(role: "assistant", content: [%{"type" => "text", "text" => "hello world"}])
+      msg =
+        make_message(role: "assistant", content: [%{"type" => "text", "text" => "hello world"}])
+
       result = TranscriptMessage.project(msg)
 
       assert result.id == msg.id
@@ -39,10 +41,13 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     end
 
     test "projects multiple text blocks" do
-      msg = make_message(content: [
-        %{"type" => "text", "text" => "first "},
-        %{"type" => "text", "text" => "second"}
-      ])
+      msg =
+        make_message(
+          content: [
+            %{"type" => "text", "text" => "first "},
+            %{"type" => "text", "text" => "second"}
+          ]
+        )
 
       result = TranscriptMessage.project(msg)
       assert result.text == "first second"
@@ -52,10 +57,18 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     test "projects tool_use blocks as tool_call parts" do
       tool_use_id = Ecto.UUID.generate()
 
-      msg = make_message(content: [
-        %{"type" => "text", "text" => "Let me check that."},
-        %{"type" => "tool_use", "id" => tool_use_id, "name" => "read", "input" => %{"path" => "foo.txt"}}
-      ])
+      msg =
+        make_message(
+          content: [
+            %{"type" => "text", "text" => "Let me check that."},
+            %{
+              "type" => "tool_use",
+              "id" => tool_use_id,
+              "name" => "read",
+              "input" => %{"path" => "foo.txt"}
+            }
+          ]
+        )
 
       result = TranscriptMessage.project(msg)
       assert length(result.parts) == 2
@@ -70,9 +83,12 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     test "tool_call status reflects error from tool_results" do
       tool_use_id = Ecto.UUID.generate()
 
-      msg = make_message(content: [
-        %{"type" => "tool_use", "id" => tool_use_id, "name" => "bash", "input" => %{}}
-      ])
+      msg =
+        make_message(
+          content: [
+            %{"type" => "tool_use", "id" => tool_use_id, "name" => "bash", "input" => %{}}
+          ]
+        )
 
       tool_results = %{
         tool_use_id => %{"is_error" => true, "content" => "command not found"}
@@ -87,9 +103,18 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     test "projects tool_result blocks" do
       tool_use_id = Ecto.UUID.generate()
 
-      msg = make_message(role: "user", content: [
-        %{"type" => "tool_result", "tool_use_id" => tool_use_id, "content" => "file contents here", "is_error" => false}
-      ])
+      msg =
+        make_message(
+          role: "user",
+          content: [
+            %{
+              "type" => "tool_result",
+              "tool_use_id" => tool_use_id,
+              "content" => "file contents here",
+              "is_error" => false
+            }
+          ]
+        )
 
       result = TranscriptMessage.project(msg)
       [part] = result.parts
@@ -100,9 +125,15 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     end
 
     test "projects image blocks" do
-      msg = make_message(content: [
-        %{"type" => "image", "source" => %{"type" => "base64", "media_type" => "image/png", "data" => "abc123"}}
-      ])
+      msg =
+        make_message(
+          content: [
+            %{
+              "type" => "image",
+              "source" => %{"type" => "base64", "media_type" => "image/png", "data" => "abc123"}
+            }
+          ]
+        )
 
       result = TranscriptMessage.project(msg)
       [part] = result.parts
@@ -112,28 +143,33 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
     end
 
     test "part IDs are deterministic" do
-      msg = make_message(content: [
-        %{"type" => "text", "text" => "a"},
-        %{"type" => "text", "text" => "b"},
-        %{"type" => "text", "text" => "c"}
-      ])
+      msg =
+        make_message(
+          content: [
+            %{"type" => "text", "text" => "a"},
+            %{"type" => "text", "text" => "b"},
+            %{"type" => "text", "text" => "c"}
+          ]
+        )
 
       result1 = TranscriptMessage.project(msg)
       result2 = TranscriptMessage.project(msg)
 
       assert Enum.map(result1.parts, & &1.id) == Enum.map(result2.parts, & &1.id)
+
       assert Enum.map(result1.parts, & &1.id) == [
-        "#{msg.id}:0",
-        "#{msg.id}:1",
-        "#{msg.id}:2"
-      ]
+               "#{msg.id}:0",
+               "#{msg.id}:1",
+               "#{msg.id}:2"
+             ]
     end
 
     test "includes provenance and usage when present" do
-      msg = make_message(
-        provenance: %{"model" => "claude-sonnet"},
-        usage: %{"input_tokens" => 100, "output_tokens" => 50}
-      )
+      msg =
+        make_message(
+          provenance: %{"model" => "claude-sonnet"},
+          usage: %{"input_tokens" => 100, "output_tokens" => 50}
+        )
 
       result = TranscriptMessage.project(msg)
       assert result.provenance == %{"model" => "claude-sonnet"}
@@ -179,15 +215,29 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
       tool_use_id = Ecto.UUID.generate()
 
       messages = [
-        make_message(role: "assistant", content: [
-          %{"type" => "tool_use", "id" => tool_use_id, "name" => "read", "input" => %{}}
-        ]),
-        make_message(role: "user", content: [
-          %{"type" => "tool_result", "tool_use_id" => tool_use_id, "content" => "result", "is_error" => false}
-        ]),
-        make_message(role: "assistant", content: [
-          %{"type" => "text", "text" => "Got it."}
-        ])
+        make_message(
+          role: "assistant",
+          content: [
+            %{"type" => "tool_use", "id" => tool_use_id, "name" => "read", "input" => %{}}
+          ]
+        ),
+        make_message(
+          role: "user",
+          content: [
+            %{
+              "type" => "tool_result",
+              "tool_use_id" => tool_use_id,
+              "content" => "result",
+              "is_error" => false
+            }
+          ]
+        ),
+        make_message(
+          role: "assistant",
+          content: [
+            %{"type" => "text", "text" => "Got it."}
+          ]
+        )
       ]
 
       results = TranscriptMessage.project_many(messages)
@@ -201,12 +251,28 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
       tool_use_id = Ecto.UUID.generate()
 
       messages = [
-        make_message(role: "assistant", content: [
-          %{"type" => "tool_use", "id" => tool_use_id, "name" => "bash", "input" => %{"command" => "ls"}}
-        ]),
-        make_message(role: "user", content: [
-          %{"type" => "tool_result", "tool_use_id" => tool_use_id, "content" => "file1\nfile2", "is_error" => false}
-        ])
+        make_message(
+          role: "assistant",
+          content: [
+            %{
+              "type" => "tool_use",
+              "id" => tool_use_id,
+              "name" => "bash",
+              "input" => %{"command" => "ls"}
+            }
+          ]
+        ),
+        make_message(
+          role: "user",
+          content: [
+            %{
+              "type" => "tool_result",
+              "tool_use_id" => tool_use_id,
+              "content" => "file1\nfile2",
+              "is_error" => false
+            }
+          ]
+        )
       ]
 
       results = TranscriptMessage.project_many(messages)
@@ -219,10 +285,18 @@ defmodule Cranium.RoomSync.TranscriptMessageTest do
 
     test "keeps user messages that mix text and tool_results" do
       messages = [
-        make_message(role: "user", content: [
-          %{"type" => "text", "text" => "Here's context"},
-          %{"type" => "tool_result", "tool_use_id" => Ecto.UUID.generate(), "content" => "data", "is_error" => false}
-        ])
+        make_message(
+          role: "user",
+          content: [
+            %{"type" => "text", "text" => "Here's context"},
+            %{
+              "type" => "tool_result",
+              "tool_use_id" => Ecto.UUID.generate(),
+              "content" => "data",
+              "is_error" => false
+            }
+          ]
+        )
       ]
 
       results = TranscriptMessage.project_many(messages)

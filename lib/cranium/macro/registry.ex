@@ -174,7 +174,9 @@ defmodule Cranium.Macro.Registry do
       unique_count = :ets.match(@table, {{:macro, :_}, :_}) |> length()
       :ets.insert(@table, {:count, unique_count})
 
-      Logger.info("Macro.Registry: loaded #{unique_count} macros from #{loaded} files (#{errors} errors) in #{path}")
+      Logger.info(
+        "Macro.Registry: loaded #{unique_count} macros from #{loaded} files (#{errors} errors) in #{path}"
+      )
     else
       Logger.warning("Macro.Registry: macros_path does not exist: #{path}")
       :ets.insert(@table, {:count, 0})
@@ -272,5 +274,4 @@ defmodule Cranium.Macro.Registry do
       _ -> nil
     end
   end
-
 end

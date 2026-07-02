@@ -45,8 +45,11 @@ defmodule Cranium.Media.OutputSegmenterTest do
     :ok = GenServer.call(segmenter, {:drain_stream, stream_id})
 
     # Simulate pass_complete (normally from Harness) — drives manifest status
-    Cranium.Events.broadcast(stream_id, "conv1",
-      {:pass_complete, "conv1", stream_id, %{reason: :complete, output: "", ephemeral: true}})
+    Cranium.Events.broadcast(
+      stream_id,
+      "conv1",
+      {:pass_complete, "conv1", stream_id, %{reason: :complete, output: "", ephemeral: true}}
+    )
 
     Process.sleep(50)
   end
@@ -130,8 +133,11 @@ defmodule Cranium.Media.OutputSegmenterTest do
       send(segmenter, {:stream_end, sid})
 
       # Simulate pass_complete (normally from Harness)
-      Cranium.Events.broadcast(sid, "conv1",
-        {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}})
+      Cranium.Events.broadcast(
+        sid,
+        "conv1",
+        {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}}
+      )
 
       Process.sleep(20)
 
@@ -352,8 +358,11 @@ defmodule Cranium.Media.OutputSegmenterTest do
       assert length(manifest["segments"]) == 1, "segment should exist before pass_complete"
 
       # Now complete — manifest transitions with all segments already present
-      Cranium.Events.broadcast(sid, "conv1",
-        {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}})
+      Cranium.Events.broadcast(
+        sid,
+        "conv1",
+        {:pass_complete, "conv1", sid, %{reason: :complete, output: "", ephemeral: true}}
+      )
 
       Process.sleep(20)
 
@@ -412,8 +421,8 @@ defmodule Cranium.Media.OutputSegmenterTest do
       # With sentence splitting, we expect 3+ segments from the paragraph
       # plus the "Final." segment.
       assert length(utterances) >= 3,
-        "Expected aggressive mode to sentence-split the paragraph into multiple segments, " <>
-          "got #{length(utterances)} segments"
+             "Expected aggressive mode to sentence-split the paragraph into multiple segments, " <>
+               "got #{length(utterances)} segments"
 
       # First segment should be shorter than the full paragraph
       {:ok, first_text} = Manifest.get_segment_text(sid, 0)
@@ -421,7 +430,7 @@ defmodule Cranium.Media.OutputSegmenterTest do
       paragraph_words = length(String.split(paragraph, ~r/\s+/, trim: true))
 
       assert first_words < paragraph_words,
-        "First segment (#{first_words} words) should be smaller than full paragraph (#{paragraph_words} words)"
+             "First segment (#{first_words} words) should be smaller than full paragraph (#{paragraph_words} words)"
     end
   end
 end

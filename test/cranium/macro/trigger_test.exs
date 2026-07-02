@@ -66,11 +66,12 @@ defmodule Cranium.Macro.TriggerTest do
 
   describe "evaluate/3 once flag" do
     test "once=true fires on first match" do
-      macro = make_macro(%{
-        name: "k8s-glossary",
-        match_config: %{patterns: ["kubernetes"], once: true},
-        version: 1
-      })
+      macro =
+        make_macro(%{
+          name: "k8s-glossary",
+          match_config: %{patterns: ["kubernetes"], once: true},
+          version: 1
+        })
 
       result = Trigger.evaluate([macro], "tell me about kubernetes")
       assert [%{name: "k8s-glossary"}] = result.firing
@@ -78,36 +79,49 @@ defmodule Cranium.Macro.TriggerTest do
     end
 
     test "once=true does not fire again after seen" do
-      macro = make_macro(%{
-        name: "k8s-glossary",
-        match_config: %{patterns: ["kubernetes"], once: true},
-        version: 1
-      })
+      macro =
+        make_macro(%{
+          name: "k8s-glossary",
+          match_config: %{patterns: ["kubernetes"], once: true},
+          version: 1
+        })
 
       seen = MapSet.new(["k8s-glossary"])
-      result = Trigger.evaluate([macro], "more about kubernetes", %{seen: seen, versions: %{"k8s-glossary" => 1}})
+
+      result =
+        Trigger.evaluate([macro], "more about kubernetes", %{
+          seen: seen,
+          versions: %{"k8s-glossary" => 1}
+        })
 
       assert result.firing == []
     end
 
     test "once=true resets on version change" do
-      macro = make_macro(%{
-        name: "k8s-glossary",
-        match_config: %{patterns: ["kubernetes"], once: true},
-        version: 2
-      })
+      macro =
+        make_macro(%{
+          name: "k8s-glossary",
+          match_config: %{patterns: ["kubernetes"], once: true},
+          version: 2
+        })
 
       seen = MapSet.new(["k8s-glossary"])
-      result = Trigger.evaluate([macro], "kubernetes again", %{seen: seen, versions: %{"k8s-glossary" => 1}})
+
+      result =
+        Trigger.evaluate([macro], "kubernetes again", %{
+          seen: seen,
+          versions: %{"k8s-glossary" => 1}
+        })
 
       assert [%{name: "k8s-glossary"}] = result.firing
     end
 
     test "once=false fires every time" do
-      macro = make_macro(%{
-        name: "counter",
-        match_config: %{patterns: ["count"], once: false}
-      })
+      macro =
+        make_macro(%{
+          name: "counter",
+          match_config: %{patterns: ["count"], once: false}
+        })
 
       r1 = Trigger.evaluate([macro], "count this")
       assert [%{name: "counter"}] = r1.firing
@@ -145,10 +159,11 @@ defmodule Cranium.Macro.TriggerTest do
 
   describe "evaluate/3 regex patterns" do
     test "regex pattern in match_config works" do
-      macro = make_macro(%{
-        name: "kube-cluster",
-        match_config: %{patterns: ["/kube[-\\s]?cluster/"], once: false}
-      })
+      macro =
+        make_macro(%{
+          name: "kube-cluster",
+          match_config: %{patterns: ["/kube[-\\s]?cluster/"], once: false}
+        })
 
       assert [_] = Trigger.evaluate([macro], "the kube-cluster is up").firing
       assert [_] = Trigger.evaluate([macro], "the kube cluster works").firing
@@ -157,10 +172,11 @@ defmodule Cranium.Macro.TriggerTest do
     end
 
     test "mixed literal and regex patterns" do
-      macro = make_macro(%{
-        name: "k8s-glossary",
-        match_config: %{patterns: ["kubernetes", "k8s", "/kube[-\\s]?cluster/"], once: false}
-      })
+      macro =
+        make_macro(%{
+          name: "k8s-glossary",
+          match_config: %{patterns: ["kubernetes", "k8s", "/kube[-\\s]?cluster/"], once: false}
+        })
 
       assert [_] = Trigger.evaluate([macro], "kubernetes is cool").firing
       assert [_] = Trigger.evaluate([macro], "k8s rocks").firing
@@ -173,13 +189,14 @@ defmodule Cranium.Macro.TriggerTest do
 
   describe "evaluate/3 discoverable keywords" do
     test "discoverable macro advertised on keyword match" do
-      macro = make_macro(%{
-        name: "deploy",
-        trigger: :explicit,
-        match_config: nil,
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["deploy", "deployment"]}
-      })
+      macro =
+        make_macro(%{
+          name: "deploy",
+          trigger: :explicit,
+          match_config: nil,
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["deploy", "deployment"]}
+        })
 
       result = Trigger.evaluate([macro], "how do I deploy?")
 
@@ -191,13 +208,14 @@ defmodule Cranium.Macro.TriggerTest do
     end
 
     test "already-discovered macro not re-announced" do
-      macro = make_macro(%{
-        name: "deploy",
-        trigger: :explicit,
-        match_config: nil,
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["deploy"]}
-      })
+      macro =
+        make_macro(%{
+          name: "deploy",
+          trigger: :explicit,
+          match_config: nil,
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["deploy"]}
+        })
 
       discovered = MapSet.new(["deploy"])
       result = Trigger.evaluate([macro], "deploy again", %{discovered: discovered})

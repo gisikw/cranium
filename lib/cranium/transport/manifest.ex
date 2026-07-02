@@ -221,26 +221,31 @@ defmodule Cranium.Transport.Manifest do
 
   @impl true
   def handle_info({:segment_ready, stream_id, index, %{type: :utterance, text: text}}, state) do
-    state = append_segment(state, stream_id, %{
-      index: index,
-      type: :utterance,
-      renditions: %{
-        text: %{mime: "text/plain", content: text},
-        audio: %{mime: "audio/mp3"}
-      }
-    })
+    state =
+      append_segment(state, stream_id, %{
+        index: index,
+        type: :utterance,
+        renditions: %{
+          text: %{mime: "text/plain", content: text},
+          audio: %{mime: "audio/mp3"}
+        }
+      })
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:segment_ready, stream_id, index, %{type: :cue, cue_type: cue_type, data: data}}, state) do
-    state = append_segment(state, stream_id, %{
-      index: index,
-      type: :cue,
-      cue_type: cue_type,
-      data: data
-    })
+  def handle_info(
+        {:segment_ready, stream_id, index, %{type: :cue, cue_type: cue_type, data: data}},
+        state
+      ) do
+    state =
+      append_segment(state, stream_id, %{
+        index: index,
+        type: :cue,
+        cue_type: cue_type,
+        data: data
+      })
 
     {:noreply, state}
   end

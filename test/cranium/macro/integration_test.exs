@@ -104,17 +104,21 @@ defmodule Cranium.Macro.IntegrationTest do
 
     test "macro injection respects priority ordering" do
       # Low priority macro
-      insert_macro(make_macro(%{
-        name: "low-priority",
-        prompt_body: %{text: "LOW", tag: nil, priority: 5}
-      }))
+      insert_macro(
+        make_macro(%{
+          name: "low-priority",
+          prompt_body: %{text: "LOW", tag: nil, priority: 5}
+        })
+      )
 
       # High priority macro
-      insert_macro(make_macro(%{
-        name: "high-priority",
-        match_config: %{patterns: ["kubernetes"], once: false},
-        prompt_body: %{text: "HIGH", tag: nil, priority: 60}
-      }))
+      insert_macro(
+        make_macro(%{
+          name: "high-priority",
+          match_config: %{patterns: ["kubernetes"], once: false},
+          prompt_body: %{text: "HIGH", tag: nil, priority: 60}
+        })
+      )
 
       turn_context = %{
         conversation_id: "test-room",
@@ -153,13 +157,15 @@ defmodule Cranium.Macro.IntegrationTest do
 
   describe "ToolRouter with macro tools" do
     test "explicit listed macro appears in tool definitions" do
-      insert_macro(make_macro(%{
-        name: "deploy",
-        trigger: :explicit,
-        match_config: nil,
-        advertising: :listed,
-        description: "Deploy to production"
-      }))
+      insert_macro(
+        make_macro(%{
+          name: "deploy",
+          trigger: :explicit,
+          match_config: nil,
+          advertising: :listed,
+          description: "Deploy to production"
+        })
+      )
 
       defs = ToolRouter.tool_definitions("test-room")
       names = Enum.map(defs, & &1.name)
@@ -167,12 +173,14 @@ defmodule Cranium.Macro.IntegrationTest do
     end
 
     test "macro tool call routes to :macro" do
-      insert_macro(make_macro(%{
-        name: "deploy",
-        trigger: :explicit,
-        match_config: nil,
-        advertising: :listed
-      }))
+      insert_macro(
+        make_macro(%{
+          name: "deploy",
+          trigger: :explicit,
+          match_config: nil,
+          advertising: :listed
+        })
+      )
 
       tool_call = %{name: "macro_deploy", input: %{"target" => "staging"}}
       result = ToolRouter.route(tool_call, "test-room")
@@ -181,10 +189,12 @@ defmodule Cranium.Macro.IntegrationTest do
     end
 
     test "search_macros tool appears when searchable macros exist" do
-      insert_macro(make_macro(%{
-        name: "searchable-macro",
-        advertising: :searchable
-      }))
+      insert_macro(
+        make_macro(%{
+          name: "searchable-macro",
+          advertising: :searchable
+        })
+      )
 
       defs = ToolRouter.tool_definitions("test-room")
       names = Enum.map(defs, & &1.name)

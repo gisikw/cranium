@@ -41,11 +41,12 @@ defmodule Cranium.RoomSync.EventStreamTest do
 
   describe "ephemeral event formatting" do
     test "text delta chunks are forwarded as turn.delta events", %{room_id: room_id, port: port} do
-      events = with_sse_client(port, fn ->
-        Cranium.Events.broadcast(room_id, {:chunk, "stream-1", "Hello "})
-        Cranium.Events.broadcast(room_id, {:chunk, "stream-1", "world!"})
-        Process.sleep(100)
-      end)
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(room_id, {:chunk, "stream-1", "Hello "})
+          Cranium.Events.broadcast(room_id, {:chunk, "stream-1", "world!"})
+          Process.sleep(100)
+        end)
 
       deltas = filter_events(events, "turn.delta")
       assert length(deltas) >= 2
@@ -66,10 +67,11 @@ defmodule Cranium.RoomSync.EventStreamTest do
         input: %{"command" => "echo hi"}
       }
 
-      events = with_sse_client(port, fn ->
-        Cranium.Events.broadcast(room_id, {:chunk, "stream-1", {:tool_use, tool_data}})
-        Process.sleep(100)
-      end)
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(room_id, {:chunk, "stream-1", {:tool_use, tool_data}})
+          Process.sleep(100)
+        end)
 
       tool_events = filter_events(events, "turn.tool_use")
       assert length(tool_events) >= 1
@@ -89,10 +91,11 @@ defmodule Cranium.RoomSync.EventStreamTest do
         is_error: false
       }
 
-      events = with_sse_client(port, fn ->
-        Cranium.Events.broadcast(room_id, {:chunk, "stream-1", {:tool_result, result_data}})
-        Process.sleep(100)
-      end)
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(room_id, {:chunk, "stream-1", {:tool_result, result_data}})
+          Process.sleep(100)
+        end)
 
       result_events = filter_events(events, "turn.tool_result")
       assert length(result_events) >= 1
@@ -157,16 +160,17 @@ defmodule Cranium.RoomSync.EventStreamTest do
     end
 
     test "durable room events are forwarded with seq", %{room_id: room_id, port: port} do
-      events = with_sse_client(port, fn ->
-        Cranium.RoomEvents.message_created(room_id, %{
-          role: "user",
-          text: "test message",
-          origin: "test",
-          epoch_id: "epoch-1"
-        })
+      events =
+        with_sse_client(port, fn ->
+          Cranium.RoomEvents.message_created(room_id, %{
+            role: "user",
+            text: "test message",
+            origin: "test",
+            epoch_id: "epoch-1"
+          })
 
-        Process.sleep(100)
-      end)
+          Process.sleep(100)
+        end)
 
       durable = filter_events(events, "message.created")
       assert length(durable) >= 1
@@ -180,22 +184,23 @@ defmodule Cranium.RoomSync.EventStreamTest do
       room_id: room_id,
       port: port
     } do
-      events = with_sse_client(port, fn ->
-        Cranium.Events.broadcast(room_id, {:chunk, "s1", "text before"})
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(room_id, {:chunk, "s1", "text before"})
 
-        Cranium.RoomEvents.turn_started(room_id, %{stream_id: "s1", epoch_id: "e1"})
+          Cranium.RoomEvents.turn_started(room_id, %{stream_id: "s1", epoch_id: "e1"})
 
-        Cranium.Events.broadcast(room_id, {:chunk, "s1", "text after"})
+          Cranium.Events.broadcast(room_id, {:chunk, "s1", "text after"})
 
-        Cranium.RoomEvents.turn_completed(room_id, %{
-          stream_id: "s1",
-          epoch_id: "e1",
-          turn_count: 1,
-          saturation: 0.1
-        })
+          Cranium.RoomEvents.turn_completed(room_id, %{
+            stream_id: "s1",
+            epoch_id: "e1",
+            turn_count: 1,
+            saturation: 0.1
+          })
 
-        Process.sleep(100)
-      end)
+          Process.sleep(100)
+        end)
 
       deltas = filter_events(events, "turn.delta")
       durables = Enum.filter(events, &(&1["type"] in ["turn.started", "turn.completed"]))
@@ -225,6 +230,7 @@ defmodule Cranium.RoomSync.EventStreamTest do
 
       # Simulate age-out purge: delete events with seq <= 3 directly
       import Ecto.Query
+
       Cranium.Store.Repo.delete_all(
         from(e in Cranium.Store.RoomEvent,
           where: e.room_id == ^room_id and e.seq <= 3
@@ -253,10 +259,13 @@ defmodule Cranium.RoomSync.EventStreamTest do
       # Emit an event and use since=0 (fresh client)
       Cranium.Store.emit_room_event(room_id, "test.event", %{i: 1})
 
-      events = with_sse_client(port, fn ->
-        Cranium.Store.emit_room_event(room_id, "test.event", %{i: 2})
-        Process.sleep(100)
-      end, since: 0)
+      events =
+        with_sse_client(
+          port,
+          fn ->
+            Cranium.Store.emit_room_event(room_id, "test.event", %{i: 2})
+            Process.sleep(100)
+          end, since: 0)
 
       expired = filter_events(events, "cursor_expired")
       assert expired == []

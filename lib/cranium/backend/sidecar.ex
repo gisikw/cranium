@@ -81,9 +81,14 @@ defmodule Cranium.Backend.Sidecar do
         {:error, reason}
 
       # Ignore other messages from the backend
-      {:llm_tool_use, _} -> collect_response(pid, ref, acc, timeout)
-      {:llm_usage, _} -> collect_response(pid, ref, acc, timeout)
-      {:llm_assistant_content, _} -> collect_response(pid, ref, acc, timeout)
+      {:llm_tool_use, _} ->
+        collect_response(pid, ref, acc, timeout)
+
+      {:llm_usage, _} ->
+        collect_response(pid, ref, acc, timeout)
+
+      {:llm_assistant_content, _} ->
+        collect_response(pid, ref, acc, timeout)
 
       {:DOWN, ^ref, :process, ^pid, :normal} ->
         {:ok, acc |> Enum.reverse() |> Enum.join()}

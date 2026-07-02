@@ -169,8 +169,7 @@ defmodule Cranium.Plugins.TiamatRouter do
           profile: decision.profile,
           model: decision.model,
           backend: decision.backend,
-          scores:
-            encode_decision(decision)
+          scores: encode_decision(decision)
         })
 
         {:ok, %{state | last_decision: nil}}

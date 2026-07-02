@@ -132,7 +132,13 @@ defmodule Cranium.Backend.OAuth.Codex do
     if state.device_poll_timer, do: Process.cancel_timer(state.device_poll_timer)
 
     case request_device_code() do
-      {:ok, %{device_code: device_code, user_code: user_code, verification_uri: uri, interval: interval}} ->
+      {:ok,
+       %{
+         device_code: device_code,
+         user_code: user_code,
+         verification_uri: uri,
+         interval: interval
+       }} ->
         timer = Process.send_after(self(), :device_poll, interval * 1000)
 
         state = %{
@@ -264,7 +270,9 @@ defmodule Cranium.Backend.OAuth.Codex do
      %{
        device_code: dc,
        user_code: uc,
-       verification_uri: body["verification_uri"] || body["verification_url"] || "https://chatgpt.com/codex/device",
+       verification_uri:
+         body["verification_uri"] || body["verification_url"] ||
+           "https://chatgpt.com/codex/device",
        interval: body["interval"] || 5
      }}
   end

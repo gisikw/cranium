@@ -13,7 +13,6 @@ defmodule Cranium.ConfigTest do
       assert resolved.identity == nil
     end
 
-
     test "resolves tiamat router profile" do
       assert {:ok, resolved} = Config.resolve_profile("test-tiamat")
       assert resolved.backend == :tiamat
@@ -59,7 +58,6 @@ defmodule Cranium.ConfigTest do
       assert Config.default_profile_name() == "test"
     end
   end
-
 
   describe "list_profiles/0" do
     test "returns all profile names sorted" do

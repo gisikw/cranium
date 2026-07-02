@@ -27,46 +27,52 @@ defmodule Cranium.Plugins.AgendaTest do
     File.mkdir_p!(@agendas_path)
     File.mkdir_p!(@state_path)
 
-    File.write!(Path.join(@agendas_path, "weekly-sync.json"), Jason.encode!(%{
-      "name" => "weekly-sync",
-      "description" => "Weekly team sync agenda",
-      "body" => "Review action items from last week and plan for next week.",
-      "criteria" => [
-        %{
-          "topic" => "Action Items",
-          "prose" => "Review prior commitments from last sync.",
-          "conditions" => [
-            "User confirmed action items reviewed",
-            "Outstanding items triaged"
-          ]
-        },
-        %{
-          "topic" => "Sprint Planning",
-          "prose" => "Plan next sprint priorities.",
-          "conditions" => [
-            "Sprint goals agreed",
-            "Assignments confirmed"
-          ]
-        }
-      ]
-    }))
+    File.write!(
+      Path.join(@agendas_path, "weekly-sync.json"),
+      Jason.encode!(%{
+        "name" => "weekly-sync",
+        "description" => "Weekly team sync agenda",
+        "body" => "Review action items from last week and plan for next week.",
+        "criteria" => [
+          %{
+            "topic" => "Action Items",
+            "prose" => "Review prior commitments from last sync.",
+            "conditions" => [
+              "User confirmed action items reviewed",
+              "Outstanding items triaged"
+            ]
+          },
+          %{
+            "topic" => "Sprint Planning",
+            "prose" => "Plan next sprint priorities.",
+            "conditions" => [
+              "Sprint goals agreed",
+              "Assignments confirmed"
+            ]
+          }
+        ]
+      })
+    )
 
-    File.write!(Path.join(@agendas_path, "standup.json"), Jason.encode!(%{
-      "name" => "standup",
-      "description" => "Quick daily standup",
-      "body" => "What did you do yesterday? What are you doing today? Any blockers?",
-      "criteria" => [
-        %{
-          "topic" => "Status",
-          "prose" => "Quick status check.",
-          "conditions" => [
-            "Yesterday's work discussed",
-            "Today's plan shared",
-            "Blockers identified"
-          ]
-        }
-      ]
-    }))
+    File.write!(
+      Path.join(@agendas_path, "standup.json"),
+      Jason.encode!(%{
+        "name" => "standup",
+        "description" => "Quick daily standup",
+        "body" => "What did you do yesterday? What are you doing today? Any blockers?",
+        "criteria" => [
+          %{
+            "topic" => "Status",
+            "prose" => "Quick status check.",
+            "conditions" => [
+              "Yesterday's work discussed",
+              "Today's plan shared",
+              "Blockers identified"
+            ]
+          }
+        ]
+      })
+    )
 
     on_exit(fn ->
       File.rm_rf!(@agendas_path)
@@ -91,7 +97,14 @@ defmodule Cranium.Plugins.AgendaTest do
       assert :after_pass_complete in hooks
       assert :on_epoch_end in hooks
       assert length(tools) == 4
-      assert Enum.map(tools, & &1.name) == ["activate_agenda", "end_agenda", "agenda_status", "agenda_skip"]
+
+      assert Enum.map(tools, & &1.name) == [
+               "activate_agenda",
+               "end_agenda",
+               "agenda_status",
+               "agenda_skip"
+             ]
+
       assert length(state.definitions) == 2
       assert state.agenda == %{active: false}
     end
@@ -104,17 +117,29 @@ defmodule Cranium.Plugins.AgendaTest do
     end
 
     test "returns :ignore when agendas_path is nil" do
-      metadata = %{@metadata | plugin_config: %{"agendas_path" => nil, "state_path" => @state_path}}
+      metadata = %{
+        @metadata
+        | plugin_config: %{"agendas_path" => nil, "state_path" => @state_path}
+      }
+
       assert :ignore = Agenda.init(metadata)
     end
 
     test "returns :ignore when agendas_path does not exist" do
-      metadata = %{@metadata | plugin_config: %{"agendas_path" => "/nonexistent", "state_path" => @state_path}}
+      metadata = %{
+        @metadata
+        | plugin_config: %{"agendas_path" => "/nonexistent", "state_path" => @state_path}
+      }
+
       assert :ignore = Agenda.init(metadata)
     end
 
     test "returns :ignore when state_path is nil" do
-      metadata = %{@metadata | plugin_config: %{"agendas_path" => @agendas_path, "state_path" => nil}}
+      metadata = %{
+        @metadata
+        | plugin_config: %{"agendas_path" => @agendas_path, "state_path" => nil}
+      }
+
       assert :ignore = Agenda.init(metadata)
     end
 
@@ -122,7 +147,11 @@ defmodule Cranium.Plugins.AgendaTest do
       empty = Path.join(System.tmp_dir!(), "empty_agendas_#{System.unique_integer([:positive])}")
       File.mkdir_p!(empty)
 
-      metadata = %{@metadata | plugin_config: %{"agendas_path" => empty, "state_path" => @state_path}}
+      metadata = %{
+        @metadata
+        | plugin_config: %{"agendas_path" => empty, "state_path" => @state_path}
+      }
+
       result = Agenda.init(metadata)
       File.rm_rf!(empty)
       assert :ignore = result
@@ -403,7 +432,13 @@ defmodule Cranium.Plugins.AgendaTest do
     end
 
     test "injects on first turn after activation", %{state: state} do
-      turn_ctx = %{conversation_id: "test-conv", epoch_id: @test_epoch_id, turn_count: 2, message_text: "hello"}
+      turn_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: @test_epoch_id,
+        turn_count: 2,
+        message_text: "hello"
+      }
+
       {:ok, [injection], _state} = Agenda.before_context_build(turn_ctx, state)
       assert injection.priority == 25
       assert injection.content =~ "weekly-sync"
@@ -413,19 +448,39 @@ defmodule Cranium.Plugins.AgendaTest do
 
     test "skips when no agenda active" do
       {:ok, _, _, state} = Agenda.init(@metadata)
-      turn_ctx = %{conversation_id: "test-conv", epoch_id: @test_epoch_id, turn_count: 1, message_text: "hello"}
+
+      turn_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: @test_epoch_id,
+        turn_count: 1,
+        message_text: "hello"
+      }
+
       assert {:ok, :skip, ^state} = Agenda.before_context_build(turn_ctx, state)
     end
 
     test "skips on non-event turns", %{state: state} do
       # Turn 5 is not first-after-activation (that was turn 2) and no sidecar result
-      turn_ctx = %{conversation_id: "test-conv", epoch_id: @test_epoch_id, turn_count: 5, message_text: "hello"}
+      turn_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: @test_epoch_id,
+        turn_count: 5,
+        message_text: "hello"
+      }
+
       assert {:ok, :skip, _state} = Agenda.before_context_build(turn_ctx, state)
     end
 
     test "injects on rehydration", %{state: state} do
       state = %{state | rehydrated: true}
-      turn_ctx = %{conversation_id: "test-conv", epoch_id: @test_epoch_id, turn_count: 10, message_text: "hello"}
+
+      turn_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: @test_epoch_id,
+        turn_count: 10,
+        message_text: "hello"
+      }
+
       {:ok, [injection], new_state} = Agenda.before_context_build(turn_ctx, state)
       assert injection.content =~ "mid-agenda"
       assert new_state.rehydrated == false
@@ -446,7 +501,13 @@ defmodule Cranium.Plugins.AgendaTest do
         end)
 
       # Now before_context_build should inject completion notice
-      turn_ctx = %{conversation_id: "test-conv", epoch_id: @test_epoch_id, turn_count: 10, message_text: "hello"}
+      turn_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: @test_epoch_id,
+        turn_count: 10,
+        message_text: "hello"
+      }
+
       {:ok, [injection], new_state} = Agenda.before_context_build(turn_ctx, state)
       assert injection.content =~ "complete"
       assert new_state.just_auto_closed == false
@@ -468,10 +529,20 @@ defmodule Cranium.Plugins.AgendaTest do
       state = %{state | agenda: %{state.agenda | conditions: conditions}}
 
       # Simulate epoch end (persist)
-      :ok = Agenda.on_epoch_end(%{conversation_id: "test-conv", epoch_id: @test_epoch_id, messages: []}, state)
+      :ok =
+        Agenda.on_epoch_end(
+          %{conversation_id: "test-conv", epoch_id: @test_epoch_id, messages: []},
+          state
+        )
 
       # Simulate epoch start (rehydrate)
-      epoch_ctx = %{conversation_id: "test-conv", epoch_id: "new-epoch", predecessor_epoch_id: @test_epoch_id, room_name: "test-room"}
+      epoch_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: "new-epoch",
+        predecessor_epoch_id: @test_epoch_id,
+        room_name: "test-room"
+      }
+
       {:ok, new_state} = Agenda.on_epoch_start(epoch_ctx, state)
 
       assert new_state.agenda.active == true
@@ -487,7 +558,14 @@ defmodule Cranium.Plugins.AgendaTest do
 
     test "rehydrates as inactive when no persisted state" do
       {:ok, _, _, state} = Agenda.init(@metadata)
-      epoch_ctx = %{conversation_id: "test-conv", epoch_id: "new-epoch", predecessor_epoch_id: nil, room_name: "test-room"}
+
+      epoch_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: "new-epoch",
+        predecessor_epoch_id: nil,
+        room_name: "test-room"
+      }
+
       {:ok, new_state} = Agenda.on_epoch_start(epoch_ctx, state)
       assert new_state.agenda == %{active: false}
       assert new_state.rehydrated == false
@@ -500,7 +578,13 @@ defmodule Cranium.Plugins.AgendaTest do
       path = Path.join(@state_path, "test-room.json")
       File.write!(path, Jason.encode!(%{active: false}))
 
-      epoch_ctx = %{conversation_id: "test-conv", epoch_id: "new-epoch", predecessor_epoch_id: "old", room_name: "test-room"}
+      epoch_ctx = %{
+        conversation_id: "test-conv",
+        epoch_id: "new-epoch",
+        predecessor_epoch_id: "old",
+        room_name: "test-room"
+      }
+
       {:ok, new_state} = Agenda.on_epoch_start(epoch_ctx, state)
       assert new_state.agenda == %{active: false}
     end
@@ -508,40 +592,50 @@ defmodule Cranium.Plugins.AgendaTest do
 
   describe "condition flattening" do
     test "handles nested criteria sections" do
-      nested_path = Path.join(System.tmp_dir!(), "nested_agendas_#{System.unique_integer([:positive])}")
-      state_path = Path.join(System.tmp_dir!(), "nested_state_#{System.unique_integer([:positive])}")
+      nested_path =
+        Path.join(System.tmp_dir!(), "nested_agendas_#{System.unique_integer([:positive])}")
+
+      state_path =
+        Path.join(System.tmp_dir!(), "nested_state_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(nested_path)
       File.mkdir_p!(state_path)
 
-      File.write!(Path.join(nested_path, "nested.json"), Jason.encode!(%{
-        "name" => "nested",
-        "description" => "Nested agenda",
-        "body" => "A nested agenda.",
-        "criteria" => [
-          %{
-            "topic" => "Parent",
-            "prose" => "Top level.",
-            "conditions" => ["Parent condition"],
-            "children" => [
-              %{
-                "topic" => "Child A",
-                "prose" => "First child.",
-                "conditions" => ["Child A condition 1", "Child A condition 2"]
-              },
-              %{
-                "topic" => "Child B",
-                "prose" => "Second child.",
-                "conditions" => ["Child B condition"]
-              }
-            ]
-          }
-        ]
-      }))
+      File.write!(
+        Path.join(nested_path, "nested.json"),
+        Jason.encode!(%{
+          "name" => "nested",
+          "description" => "Nested agenda",
+          "body" => "A nested agenda.",
+          "criteria" => [
+            %{
+              "topic" => "Parent",
+              "prose" => "Top level.",
+              "conditions" => ["Parent condition"],
+              "children" => [
+                %{
+                  "topic" => "Child A",
+                  "prose" => "First child.",
+                  "conditions" => ["Child A condition 1", "Child A condition 2"]
+                },
+                %{
+                  "topic" => "Child B",
+                  "prose" => "Second child.",
+                  "conditions" => ["Child B condition"]
+                }
+              ]
+            }
+          ]
+        })
+      )
 
-      metadata = %{@metadata | plugin_config: %{
-        "agendas_path" => nested_path,
-        "state_path" => state_path
-      }}
+      metadata = %{
+        @metadata
+        | plugin_config: %{
+            "agendas_path" => nested_path,
+            "state_path" => state_path
+          }
+      }
 
       {:ok, _, _, state} = Agenda.init(metadata)
       ctx = tool_ctx("activate_agenda", %{"name" => "nested"}, 1)
@@ -567,17 +661,23 @@ defmodule Cranium.Plugins.AgendaTest do
       File.mkdir_p!(bad_path)
       File.mkdir_p!(state_path)
 
-      File.write!(Path.join(bad_path, "bad.json"), Jason.encode!(%{
-        "name" => "bad",
-        "description" => "Bad agenda",
-        "body" => "Some body",
-        "init" => "scripts/init.sh"
-      }))
+      File.write!(
+        Path.join(bad_path, "bad.json"),
+        Jason.encode!(%{
+          "name" => "bad",
+          "description" => "Bad agenda",
+          "body" => "Some body",
+          "init" => "scripts/init.sh"
+        })
+      )
 
-      metadata = %{@metadata | plugin_config: %{
-        "agendas_path" => bad_path,
-        "state_path" => state_path
-      }}
+      metadata = %{
+        @metadata
+        | plugin_config: %{
+            "agendas_path" => bad_path,
+            "state_path" => state_path
+          }
+      }
 
       # Should ignore since no valid definitions
       assert :ignore = Agenda.init(metadata)

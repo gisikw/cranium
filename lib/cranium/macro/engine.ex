@@ -168,7 +168,8 @@ defmodule Cranium.Macro.Engine do
 
   Returns `{:ok, result}` or `{:error, reason}`.
   """
-  @spec execute_tool(String.t(), map(), turn_context()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec execute_tool(String.t(), map(), turn_context()) ::
+          {:ok, String.t()} | {:error, String.t()}
   def execute_tool(macro_name, tool_input, context) do
     macro_name = unprefix_tool_name(macro_name)
     room_name = context[:room_name] || context[:conversation_id] || "unknown"
@@ -265,8 +266,10 @@ defmodule Cranium.Macro.Engine do
 
       State.put_state(macro.name, room_name, new_state)
 
-      Logger.info("Macro.Engine: activated #{macro.name} in #{room_name} " <>
-        "with #{length(macro.conditions)} conditions")
+      Logger.info(
+        "Macro.Engine: activated #{macro.name} in #{room_name} " <>
+          "with #{length(macro.conditions)} conditions"
+      )
     end
   end
 
@@ -349,11 +352,14 @@ defmodule Cranium.Macro.Engine do
       completed = Enum.count(condition_states, &(&1["status"] == "complete"))
       skipped = Enum.count(condition_states, &(&1["status"] == "skipped"))
 
-      [%{
-        priority: 40,
-        content: "<system-reminder>Macro **#{macro.name}** has completed " <>
-          "(#{completed} completed, #{skipped} skipped). It has been deactivated.</system-reminder>"
-      }]
+      [
+        %{
+          priority: 40,
+          content:
+            "<system-reminder>Macro **#{macro.name}** has completed " <>
+              "(#{completed} completed, #{skipped} skipped). It has been deactivated.</system-reminder>"
+        }
+      ]
     else
       []
     end
@@ -570,5 +576,7 @@ defmodule Cranium.Macro.Engine do
   defp format_tool_output(%{content: content}), do: content
   defp format_tool_output(output) when is_binary(output), do: output
   defp format_tool_output(nil), do: "OK"
-  defp format_tool_output(outputs) when is_list(outputs), do: Enum.map_join(outputs, "\n", &format_tool_output/1)
+
+  defp format_tool_output(outputs) when is_list(outputs),
+    do: Enum.map_join(outputs, "\n", &format_tool_output/1)
 end

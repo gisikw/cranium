@@ -106,6 +106,7 @@ defmodule Cranium.TestPlugins.MultiInjector do
       %{priority: 5, content: "<early>before-everything</early>"},
       %{priority: 35, content: "<late>between-saturation-and-interrupted</late>"}
     ]
+
     {:ok, injections, state}
   end
 end

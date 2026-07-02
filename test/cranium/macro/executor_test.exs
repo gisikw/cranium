@@ -44,7 +44,9 @@ defmodule Cranium.Macro.ExecutorTest do
   describe "execute/4 prompt body" do
     test "simple prompt returns injection" do
       macro = make_prompt_macro()
-      assert {:ok, %{priority: 50, content: "Hello world"}, %{}} = Executor.execute(macro, %{}, %{})
+
+      assert {:ok, %{priority: 50, content: "Hello world"}, %{}} =
+               Executor.execute(macro, %{}, %{})
     end
 
     test "respects configured priority" do
@@ -53,8 +55,11 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "wraps content in XML tag when configured" do
-      macro = make_prompt_macro(%{prompt_body: %{text: "k8s info", tag: "glossary", priority: 15}})
-      assert {:ok, %{content: "<glossary>k8s info</glossary>"}, _} = Executor.execute(macro, %{}, %{})
+      macro =
+        make_prompt_macro(%{prompt_body: %{text: "k8s info", tag: "glossary", priority: 15}})
+
+      assert {:ok, %{content: "<glossary>k8s info</glossary>"}, _} =
+               Executor.execute(macro, %{}, %{})
     end
 
     test "no tag wrapping when tag is nil" do
@@ -63,19 +68,26 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "resolves template variables from state" do
-      macro = make_prompt_macro(%{prompt_body: %{text: "Hello %{user_name}", tag: nil, priority: nil}})
-      assert {:ok, %{content: "Hello Kevin"}, _} = Executor.execute(macro, %{"user_name" => "Kevin"}, %{})
+      macro =
+        make_prompt_macro(%{prompt_body: %{text: "Hello %{user_name}", tag: nil, priority: nil}})
+
+      assert {:ok, %{content: "Hello Kevin"}, _} =
+               Executor.execute(macro, %{"user_name" => "Kevin"}, %{})
     end
 
     test "resolves template variables from context" do
-      macro = make_prompt_macro(%{prompt_body: %{text: "Room: %{room_name}", tag: nil, priority: nil}})
-      assert {:ok, %{content: "Room: cranium"}, _} = Executor.execute(macro, %{}, %{room_name: "cranium"})
+      macro =
+        make_prompt_macro(%{prompt_body: %{text: "Room: %{room_name}", tag: nil, priority: nil}})
+
+      assert {:ok, %{content: "Room: cranium"}, _} =
+               Executor.execute(macro, %{}, %{room_name: "cranium"})
     end
 
     test "state takes precedence over context" do
       macro = make_prompt_macro(%{prompt_body: %{text: "Val: %{key}", tag: nil, priority: nil}})
+
       assert {:ok, %{content: "Val: from-state"}, _} =
-        Executor.execute(macro, %{"key" => "from-state"}, %{key: "from-context"})
+               Executor.execute(macro, %{"key" => "from-state"}, %{key: "from-context"})
     end
 
     test "empty resolved template returns nil output" do
@@ -84,9 +96,11 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "multiple template variables" do
-      macro = make_prompt_macro(%{
-        prompt_body: %{text: "%{greeting} %{name}, turn %{turn_count}", tag: nil, priority: nil}
-      })
+      macro =
+        make_prompt_macro(%{
+          prompt_body: %{text: "%{greeting} %{name}, turn %{turn_count}", tag: nil, priority: nil}
+        })
+
       state = %{"greeting" => "Hey", "name" => "Kev"}
       context = %{turn_count: 5}
 
@@ -133,9 +147,11 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "respects timeout" do
-      macro = make_script_macro("sleep 10", %{
-        script_body: %{command: "sleep 10", timeout_seconds: 1, sandbox: nil}
-      })
+      macro =
+        make_script_macro("sleep 10", %{
+          script_body: %{command: "sleep 10", timeout_seconds: 1, sandbox: nil}
+        })
+
       assert {:error, msg} = Executor.execute(macro, %{}, %{})
       assert msg =~ "timed out"
     end
@@ -145,8 +161,11 @@ defmodule Cranium.Macro.ExecutorTest do
 
   describe "execute/4 sequence body" do
     test "executes steps in order with inline definitions" do
-      step1 = make_prompt_macro(%{name: "s1", prompt_body: %{text: "first", tag: nil, priority: 10}})
-      step2 = make_prompt_macro(%{name: "s2", prompt_body: %{text: "second", tag: nil, priority: 20}})
+      step1 =
+        make_prompt_macro(%{name: "s1", prompt_body: %{text: "first", tag: nil, priority: 10}})
+
+      step2 =
+        make_prompt_macro(%{name: "s2", prompt_body: %{text: "second", tag: nil, priority: 20}})
 
       macro = %Definition{
         name: "pipeline",
@@ -172,9 +191,13 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "halt on_failure stops sequence on error" do
-      good = make_prompt_macro(%{name: "good", prompt_body: %{text: "ok", tag: nil, priority: 10}})
+      good =
+        make_prompt_macro(%{name: "good", prompt_body: %{text: "ok", tag: nil, priority: 10}})
+
       bad = make_script_macro("exit 1", %{name: "bad"})
-      after_bad = make_prompt_macro(%{name: "after", prompt_body: %{text: "never", tag: nil, priority: 30}})
+
+      after_bad =
+        make_prompt_macro(%{name: "after", prompt_body: %{text: "never", tag: nil, priority: 30}})
 
       macro = %Definition{
         name: "pipeline",
@@ -202,7 +225,12 @@ defmodule Cranium.Macro.ExecutorTest do
 
     test "skip on_failure continues past errors" do
       bad = make_script_macro("exit 1", %{name: "bad"})
-      good = make_prompt_macro(%{name: "good", prompt_body: %{text: "survived", tag: nil, priority: 10}})
+
+      good =
+        make_prompt_macro(%{
+          name: "good",
+          prompt_body: %{text: "survived", tag: nil, priority: 10}
+        })
 
       macro = %Definition{
         name: "pipeline",
@@ -251,7 +279,12 @@ defmodule Cranium.Macro.ExecutorTest do
     end
 
     test "resolves named steps via resolver" do
-      resolved = make_prompt_macro(%{name: "resolved", prompt_body: %{text: "found it", tag: nil, priority: 10}})
+      resolved =
+        make_prompt_macro(%{
+          name: "resolved",
+          prompt_body: %{text: "found it", tag: nil, priority: 10}
+        })
+
       resolver = fn "my-step" -> {:ok, resolved} end
 
       macro = %Definition{
@@ -270,7 +303,8 @@ defmodule Cranium.Macro.ExecutorTest do
         }
       }
 
-      assert {:ok, [%{content: "found it"}], _} = Executor.execute(macro, %{}, %{}, resolver: resolver)
+      assert {:ok, [%{content: "found it"}], _} =
+               Executor.execute(macro, %{}, %{}, resolver: resolver)
     end
 
     test "cleans up tmpdir after execution" do

@@ -107,7 +107,12 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "injects gloss tag for mentioned term", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "I talked to Alice today"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "I talked to Alice today"
+      }
 
       assert {:ok, [%{content: content}], new_state} = Glossary.before_context_build(ctx, state)
       assert content =~ "<glossary>"
@@ -116,14 +121,24 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "matches aliases", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Bobby said we should wait"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Bobby said we should wait"
+      }
 
       assert {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx, state)
       assert content =~ "Bob is the team's product manager"
     end
 
     test "case insensitive matching", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "ALICE and bob are here"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "ALICE and bob are here"
+      }
 
       assert {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx, state)
       assert content =~ "alice"
@@ -131,13 +146,24 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "skips when no terms match", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Nothing interesting"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Nothing interesting"
+      }
 
       assert {:ok, :skip, ^state} = Glossary.before_context_build(ctx, state)
     end
 
     test "does not re-inject already seen terms", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Ask Alice about it"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Ask Alice about it"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(ctx, state)
 
       # Same message again — Alice already seen
@@ -146,7 +172,12 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "injects multiple matched terms in one turn", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice and Bob met"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Alice and Bob met"
+      }
 
       assert {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx, state)
       assert content =~ "alice"
@@ -154,14 +185,24 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "includes body content when present", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice is working on it"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Alice is working on it"
+      }
 
       {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx, state)
       assert content =~ "API migration"
     end
 
     test "matches hyphenated terms with spaces", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "This is a chestertons fence situation"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "This is a chestertons fence situation"
+      }
 
       assert {:ok, [%{content: content}], _state} = Glossary.before_context_build(ctx, state)
       assert content =~ "Don't remove a rule"
@@ -210,7 +251,13 @@ defmodule Cranium.Plugins.GlossaryTest do
 
     test "picks up edits to existing files", %{state: state, dir: dir} do
       # First turn — see Dana
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Dana reviewed it"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Dana reviewed it"
+      }
+
       {:ok, [%{content: content}], state} = Glossary.before_context_build(ctx, state)
       assert content =~ "backend engineer"
 
@@ -232,7 +279,13 @@ defmodule Cranium.Plugins.GlossaryTest do
 
     test "handles deleted files gracefully", %{state: state, dir: dir} do
       # First turn — see Dana
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Dana reviewed it"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Dana reviewed it"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(ctx, state)
 
       # Delete the file
@@ -263,17 +316,35 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "tracks turn indices for all matching terms", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice reviewed it"}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Alice reviewed it"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(ctx, state)
 
       assert state.mentions["alice"] == [1]
     end
 
     test "accumulates turn indices across multiple mentions", %{state: state} do
-      ctx1 = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice reviewed it"}
+      ctx1 = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Alice reviewed it"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(ctx1, state)
 
-      ctx2 = %{conversation_id: "c", epoch_id: "e", turn_count: 5, message_text: "Alice approved it"}
+      ctx2 = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 5,
+        message_text: "Alice approved it"
+      }
+
       {:ok, :skip, state} = Glossary.before_context_build(ctx2, state)
 
       assert Enum.sort(state.mentions["alice"]) == [1, 5]
@@ -294,10 +365,22 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "tracks multiple terms independently", %{state: state} do
-      ctx1 = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Alice and Bob met"}
+      ctx1 = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Alice and Bob met"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(ctx1, state)
 
-      ctx2 = %{conversation_id: "c", epoch_id: "e", turn_count: 3, message_text: "Alice called Bob"}
+      ctx2 = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 3,
+        message_text: "Alice called Bob"
+      }
+
       {:ok, :skip, state} = Glossary.before_context_build(ctx2, state)
 
       assert Enum.sort(state.mentions["alice"]) == [1, 3]
@@ -312,7 +395,13 @@ defmodule Cranium.Plugins.GlossaryTest do
     end
 
     test "tracks mentions in assistant output", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", output: "Alice is a great engineer", turn_count: 2}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        output: "Alice is a great engineer",
+        turn_count: 2
+      }
+
       {:ok, state} = Glossary.after_pass_complete(ctx, state)
 
       assert state.mentions["alice"] == [2]
@@ -320,12 +409,24 @@ defmodule Cranium.Plugins.GlossaryTest do
 
     test "accumulates with existing user-side mentions", %{state: state} do
       # User mentions Alice on turn 1
-      user_ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 1, message_text: "Tell me about Alice"}
+      user_ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 1,
+        message_text: "Tell me about Alice"
+      }
+
       {:ok, _, state} = Glossary.before_context_build(user_ctx, state)
       assert state.mentions["alice"] == [1]
 
       # Assistant mentions Alice in response (same turn)
-      pass_ctx = %{conversation_id: "c", epoch_id: "e", output: "Alice is a senior engineer on the platform team.", turn_count: 1}
+      pass_ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        output: "Alice is a senior engineer on the platform team.",
+        turn_count: 1
+      }
+
       {:ok, state} = Glossary.after_pass_complete(pass_ctx, state)
 
       assert Enum.sort(state.mentions["alice"]) == [1, 1]
@@ -333,19 +434,37 @@ defmodule Cranium.Plugins.GlossaryTest do
 
     test "catches assistant-only mentions not in user message", %{state: state} do
       # User doesn't mention Bob
-      user_ctx = %{conversation_id: "c", epoch_id: "e", turn_count: 3, message_text: "Who's on the team?"}
+      user_ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        turn_count: 3,
+        message_text: "Who's on the team?"
+      }
+
       {:ok, :skip, state} = Glossary.before_context_build(user_ctx, state)
       assert state.mentions == %{}
 
       # But assistant names Bob in the response
-      pass_ctx = %{conversation_id: "c", epoch_id: "e", output: "Bob is the product manager for this team.", turn_count: 4}
+      pass_ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        output: "Bob is the product manager for this team.",
+        turn_count: 4
+      }
+
       {:ok, state} = Glossary.after_pass_complete(pass_ctx, state)
 
       assert state.mentions["bob"] == [4]
     end
 
     test "skips when no terms match in assistant output", %{state: state} do
-      ctx = %{conversation_id: "c", epoch_id: "e", output: "Sure, I'll help with that.", turn_count: 1}
+      ctx = %{
+        conversation_id: "c",
+        epoch_id: "e",
+        output: "Sure, I'll help with that.",
+        turn_count: 1
+      }
+
       {:ok, state} = Glossary.after_pass_complete(ctx, state)
 
       assert state.mentions == %{}
@@ -387,11 +506,13 @@ defmodule Cranium.Plugins.GlossaryTest do
     test "updates glossary file when model proposes update", %{state: state, dir: dir} do
       state = %{state | mentions: %{"frank" => [1, 3]}}
 
-      stub_sidecar_response(Jason.encode!(%{
-        "update" => true,
-        "summary" => "Frank is now a staff engineer on the platform team",
-        "rationale" => "User corrected Frank's role"
-      }))
+      stub_sidecar_response(
+        Jason.encode!(%{
+          "update" => true,
+          "summary" => "Frank is now a staff engineer on the platform team",
+          "rationale" => "User corrected Frank's role"
+        })
+      )
 
       messages = [
         %{"role" => "user", "content" => "Frank got promoted"},
@@ -483,7 +604,7 @@ defmodule Cranium.Plugins.GlossaryTest do
 
       messages =
         for i <- 0..8 do
-          %{"role" => (if rem(i, 2) == 0, do: "user", else: "assistant"), "content" => "msg-#{i}"}
+          %{"role" => if(rem(i, 2) == 0, do: "user", else: "assistant"), "content" => "msg-#{i}"}
         end
 
       epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
@@ -493,11 +614,13 @@ defmodule Cranium.Plugins.GlossaryTest do
     test "atomic write preserves body content", %{state: state, dir: dir} do
       state = %{state | mentions: %{"frank" => [0]}}
 
-      stub_sidecar_response(Jason.encode!(%{
-        "update" => true,
-        "summary" => "Frank is a principal engineer",
-        "rationale" => "Role updated"
-      }))
+      stub_sidecar_response(
+        Jason.encode!(%{
+          "update" => true,
+          "summary" => "Frank is a principal engineer",
+          "rationale" => "Role updated"
+        })
+      )
 
       messages = [%{"role" => "user", "content" => "Frank is now principal"}]
       epoch_ctx = %{conversation_id: "c", epoch_id: "e", messages: messages}
@@ -513,10 +636,13 @@ defmodule Cranium.Plugins.GlossaryTest do
   defp stub_sidecar_response(json_text) do
     stub(Cranium.Backend.LLM.Mock, :stream_chat, fn _messages, _opts ->
       caller = self()
-      pid = spawn_link(fn ->
-        send(caller, {:llm_text, json_text})
-        send(caller, {:llm_stop, "end_turn"})
-      end)
+
+      pid =
+        spawn_link(fn ->
+          send(caller, {:llm_text, json_text})
+          send(caller, {:llm_stop, "end_turn"})
+        end)
+
       {:ok, pid}
     end)
 

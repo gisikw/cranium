@@ -138,9 +138,8 @@ defmodule Cranium.Plugins.Agenda do
             conversation_id: metadata.conversation_id
           )
 
-          {:ok,
-           [:on_epoch_start, :before_context_build, :after_pass_complete, :on_epoch_end], tools,
-           state}
+          {:ok, [:on_epoch_start, :before_context_build, :after_pass_complete, :on_epoch_end],
+           tools, state}
         end
     end
   end
@@ -334,7 +333,10 @@ defmodule Cranium.Plugins.Agenda do
 
   defp maybe_fire_sidecar(context, state) do
     eval_state = Agent.get(state.eval_agent, & &1)
-    turns_since = context.turn_count - (state.agenda.last_eval_turn || state.agenda.activated_at_turn)
+
+    turns_since =
+      context.turn_count - (state.agenda.last_eval_turn || state.agenda.activated_at_turn)
+
     remaining = Enum.filter(state.agenda.conditions, &(&1.status in [:pending, :skipped]))
 
     if not eval_state.in_flight and
@@ -987,8 +989,7 @@ defmodule Cranium.Plugins.Agenda do
     [
       %{
         name: "activate_agenda",
-        description:
-          "Activate a meeting agenda. Available agendas:\n#{agenda_list}",
+        description: "Activate a meeting agenda. Available agendas:\n#{agenda_list}",
         input_schema: %{
           "type" => "object",
           "properties" => %{

@@ -66,7 +66,8 @@ defmodule Cranium.RoomSync.RoomListTest do
       rooms = [%{id: room_id, name: room_id, description: nil, last_activity_at: nil}]
       [enriched] = RoomList.enrich(rooms)
 
-      assert String.length(enriched.latest_message_preview) <= 121  # 120 + "…"
+      # 120 + "…"
+      assert String.length(enriched.latest_message_preview) <= 121
       assert String.ends_with?(enriched.latest_message_preview, "…")
     end
 
@@ -115,7 +116,7 @@ defmodule Cranium.RoomSync.RoomListTest do
       enriched = RoomList.enrich(rooms)
       assert length(enriched) == 2
 
-      by_id = Map.new(enriched, & {&1.id, &1})
+      by_id = Map.new(enriched, &{&1.id, &1})
       assert by_id[room_id].latest_message_preview == "Room 1 message"
       assert by_id[room_id2].latest_message_preview == "Room 2 message"
     end

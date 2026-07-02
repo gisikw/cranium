@@ -57,7 +57,11 @@ defmodule Cranium.Macro.SidecarTest do
     end
 
     test "returns true when manually set via ETS" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: true, result: nil}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: true, result: nil}}
+      )
+
       assert Sidecar.in_flight?("test-sidecar", @room)
     end
   end
@@ -70,12 +74,19 @@ defmodule Cranium.Macro.SidecarTest do
     end
 
     test "returns :none when in-flight with no result" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: true, result: nil}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: true, result: nil}}
+      )
+
       assert :none = Sidecar.consume("test-sidecar", @room)
     end
 
     test "returns and clears completed results" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: false, result: [0, 2]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: false, result: [0, 2]}}
+      )
 
       assert {:ok, [0, 2]} = Sidecar.consume("test-sidecar", @room)
 
@@ -85,7 +96,10 @@ defmodule Cranium.Macro.SidecarTest do
     end
 
     test "clears result atomically" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: false, result: [1]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: false, result: [1]}}
+      )
 
       # First consume gets the result
       assert {:ok, [1]} = Sidecar.consume("test-sidecar", @room)
@@ -99,7 +113,10 @@ defmodule Cranium.Macro.SidecarTest do
 
   describe "reset/2" do
     test "clears all tracking state" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: true, result: [0]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: true, result: [0]}}
+      )
 
       Sidecar.reset("test-sidecar", @room)
 
@@ -112,7 +129,10 @@ defmodule Cranium.Macro.SidecarTest do
 
   describe "dispatch/3 guards" do
     test "skips when already in flight" do
-      :ets.insert(Cranium.Macro.Sidecar, {{@room, "test-sidecar"}, %{in_flight: true, result: nil}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{@room, "test-sidecar"}, %{in_flight: true, result: nil}}
+      )
 
       macro = make_sidecar_macro()
 

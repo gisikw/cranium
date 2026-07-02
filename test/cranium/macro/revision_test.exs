@@ -28,7 +28,10 @@ defmodule Cranium.Macro.RevisionTest do
       learning: :sidecar,
       sidecar_config: %{model: nil, interval: 3, prompt: "eval %{conditions} %{lookback}"},
       revision: :session_end,
-      revision_config: %{prompt: "Revise this: %{definition}\nBased on: %{messages}", condition: nil},
+      revision_config: %{
+        prompt: "Revise this: %{definition}\nBased on: %{messages}",
+        condition: nil
+      },
       disposition: :foreground,
       body_type: :prompt,
       prompt_body: %{text: "Test body", tag: nil, priority: 50},
@@ -49,7 +52,11 @@ defmodule Cranium.Macro.RevisionTest do
       "advertising" => "hidden",
       "lifecycle" => "condition",
       "learning" => "sidecar",
-      "sidecar_config" => %{"model" => nil, "interval" => 3, "prompt" => "eval %{conditions} %{lookback}"},
+      "sidecar_config" => %{
+        "model" => nil,
+        "interval" => 3,
+        "prompt" => "eval %{conditions} %{lookback}"
+      },
       "revision" => "session_end",
       "revision_config" => %{"prompt" => "Revise: %{definition}\nHistory: %{messages}"},
       "disposition" => "foreground",
@@ -68,7 +75,8 @@ defmodule Cranium.Macro.RevisionTest do
   describe "dispatch/2 guards" do
     test "skips when no revision_config" do
       macro = %Definition{
-        make_revisable_macro("/tmp/none") | revision_config: nil
+        make_revisable_macro("/tmp/none")
+        | revision_config: nil
       }
 
       context = %{conversation_id: "test", epoch_id: "e1", messages: []}
@@ -121,16 +129,19 @@ defmodule Cranium.Macro.RevisionTest do
       File.write!(path, Jason.encode!(original, pretty: true))
 
       # Simulate what revision does internally
-      revised = Map.merge(original, %{
-        "description" => "Revised description",
-        "version" => 2,
-        "_revision_history" => [%{
+      revised =
+        Map.merge(original, %{
+          "description" => "Revised description",
           "version" => 2,
-          "revised_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-          "from_version" => 1,
-          "macro_name" => "revisable-macro"
-        }]
-      })
+          "_revision_history" => [
+            %{
+              "version" => 2,
+              "revised_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+              "from_version" => 1,
+              "macro_name" => "revisable-macro"
+            }
+          ]
+        })
 
       # Verify the revised definition parses correctly
       assert {:ok, parsed} = Definition.parse(revised)
@@ -182,11 +193,27 @@ defmodule Cranium.Macro.RevisionTest do
 
     test "revision history accumulates" do
       history = [
-        %{"version" => 2, "from_version" => 1, "revised_at" => "2026-01-01T00:00:00Z", "macro_name" => "test"},
-        %{"version" => 3, "from_version" => 2, "revised_at" => "2026-02-01T00:00:00Z", "macro_name" => "test"}
+        %{
+          "version" => 2,
+          "from_version" => 1,
+          "revised_at" => "2026-01-01T00:00:00Z",
+          "macro_name" => "test"
+        },
+        %{
+          "version" => 3,
+          "from_version" => 2,
+          "revised_at" => "2026-02-01T00:00:00Z",
+          "macro_name" => "test"
+        }
       ]
 
-      new_entry = %{"version" => 4, "from_version" => 3, "revised_at" => "2026-03-01T00:00:00Z", "macro_name" => "test"}
+      new_entry = %{
+        "version" => 4,
+        "from_version" => 3,
+        "revised_at" => "2026-03-01T00:00:00Z",
+        "macro_name" => "test"
+      }
+
       full_history = history ++ [new_entry]
 
       assert length(full_history) == 3

@@ -32,7 +32,8 @@ defmodule Cranium.Context.TurnInjector do
 
   @spec process(map(), map(), [map()]) :: {:ok, map()}
   def process(message, context, plugin_injections \\ []) do
-    {injections, landscape_injected, saturation_bucket} = build_injections(message, context, plugin_injections)
+    {injections, landscape_injected, saturation_bucket} =
+      build_injections(message, context, plugin_injections)
 
     message =
       case injections do
@@ -69,7 +70,8 @@ defmodule Cranium.Context.TurnInjector do
 
   Builtin priorities: time-gap/fresh-time=10, landscape=20, saturation=30, interrupted=40.
   """
-  @spec build_injections(map(), map(), [map()]) :: {[String.t()], boolean(), non_neg_integer() | nil}
+  @spec build_injections(map(), map(), [map()]) ::
+          {[String.t()], boolean(), non_neg_integer() | nil}
   def build_injections(message, context, plugin_injections \\ []) do
     {landscape_block, landscape_injected} = resolve_landscape(message, context)
 
@@ -135,6 +137,7 @@ defmodule Cranium.Context.TurnInjector do
 
     if current >= warn and current_bucket > last_bucket do
       advice = saturation_advice(current, critical)
+
       "<system-reminder>Context window saturation: #{trunc(current)}%. #{advice}</system-reminder>"
     end
   end
@@ -276,8 +279,6 @@ defmodule Cranium.Context.TurnInjector do
       ts -> DateTime.diff(now, ts, :second) >= @time_gap_threshold_seconds
     end
   end
-
-
 
   defp context_now(context), do: Map.get(context, :now, DateTime.utc_now())
 end

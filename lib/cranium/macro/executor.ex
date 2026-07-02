@@ -102,7 +102,12 @@ defmodule Cranium.Macro.Executor do
 
   # --- Sequence execution ---
 
-  defp execute_sequence(%{sequence_body: %{steps: steps, on_failure: on_failure}}, state, context, opts) do
+  defp execute_sequence(
+         %{sequence_body: %{steps: steps, on_failure: on_failure}},
+         state,
+         context,
+         opts
+       ) do
     tmpdir = create_tmpdir()
     resolver = Keyword.get(opts, :resolver, &default_resolver/1)
 
@@ -124,10 +129,21 @@ defmodule Cranium.Macro.Executor do
 
         case execute(macro, state, context_with_tmpdir, resolver: resolver) do
           {:ok, output, new_state} ->
-            execute_steps(rest, new_state, context, on_failure, tmpdir, resolver, [output | outputs])
+            execute_steps(rest, new_state, context, on_failure, tmpdir, resolver, [
+              output | outputs
+            ])
 
           {:error, reason} ->
-            handle_step_failure(reason, rest, state, context, on_failure, tmpdir, resolver, outputs)
+            handle_step_failure(
+              reason,
+              rest,
+              state,
+              context,
+              on_failure,
+              tmpdir,
+              resolver,
+              outputs
+            )
         end
 
       {:error, reason} ->

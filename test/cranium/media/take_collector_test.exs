@@ -14,8 +14,7 @@ defmodule Cranium.Media.TakeCollectorTest do
       take_id = "single-#{System.unique_integer([:positive])}"
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "hello world", take_id: take_id, seq: nil}}
+        {:transcription_complete, %Transcription{text: "hello world", take_id: take_id, seq: nil}}
       )
 
       assert_receive {:take_complete, %TakeComplete{take_id: ^take_id, text: "hello world"}},
@@ -24,8 +23,7 @@ defmodule Cranium.Media.TakeCollectorTest do
 
     test "ignores transcription without take_id" do
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "hello", take_id: nil, seq: nil}}
+        {:transcription_complete, %Transcription{text: "hello", take_id: nil, seq: nil}}
       )
 
       refute_receive {:take_complete, _}, 200
@@ -38,13 +36,11 @@ defmodule Cranium.Media.TakeCollectorTest do
 
       # Chunks arrive out of order
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "world", take_id: take_id, seq: 1}}
+        {:transcription_complete, %Transcription{text: "world", take_id: take_id, seq: 1}}
       )
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "hello ", take_id: take_id, seq: 0}}
+        {:transcription_complete, %Transcription{text: "hello ", take_id: take_id, seq: 0}}
       )
 
       # Not yet complete — no seal
@@ -65,21 +61,18 @@ defmodule Cranium.Media.TakeCollectorTest do
 
       # First two chunks
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "a", take_id: take_id, seq: 0}}
+        {:transcription_complete, %Transcription{text: "a", take_id: take_id, seq: 0}}
       )
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "b", take_id: take_id, seq: 1}}
+        {:transcription_complete, %Transcription{text: "b", take_id: take_id, seq: 1}}
       )
 
       refute_receive {:take_complete, _}, 100
 
       # Final chunk completes it
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "c", take_id: take_id, seq: 2}}
+        {:transcription_complete, %Transcription{text: "c", take_id: take_id, seq: 2}}
       )
 
       assert_receive {:take_complete, %TakeComplete{take_id: ^take_id, text: "abc"}}, 1000
@@ -90,24 +83,20 @@ defmodule Cranium.Media.TakeCollectorTest do
 
       # Chunks arrive in reverse order
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "third", take_id: take_id, seq: 2}}
+        {:transcription_complete, %Transcription{text: "third", take_id: take_id, seq: 2}}
       )
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "first", take_id: take_id, seq: 0}}
+        {:transcription_complete, %Transcription{text: "first", take_id: take_id, seq: 0}}
       )
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "second", take_id: take_id, seq: 1}}
+        {:transcription_complete, %Transcription{text: "second", take_id: take_id, seq: 1}}
       )
 
       Cranium.Events.broadcast({:take_sealed, take_id, 2})
 
-      assert_receive {:take_complete,
-                      %TakeComplete{take_id: ^take_id, text: "firstsecondthird"}},
+      assert_receive {:take_complete, %TakeComplete{take_id: ^take_id, text: "firstsecondthird"}},
                      1000
     end
 
@@ -115,8 +104,7 @@ defmodule Cranium.Media.TakeCollectorTest do
       take_id = "incomplete-#{System.unique_integer([:positive])}"
 
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "a", take_id: take_id, seq: 0}}
+        {:transcription_complete, %Transcription{text: "a", take_id: take_id, seq: 0}}
       )
 
       # Seal expects 3 chunks but only 1 received
@@ -129,8 +117,7 @@ defmodule Cranium.Media.TakeCollectorTest do
   describe "transcription failure" do
     test "does not crash on single-segment failure" do
       Cranium.Events.broadcast(
-        {:transcription_failed,
-         %Transcription{failure: :timeout, take_id: "fail1", seq: nil}}
+        {:transcription_failed, %Transcription{failure: :timeout, take_id: "fail1", seq: nil}}
       )
 
       refute_receive {:take_complete, _}, 100
@@ -138,8 +125,7 @@ defmodule Cranium.Media.TakeCollectorTest do
 
     test "does not crash on chunked failure" do
       Cranium.Events.broadcast(
-        {:transcription_failed,
-         %Transcription{failure: :timeout, take_id: "fail2", seq: 1}}
+        {:transcription_failed, %Transcription{failure: :timeout, take_id: "fail2", seq: 1}}
       )
 
       refute_receive {:take_complete, _}, 100
@@ -150,20 +136,17 @@ defmodule Cranium.Media.TakeCollectorTest do
 
       # Chunk 0 succeeds
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: "Hello ", take_id: take_id, seq: 0}}
+        {:transcription_complete, %Transcription{text: "Hello ", take_id: take_id, seq: 0}}
       )
 
       # Chunk 1 fails
       Cranium.Events.broadcast(
-        {:transcription_failed,
-         %Transcription{failure: :timeout, take_id: take_id, seq: 1}}
+        {:transcription_failed, %Transcription{failure: :timeout, take_id: take_id, seq: 1}}
       )
 
       # Chunk 2 succeeds
       Cranium.Events.broadcast(
-        {:transcription_complete,
-         %Transcription{text: " world", take_id: take_id, seq: 2}}
+        {:transcription_complete, %Transcription{text: " world", take_id: take_id, seq: 2}}
       )
 
       # Seal

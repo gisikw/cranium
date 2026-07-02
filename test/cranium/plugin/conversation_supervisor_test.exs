@@ -183,7 +183,10 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
         backend: :mock,
         model: "test-model",
         plugins: [
-          %{module: Cranium.TestPlugins.ProfileSwapper, config: %{model: "gemma4-cranium", backend: :mock}}
+          %{
+            module: Cranium.TestPlugins.ProfileSwapper,
+            config: %{model: "gemma4-cranium", backend: :mock}
+          }
         ]
       }
 
@@ -296,7 +299,10 @@ defmodule Cranium.Plugin.ConversationSupervisorTest do
       assert result.identity == "I am exo"
     end
 
-    test "returns original context when no plugins subscribed", %{conversation_id: cid, metadata: meta} do
+    test "returns original context when no plugins subscribed", %{
+      conversation_id: cid,
+      metadata: meta
+    } do
       # Echo and Skipper don't subscribe to after_resolve_profile
       ConversationSupervisor.start_plugins(cid, meta)
 

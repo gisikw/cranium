@@ -59,8 +59,7 @@ defmodule Cranium.Media.TakeCollector do
   # Multi-segment transcription (seq != nil) → buffer chunk, check completeness
   @impl true
   def handle_info(
-        {:transcription_complete,
-         %Transcription{seq: seq, take_id: take_id, text: text}},
+        {:transcription_complete, %Transcription{seq: seq, take_id: take_id, text: text}},
         state
       )
       when not is_nil(seq) and not is_nil(take_id) and not is_nil(text) do
@@ -117,7 +116,11 @@ defmodule Cranium.Media.TakeCollector do
         inserted_at: System.monotonic_time(:millisecond)
       })
 
-    take_state = %{take_state | chunks: Map.put(take_state.chunks, seq, "[transcribed segment missing]")}
+    take_state = %{
+      take_state
+      | chunks: Map.put(take_state.chunks, seq, "[transcribed segment missing]")
+    }
+
     state = %{state | takes: Map.put(state.takes, take_id, take_state)}
     {:noreply, maybe_complete(state, take_id)}
   end
@@ -155,9 +158,7 @@ defmodule Cranium.Media.TakeCollector do
             |> Enum.map(&elem(&1, 1))
             |> Enum.join()
 
-          Logger.info(
-            "TakeCollector: take complete take=#{take_id} chunks=#{last_seq + 1}"
-          )
+          Logger.info("TakeCollector: take complete take=#{take_id} chunks=#{last_seq + 1}")
 
           emit_take_complete(take_id, text)
           %{state | takes: Map.delete(state.takes, take_id)}
@@ -171,9 +172,7 @@ defmodule Cranium.Media.TakeCollector do
   end
 
   defp emit_take_complete(take_id, text) do
-    Cranium.Events.broadcast(
-      {:take_complete, %TakeComplete{take_id: take_id, text: text}}
-    )
+    Cranium.Events.broadcast({:take_complete, %TakeComplete{take_id: take_id, text: text}})
   end
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)

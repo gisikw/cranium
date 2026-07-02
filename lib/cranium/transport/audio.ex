@@ -44,7 +44,11 @@ defmodule Cranium.Transport.Audio do
         error_response(conn, 400, "missing required field: input")
 
       is_binary(input) and String.length(input) > @speech_max_input_length ->
-        error_response(conn, 400, "input exceeds maximum length of #{@speech_max_input_length} characters")
+        error_response(
+          conn,
+          400,
+          "input exceeds maximum length of #{@speech_max_input_length} characters"
+        )
 
       true ->
         do_speech(conn, model, input)
@@ -97,7 +101,11 @@ defmodule Cranium.Transport.Audio do
         error_response(conn, 400, "missing required field: file")
 
       File.stat!(file.path).size > @transcription_max_file_size ->
-        error_response(conn, 400, "file exceeds maximum size of #{@transcription_max_file_size} bytes")
+        error_response(
+          conn,
+          400,
+          "file exceeds maximum size of #{@transcription_max_file_size} bytes"
+        )
 
       true ->
         do_transcriptions(conn, model, file)
@@ -111,10 +119,12 @@ defmodule Cranium.Transport.Audio do
         language = conn.body_params["language"] || profile.stt_language
 
         opts =
-          (if language, do: [language: language], else: []) ++
+          if(language, do: [language: language], else: []) ++
             if(profile.stt_url, do: [url: profile.stt_url], else: [])
 
-        Logger.info("Audio transcription: model=#{model} size=#{byte_size(audio)} language=#{language || "auto"}")
+        Logger.info(
+          "Audio transcription: model=#{model} size=#{byte_size(audio)} language=#{language || "auto"}"
+        )
 
         case stt_backend().transcribe(audio, opts) do
           {:ok, text} ->

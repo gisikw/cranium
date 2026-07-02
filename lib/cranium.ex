@@ -60,7 +60,13 @@ defmodule Cranium do
           source: source
         })
 
-        Cranium.Effects.generate_handoff(conversation_id, epoch.id, epoch.cc_session_id, epoch.profile)
+        Cranium.Effects.generate_handoff(
+          conversation_id,
+          epoch.id,
+          epoch.cc_session_id,
+          epoch.profile
+        )
+
         :ok
 
       :not_found ->

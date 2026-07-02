@@ -60,7 +60,9 @@ defmodule Cranium.Transport.OpenAI do
           working_dir: ephemeral_working_dir()
         ]
 
-        Logger.info("OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)} tools=#{length(tools)}")
+        Logger.info(
+          "OpenAI: model=#{model_name} stream=#{stream} messages=#{length(backend_messages)} tools=#{length(tools)}"
+        )
 
         if stream do
           stream_response(conn, backend_messages, opts, profile, completion_id)
@@ -153,7 +155,7 @@ defmodule Cranium.Transport.OpenAI do
     text = msg["content"]
 
     content =
-      (if is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []) ++
+      if(is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []) ++
         Enum.map(tool_calls, fn tc ->
           func = tc["function"]
 
@@ -172,14 +174,18 @@ defmodule Cranium.Transport.OpenAI do
 
   # Tool result message → Anthropic user message with tool_result block
   defp translate_message(%{"role" => "tool"} = msg) do
-    [%{
-      "role" => "user",
-      "content" => [%{
-        "type" => "tool_result",
-        "tool_use_id" => msg["tool_call_id"],
-        "content" => msg["content"]
-      }]
-    }]
+    [
+      %{
+        "role" => "user",
+        "content" => [
+          %{
+            "type" => "tool_result",
+            "tool_use_id" => msg["tool_call_id"],
+            "content" => msg["content"]
+          }
+        ]
+      }
+    ]
   end
 
   # Everything else passes through
@@ -238,14 +244,27 @@ defmodule Cranium.Transport.OpenAI do
     case profile.backend_module.stream_chat(messages, opts) do
       {:ok, llm_pid} ->
         ref = Process.monitor(llm_pid)
-        {conn, usage, tool_calls} = stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
+
+        {conn, usage, tool_calls} =
+          stream_receive_loop(conn, llm_pid, ref, completion_id, profile.name)
 
         conn =
           if tool_calls != [] do
             # Emit tool calls and finish with tool_calls reason
             oai_tool_calls = format_tool_calls(tool_calls)
-            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{"tool_calls" => oai_tool_calls}, nil)
-            {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "tool_calls", usage)
+
+            {:ok, conn} =
+              send_sse_chunk(
+                conn,
+                completion_id,
+                profile.name,
+                %{"tool_calls" => oai_tool_calls},
+                nil
+              )
+
+            {:ok, conn} =
+              send_sse_chunk(conn, completion_id, profile.name, %{}, "tool_calls", usage)
+
             conn
           else
             {:ok, conn} = send_sse_chunk(conn, completion_id, profile.name, %{}, "stop", usage)
@@ -309,7 +328,6 @@ defmodule Cranium.Transport.OpenAI do
         Logger.error("OpenAI: backend error reason=#{inspect(reason)}")
         Process.demonitor(ref, [:flush])
         {conn, Process.get(:openai_usage), []}
-
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
         {conn, Process.get(:openai_usage), Process.get(:tool_calls_acc, [])}
@@ -414,7 +432,6 @@ defmodule Cranium.Transport.OpenAI do
         Logger.error("OpenAI: backend error reason=#{inspect(reason)}")
         Process.demonitor(ref, [:flush])
         {acc |> Enum.reverse() |> Enum.join(), usage, []}
-
 
       {:DOWN, ^ref, :process, ^llm_pid, :normal} ->
         {acc |> Enum.reverse() |> Enum.join(), usage, Process.get(:tool_calls_acc, [])}

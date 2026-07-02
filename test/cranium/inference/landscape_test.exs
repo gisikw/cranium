@@ -41,7 +41,9 @@ defmodule Cranium.Inference.LandscapeTest do
   # Start a fresh Landscape GenServer with a unique name for test isolation.
   # Must be called AFTER hoard files are written (the server loads on init).
   defp start_landscape(dir) do
-    Application.put_env(:cranium, :paths,
+    Application.put_env(
+      :cranium,
+      :paths,
       Keyword.merge(Application.get_env(:cranium, :paths), summaries: dir)
     )
 

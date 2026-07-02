@@ -113,7 +113,9 @@ defmodule Cranium.Muse do
     opts = if working_dir, do: Keyword.put(opts, :cd, working_dir), else: opts
 
     depth = Map.get(tool_config, :depth)
-    opts = if depth, do: Keyword.put(opts, :env, [{"MUSE_ROOM_DEPTH", to_string(depth)}]), else: opts
+
+    opts =
+      if depth, do: Keyword.put(opts, :env, [{"MUSE_ROOM_DEPTH", to_string(depth)}]), else: opts
 
     case run([@binary | args], opts) do
       {:ok, output} -> {:ok, output}

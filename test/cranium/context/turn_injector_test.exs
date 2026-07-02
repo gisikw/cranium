@@ -197,7 +197,13 @@ defmodule Cranium.Context.TurnInjectorTest do
     test "sets landscape_injected flag on fresh epoch with landscape data" do
       # Push a summary into the Landscape GenServer cache
       now = DateTime.utc_now()
-      Cranium.Inference.Landscape.summary_updated("other-room", "They were discussing tests.", now)
+
+      Cranium.Inference.Landscape.summary_updated(
+        "other-room",
+        "They were discussing tests.",
+        now
+      )
+
       # Ensure the cast is processed before we read
       :sys.get_state(Cranium.Inference.Landscape)
 
@@ -243,7 +249,9 @@ defmodule Cranium.Context.TurnInjectorTest do
       context = %{}
       plugin_injections = [%{priority: 25, content: "<test>plugin-content</test>"}]
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+      {injections, _landscape, _bucket} =
+        TurnInjector.build_injections(message, context, plugin_injections)
+
       assert length(injections) == 1
       assert hd(injections) == "<test>plugin-content</test>"
     end
@@ -253,6 +261,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       last = ~U[2026-03-05 10:00:00Z]
 
       message = %{text: "hello"}
+
       context = %{
         epoch: %{last_invoked_at: last, interrupted_context: "fixing deploy"},
         now: now
@@ -261,7 +270,8 @@ defmodule Cranium.Context.TurnInjectorTest do
       # Plugin at priority 25 — should appear between time-gap (10) and interrupted (40)
       plugin_injections = [%{priority: 25, content: "<plugin>middle</plugin>"}]
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+      {injections, _landscape, _bucket} =
+        TurnInjector.build_injections(message, context, plugin_injections)
 
       # Find positions
       time_gap_idx = Enum.find_index(injections, &(&1 =~ "minutes"))
@@ -281,7 +291,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         %{priority: 5, content: "<early>early</early>"}
       ]
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context, plugin_injections)
+      {injections, _landscape, _bucket} =
+        TurnInjector.build_injections(message, context, plugin_injections)
+
       assert length(injections) == 2
       assert Enum.at(injections, 0) == "<early>early</early>"
       assert Enum.at(injections, 1) == "<late>late</late>"

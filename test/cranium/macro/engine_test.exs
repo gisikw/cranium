@@ -131,12 +131,13 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "fires ambient macro every turn" do
-      macro = make_prompt_macro(%{
-        name: "always-on",
-        trigger: :ambient,
-        match_config: nil,
-        prompt_body: %{text: "Always present", tag: nil, priority: 10}
-      })
+      macro =
+        make_prompt_macro(%{
+          name: "always-on",
+          trigger: :ambient,
+          match_config: nil,
+          prompt_body: %{text: "Always present", tag: nil, priority: 10}
+        })
 
       insert_macro(macro)
 
@@ -151,9 +152,10 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "respects once flag" do
-      macro = make_prompt_macro(%{
-        match_config: %{patterns: ["kubernetes"], once: true}
-      })
+      macro =
+        make_prompt_macro(%{
+          match_config: %{patterns: ["kubernetes"], once: true}
+        })
 
       insert_macro(macro)
 
@@ -167,9 +169,10 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "updates session state with seen-set" do
-      macro = make_prompt_macro(%{
-        match_config: %{patterns: ["kubernetes"], once: true}
-      })
+      macro =
+        make_prompt_macro(%{
+          match_config: %{patterns: ["kubernetes"], once: true}
+        })
 
       insert_macro(macro)
 
@@ -180,11 +183,12 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "generates discovery announcements" do
-      macro = make_prompt_macro(%{
-        name: "k8s-helper",
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["kubernetes"]}
-      })
+      macro =
+        make_prompt_macro(%{
+          name: "k8s-helper",
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["kubernetes"]}
+        })
 
       insert_macro(macro)
 
@@ -196,11 +200,12 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "does not re-announce already discovered macros" do
-      macro = make_prompt_macro(%{
-        name: "k8s-helper",
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["kubernetes"]}
-      })
+      macro =
+        make_prompt_macro(%{
+          name: "k8s-helper",
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["kubernetes"]}
+        })
 
       insert_macro(macro)
 
@@ -214,13 +219,14 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "template variables resolved from context" do
-      macro = make_prompt_macro(%{
-        prompt_body: %{
-          text: "Turn %{turn_count} in room %{room_name}",
-          tag: nil,
-          priority: 50
-        }
-      })
+      macro =
+        make_prompt_macro(%{
+          prompt_body: %{
+            text: "Turn %{turn_count} in room %{room_name}",
+            tag: nil,
+            priority: 50
+          }
+        })
 
       insert_macro(macro)
 
@@ -272,11 +278,17 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "includes declared child tools" do
-      macro = make_explicit_macro(%{
-        tools: [
-          %{name: "status", description: "Check deploy status", input_schema: %{}, handler: :script}
-        ]
-      })
+      macro =
+        make_explicit_macro(%{
+          tools: [
+            %{
+              name: "status",
+              description: "Check deploy status",
+              input_schema: %{},
+              handler: :script
+            }
+          ]
+        })
 
       insert_macro(macro)
 
@@ -287,9 +299,10 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "extracts template variables as input schema properties" do
-      macro = make_explicit_macro(%{
-        prompt_body: %{text: "Deploy %{target} to %{environment}", tag: nil, priority: nil}
-      })
+      macro =
+        make_explicit_macro(%{
+          prompt_body: %{text: "Deploy %{target} to %{environment}", tag: nil, priority: nil}
+        })
 
       insert_macro(macro)
 
@@ -311,11 +324,12 @@ defmodule Cranium.Macro.EngineTest do
     end
 
     test "includes discoverable macros only after discovery" do
-      macro = make_explicit_macro(%{
-        name: "secret-deploy",
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["deploy"]}
-      })
+      macro =
+        make_explicit_macro(%{
+          name: "secret-deploy",
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["deploy"]}
+        })
 
       insert_macro(macro)
 
@@ -324,13 +338,14 @@ defmodule Cranium.Macro.EngineTest do
       assert defs_before == []
 
       # Discover it via trigger evaluation
-      match_macro = make_prompt_macro(%{
-        name: "secret-deploy-trigger",
-        trigger: :match,
-        match_config: %{patterns: ["deploy"], once: false},
-        advertising: :discoverable,
-        discoverable_config: %{keywords: ["deploy"]}
-      })
+      match_macro =
+        make_prompt_macro(%{
+          name: "secret-deploy-trigger",
+          trigger: :match,
+          match_config: %{patterns: ["deploy"], once: false},
+          advertising: :discoverable,
+          discoverable_config: %{keywords: ["deploy"]}
+        })
 
       insert_macro(match_macro)
       Engine.evaluate_turn(turn_context("deploy"))
@@ -442,13 +457,14 @@ defmodule Cranium.Macro.EngineTest do
       Engine.evaluate_turn(turn_context("activate"))
 
       # Subsequent turn without trigger keyword — still injects because active
-      {injections, _} = Engine.evaluate_turn(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        turn_count: 2,
-        message_text: "something else entirely",
-        room_name: "test-room"
-      })
+      {injections, _} =
+        Engine.evaluate_turn(%{
+          conversation_id: "test-room",
+          epoch_id: "epoch-1",
+          turn_count: 2,
+          message_text: "something else entirely",
+          room_name: "test-room"
+        })
 
       assert [%{priority: 30, content: "Condition macro active"}] = injections
     end
@@ -507,16 +523,20 @@ defmodule Cranium.Macro.EngineTest do
       })
 
       # Simulate sidecar completing both conditions
-      :ets.insert(Cranium.Macro.Sidecar, {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0, 1]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0, 1]}}
+      )
 
       # evaluate_turn should consume results and auto-close
-      {injections, _} = Engine.evaluate_turn(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        turn_count: 5,
-        message_text: "anything",
-        room_name: "test-room"
-      })
+      {injections, _} =
+        Engine.evaluate_turn(%{
+          conversation_id: "test-room",
+          epoch_id: "epoch-1",
+          turn_count: 5,
+          message_text: "anything",
+          room_name: "test-room"
+        })
 
       # Should have completion injection
       completion = Enum.find(injections, &(&1.content =~ "completed"))
@@ -543,13 +563,14 @@ defmodule Cranium.Macro.EngineTest do
         ]
       })
 
-      {injections, _} = Engine.evaluate_turn(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        turn_count: 5,
-        message_text: "anything",
-        room_name: "test-room"
-      })
+      {injections, _} =
+        Engine.evaluate_turn(%{
+          conversation_id: "test-room",
+          epoch_id: "epoch-1",
+          turn_count: 5,
+          message_text: "anything",
+          room_name: "test-room"
+        })
 
       # No completion injection
       completion = Enum.find(injections, &(Map.get(&1, :content, "") =~ "completed"))
@@ -573,13 +594,14 @@ defmodule Cranium.Macro.EngineTest do
         ]
       })
 
-      {injections, _} = Engine.evaluate_turn(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        turn_count: 5,
-        message_text: "anything",
-        room_name: "test-room"
-      })
+      {injections, _} =
+        Engine.evaluate_turn(%{
+          conversation_id: "test-room",
+          epoch_id: "epoch-1",
+          turn_count: 5,
+          message_text: "anything",
+          room_name: "test-room"
+        })
 
       completion = Enum.find(injections, &(Map.get(&1, :content, "") =~ "completed"))
       assert completion
@@ -602,13 +624,14 @@ defmodule Cranium.Macro.EngineTest do
         ]
       })
 
-      {injections, _} = Engine.evaluate_turn(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        turn_count: 5,
-        message_text: "anything",
-        room_name: "test-room"
-      })
+      {injections, _} =
+        Engine.evaluate_turn(%{
+          conversation_id: "test-room",
+          epoch_id: "epoch-1",
+          turn_count: 5,
+          message_text: "anything",
+          room_name: "test-room"
+        })
 
       completion = Enum.find(injections, &(Map.get(&1, :content, "") =~ "completed"))
       assert completion
@@ -640,7 +663,10 @@ defmodule Cranium.Macro.EngineTest do
       })
 
       # Sidecar completed index 0
-      :ets.insert(Cranium.Macro.Sidecar, {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0]}}
+      )
 
       Engine.evaluate_turn(%{
         conversation_id: "test-room",
@@ -669,7 +695,10 @@ defmodule Cranium.Macro.EngineTest do
         ]
       })
 
-      :ets.insert(Cranium.Macro.Sidecar, {{"test-room", "sidecar-condition"}, %{in_flight: false, result: []}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{"test-room", "sidecar-condition"}, %{in_flight: false, result: []}}
+      )
 
       Engine.evaluate_turn(%{
         conversation_id: "test-room",
@@ -697,7 +726,10 @@ defmodule Cranium.Macro.EngineTest do
       })
 
       # Sidecar completes the skipped condition
-      :ets.insert(Cranium.Macro.Sidecar, {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0]}})
+      :ets.insert(
+        Cranium.Macro.Sidecar,
+        {{"test-room", "sidecar-condition"}, %{in_flight: false, result: [0]}}
+      )
 
       Engine.evaluate_turn(%{
         conversation_id: "test-room",
@@ -742,21 +774,23 @@ defmodule Cranium.Macro.EngineTest do
 
   describe "on_epoch_end/1" do
     test "does not crash when no macros loaded" do
-      assert :ok = Engine.on_epoch_end(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        messages: []
-      })
+      assert :ok =
+               Engine.on_epoch_end(%{
+                 conversation_id: "test-room",
+                 epoch_id: "epoch-1",
+                 messages: []
+               })
     end
 
     test "skips non-revision macros" do
       insert_macro(make_condition_macro())
 
-      assert :ok = Engine.on_epoch_end(%{
-        conversation_id: "test-room",
-        epoch_id: "epoch-1",
-        messages: []
-      })
+      assert :ok =
+               Engine.on_epoch_end(%{
+                 conversation_id: "test-room",
+                 epoch_id: "epoch-1",
+                 messages: []
+               })
     end
   end
 end

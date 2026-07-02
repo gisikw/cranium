@@ -188,16 +188,14 @@ defmodule Cranium.Transport.AudioTest do
       audio_content = "fake audio content"
 
       conn =
-        Plug.Test.conn(:post, "/v1/audio/transcriptions",
-          %{
-            "model" => "test",
-            "file" => %Plug.Upload{
-              path: write_tmp_file(audio_content),
-              filename: "audio.mp3",
-              content_type: "audio/mpeg"
-            }
+        Plug.Test.conn(:post, "/v1/audio/transcriptions", %{
+          "model" => "test",
+          "file" => %Plug.Upload{
+            path: write_tmp_file(audio_content),
+            filename: "audio.mp3",
+            content_type: "audio/mpeg"
           }
-        )
+        })
         |> HTTP.call(HTTP.init([]))
 
       assert conn.status == 200
@@ -213,16 +211,14 @@ defmodule Cranium.Transport.AudioTest do
       end)
 
       conn =
-        Plug.Test.conn(:post, "/v1/audio/transcriptions",
-          %{
-            "model" => "test-audio",
-            "file" => %Plug.Upload{
-              path: write_tmp_file("audio"),
-              filename: "audio.mp3",
-              content_type: "audio/mpeg"
-            }
+        Plug.Test.conn(:post, "/v1/audio/transcriptions", %{
+          "model" => "test-audio",
+          "file" => %Plug.Upload{
+            path: write_tmp_file("audio"),
+            filename: "audio.mp3",
+            content_type: "audio/mpeg"
           }
-        )
+        })
         |> HTTP.call(HTTP.init([]))
 
       assert conn.status == 200
@@ -235,17 +231,15 @@ defmodule Cranium.Transport.AudioTest do
       end)
 
       conn =
-        Plug.Test.conn(:post, "/v1/audio/transcriptions",
-          %{
-            "model" => "test-audio",
-            "language" => "fr",
-            "file" => %Plug.Upload{
-              path: write_tmp_file("audio"),
-              filename: "audio.mp3",
-              content_type: "audio/mpeg"
-            }
+        Plug.Test.conn(:post, "/v1/audio/transcriptions", %{
+          "model" => "test-audio",
+          "language" => "fr",
+          "file" => %Plug.Upload{
+            path: write_tmp_file("audio"),
+            filename: "audio.mp3",
+            content_type: "audio/mpeg"
           }
-        )
+        })
         |> HTTP.call(HTTP.init([]))
 
       assert conn.status == 200
@@ -268,16 +262,14 @@ defmodule Cranium.Transport.AudioTest do
 
     test "returns 404 for unknown model" do
       conn =
-        Plug.Test.conn(:post, "/v1/audio/transcriptions",
-          %{
-            "model" => "nonexistent",
-            "file" => %Plug.Upload{
-              path: write_tmp_file("audio"),
-              filename: "audio.mp3",
-              content_type: "audio/mpeg"
-            }
+        Plug.Test.conn(:post, "/v1/audio/transcriptions", %{
+          "model" => "nonexistent",
+          "file" => %Plug.Upload{
+            path: write_tmp_file("audio"),
+            filename: "audio.mp3",
+            content_type: "audio/mpeg"
           }
-        )
+        })
         |> HTTP.call(HTTP.init([]))
 
       assert conn.status == 404
@@ -291,16 +283,14 @@ defmodule Cranium.Transport.AudioTest do
       end)
 
       conn =
-        Plug.Test.conn(:post, "/v1/audio/transcriptions",
-          %{
-            "model" => "test",
-            "file" => %Plug.Upload{
-              path: write_tmp_file("audio"),
-              filename: "audio.mp3",
-              content_type: "audio/mpeg"
-            }
+        Plug.Test.conn(:post, "/v1/audio/transcriptions", %{
+          "model" => "test",
+          "file" => %Plug.Upload{
+            path: write_tmp_file("audio"),
+            filename: "audio.mp3",
+            content_type: "audio/mpeg"
           }
-        )
+        })
         |> HTTP.call(HTTP.init([]))
 
       assert conn.status == 502

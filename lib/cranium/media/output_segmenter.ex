@@ -135,7 +135,8 @@ defmodule Cranium.Media.OutputSegmenter do
         # Flush any buffered text before the cue so segment ordering matches stream order
         stream = flush_text_buffer(stream, stream_id)
 
-        Cranium.Events.broadcast(stream.conversation_id,
+        Cranium.Events.broadcast(
+          stream.conversation_id,
           {:segment_ready, stream_id, stream.segment_index,
            %{type: :cue, cue_type: cue_type, data: data}}
         )
@@ -156,7 +157,13 @@ defmodule Cranium.Media.OutputSegmenter do
         remaining = String.trim(stream.text)
 
         if remaining != "" do
-          emit_segment(stream.conversation_id, stream_id, stream.segment_index, remaining, stream.disposition)
+          emit_segment(
+            stream.conversation_id,
+            stream_id,
+            stream.segment_index,
+            remaining,
+            stream.disposition
+          )
         end
 
         {:noreply, %{state | streams: Map.delete(state.streams, stream_id)}}
@@ -205,7 +212,13 @@ defmodule Cranium.Media.OutputSegmenter do
     remaining = String.trim(stream.text)
 
     if remaining != "" do
-      emit_segment(stream.conversation_id, stream_id, stream.segment_index, remaining, stream.disposition)
+      emit_segment(
+        stream.conversation_id,
+        stream_id,
+        stream.segment_index,
+        remaining,
+        stream.disposition
+      )
 
       %{stream | text: "", segment_index: stream.segment_index + 1}
       |> track_emission(word_count(remaining))
@@ -356,7 +369,13 @@ defmodule Cranium.Media.OutputSegmenter do
         # No paragraph break yet — try sentence boundary
         case split_at_sentence(stream.text, @sentence_min_words) do
           {emittable, remainder} ->
-            emit_segment(stream.conversation_id, stream_id, stream.segment_index, emittable, stream.disposition)
+            emit_segment(
+              stream.conversation_id,
+              stream_id,
+              stream.segment_index,
+              emittable,
+              stream.disposition
+            )
 
             Logger.debug(
               "Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",

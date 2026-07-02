@@ -65,14 +65,18 @@ defmodule Cranium.Macro.Sidecar do
             {:ok, indices} ->
               set_result(key, indices)
 
-              Logger.info("Macro.Sidecar: completed for #{macro_name} in #{room_name}, " <>
-                "completed indices: #{inspect(indices)}")
+              Logger.info(
+                "Macro.Sidecar: completed for #{macro_name} in #{room_name}, " <>
+                  "completed indices: #{inspect(indices)}"
+              )
 
             {:error, reason} ->
               set_in_flight(key, false)
 
-              Logger.warning("Macro.Sidecar: failed for #{macro_name} in #{room_name}: " <>
-                "#{inspect(reason)}")
+              Logger.warning(
+                "Macro.Sidecar: failed for #{macro_name} in #{room_name}: " <>
+                  "#{inspect(reason)}"
+              )
           end
         end)
 
@@ -177,7 +181,13 @@ defmodule Cranium.Macro.Sidecar do
     |> Enum.map(fn {cond_def, idx} ->
       cs = Enum.find(condition_states, &(&1["index"] == idx))
       status = if cs, do: cs["status"], else: "pending"
-      %{index: idx, description: cond_def.description, section: cond_def[:section], status: status}
+
+      %{
+        index: idx,
+        description: cond_def.description,
+        section: cond_def[:section],
+        status: status
+      }
     end)
   end
 

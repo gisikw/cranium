@@ -24,7 +24,10 @@ defmodule Cranium.Macro.Revision do
   @spec dispatch(Definition.t(), map()) :: :ok
   def dispatch(macro, epoch_end_context) do
     unless macro.revision_config do
-      Logger.warning("Macro.Revision: #{macro.name} has revision=session_end but no revision_config")
+      Logger.warning(
+        "Macro.Revision: #{macro.name} has revision=session_end but no revision_config"
+      )
+
       :ok
     else
       messages = epoch_end_context[:messages] || []
@@ -41,7 +44,14 @@ defmodule Cranium.Macro.Revision do
         sidecar_model = macro.sidecar_config && macro.sidecar_config.model
 
         Task.start(fn ->
-          case run_revision(macro_name, revision_config, messages, sidecar_model, source_path, current_version) do
+          case run_revision(
+                 macro_name,
+                 revision_config,
+                 messages,
+                 sidecar_model,
+                 source_path,
+                 current_version
+               ) do
             {:ok, :no_update} ->
               Logger.info("Macro.Revision: #{macro_name} — no update needed")
 
@@ -62,7 +72,14 @@ defmodule Cranium.Macro.Revision do
 
   # --- Private ---
 
-  defp run_revision(macro_name, revision_config, messages, sidecar_model, source_path, current_version) do
+  defp run_revision(
+         macro_name,
+         revision_config,
+         messages,
+         sidecar_model,
+         source_path,
+         current_version
+       ) do
     # Read current definition from disk
     with {:ok, current_json} <- File.read(source_path),
          {:ok, current_def} <- Jason.decode(current_json) do
@@ -109,14 +126,17 @@ defmodule Cranium.Macro.Revision do
         revised =
           new_definition
           |> Map.put("version", new_version)
-          |> Map.put("_revision_history",
+          |> Map.put(
+            "_revision_history",
             (current_def["_revision_history"] || []) ++
-              [%{
-                "version" => new_version,
-                "revised_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-                "from_version" => current_version,
-                "macro_name" => macro_name
-              }]
+              [
+                %{
+                  "version" => new_version,
+                  "revised_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+                  "from_version" => current_version,
+                  "macro_name" => macro_name
+                }
+              ]
           )
 
         # Validate the revised definition parses correctly
@@ -125,7 +145,10 @@ defmodule Cranium.Macro.Revision do
             atomic_write(source_path, revised)
 
           {:error, reason} ->
-            Logger.warning("Macro.Revision: #{macro_name} revised definition is invalid: #{reason}")
+            Logger.warning(
+              "Macro.Revision: #{macro_name} revised definition is invalid: #{reason}"
+            )
+
             {:error, {:invalid_revision, reason}}
         end
 

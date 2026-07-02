@@ -52,10 +52,19 @@ defmodule Cranium.Macro.Definition do
   @type sidecar_config :: %{model: String.t() | nil, interval: pos_integer(), prompt: String.t()}
   @type revision_config :: %{prompt: String.t(), condition: String.t() | nil}
   @type prompt_body :: %{text: String.t(), tag: String.t() | nil, priority: integer() | nil}
-  @type script_body :: %{command: String.t(), timeout_seconds: integer() | nil, sandbox: boolean() | nil}
+  @type script_body :: %{
+          command: String.t(),
+          timeout_seconds: integer() | nil,
+          sandbox: boolean() | nil
+        }
   @type sequence_body :: %{steps: [macro_ref()], on_failure: on_failure()}
   @type macro_ref :: %{name: String.t() | nil, inline: t() | nil}
-  @type tool_def :: %{name: String.t(), description: String.t(), input_schema: map(), handler: tool_handler()}
+  @type tool_def :: %{
+          name: String.t(),
+          description: String.t(),
+          input_schema: map(),
+          handler: tool_handler()
+        }
   @type condition_def :: %{description: String.t(), section: String.t() | nil}
 
   @type t :: %__MODULE__{
@@ -229,7 +238,8 @@ defmodule Cranium.Macro.Definition do
   defp parse_prompt_body(json, :prompt) do
     case json["prompt_body"] do
       %{"text" => text} when is_binary(text) ->
-        {:ok, %{text: text, tag: json["prompt_body"]["tag"], priority: json["prompt_body"]["priority"]}}
+        {:ok,
+         %{text: text, tag: json["prompt_body"]["tag"], priority: json["prompt_body"]["priority"]}}
 
       nil ->
         {:error, "prompt_body is required when body_type = prompt"}

@@ -59,8 +59,7 @@ defmodule Cranium.Config do
 
     @type t :: %__MODULE__{
             name: String.t(),
-            backend:
-              :tiamat,
+            backend: :tiamat,
             model: String.t() | nil,
             identity_paths: [String.t()],
             tools_prompt: boolean(),
@@ -172,7 +171,6 @@ defmodule Cranium.Config do
     |> Enum.into(%{}, fn [room, profile] -> {room, profile} end)
   end
 
-
   @doc "Read and cache an identity file by path. Returns content or nil on failure."
   @spec read_identity(String.t()) :: String.t() | nil
   def read_identity(path) do
@@ -264,9 +262,14 @@ defmodule Cranium.Config do
       for {name, config} <- profiles_raw, into: %{} do
         backend =
           case config["backend"] do
-            "tiamat" -> :tiamat
-            "mock" -> :mock
-            other -> raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'. Only 'tiamat' is supported."
+            "tiamat" ->
+              :tiamat
+
+            "mock" ->
+              :mock
+
+            other ->
+              raise "Cranium.Config: unknown backend '#{other}' for profile '#{name}'. Only 'tiamat' is supported."
           end
 
         unless backend != :tiamat or valid_router_profile?(config["router_profile"]) do

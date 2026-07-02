@@ -1,5 +1,4 @@
 defmodule Cranium.Messages do
-
   defmodule PassHeader do
     @moduledoc """
     Routing metadata for a pass, emitted by Transport.
@@ -51,5 +50,4 @@ defmodule Cranium.Messages do
     @enforce_keys [:take_id, :text]
     defstruct [:take_id, :text]
   end
-
 end
