@@ -22,6 +22,12 @@ All endpoints require authentication. Currently single-tenant; auth mechanism is
 
 ---
 
+## Timestamps
+
+All timestamps in this protocol are ISO 8601 UTC with second precision (e.g. `2026-06-29T04:30:00Z`). No sub-second component is emitted; ordering is carried by `seq` (events) and array order (transcripts), never by timestamp.
+
+---
+
 ## Endpoints
 
 ### Room List

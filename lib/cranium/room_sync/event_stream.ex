@@ -196,7 +196,10 @@ defmodule Cranium.RoomSync.EventStream do
 
   # Durable events carry their own seq as the SSE id
   defp send_durable_event(conn, event) do
-    data = Jason.encode!(event)
+    data =
+      event
+      |> Map.update(:occurred_at, nil, &Cranium.RoomSync.Timestamp.iso8601/1)
+      |> Jason.encode!()
 
     Plug.Conn.chunk(
       conn,
@@ -211,7 +214,7 @@ defmodule Cranium.RoomSync.EventStream do
         type: type,
         room_id: room_id,
         seq: nil,
-        occurred_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+        occurred_at: Cranium.RoomSync.Timestamp.iso8601(DateTime.utc_now()),
         payload: payload
       })
 
@@ -226,7 +229,7 @@ defmodule Cranium.RoomSync.EventStream do
         type: "cursor_expired",
         room_id: room_id,
         seq: nil,
-        occurred_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+        occurred_at: Cranium.RoomSync.Timestamp.iso8601(DateTime.utc_now()),
         payload: %{refresh: true}
       })
 

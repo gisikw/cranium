@@ -45,7 +45,7 @@ defmodule Cranium.RoomSync.TranscriptMessage do
       parts: parts,
       text: text,
       origin: m.origin,
-      created_at: m.inserted_at,
+      created_at: Cranium.RoomSync.Timestamp.iso8601(m.inserted_at),
       epoch_id: m.epoch_id,
       parent_id: m.parent_id
     }
@@ -160,8 +160,11 @@ defmodule Cranium.RoomSync.TranscriptMessage do
 
       "image" ->
         source_map = block["source"] || block[:source] || %{}
-        media_type = block["media_type"] || block[:media_type] ||
-                     source_map["media_type"] || source_map[:media_type]
+
+        media_type =
+          block["media_type"] || block[:media_type] ||
+            source_map["media_type"] || source_map[:media_type]
+
         data = source_map["data"] || source_map[:data]
 
         %{

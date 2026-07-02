@@ -37,9 +37,9 @@ defmodule Cranium.RoomSync.RoomList do
         id: room.id,
         name: room[:name] || room.id,
         description: room[:description],
-        last_activity_at: room[:last_activity_at],
+        last_activity_at: Cranium.RoomSync.Timestamp.iso8601(room[:last_activity_at]),
         latest_message_preview: preview_from_message(latest),
-        latest_message_at: if(latest, do: latest.inserted_at),
+        latest_message_at: if(latest, do: Cranium.RoomSync.Timestamp.iso8601(latest.inserted_at)),
         has_active_turn: room.id in active_turns,
         unread: false
       }
@@ -60,13 +60,17 @@ defmodule Cranium.RoomSync.RoomList do
           content: m.content,
           role: m.role,
           inserted_at: m.inserted_at,
-          rank: over(row_number(), partition_by: m.conversation_id, order_by: [desc: m.inserted_at, desc: m.id])
+          rank:
+            over(row_number(),
+              partition_by: m.conversation_id,
+              order_by: [desc: m.inserted_at, desc: m.id]
+            )
         }
       )
 
     from(r in subquery(ranked), where: r.rank == 1)
     |> Repo.all()
-    |> Map.new(& {&1.conversation_id, &1})
+    |> Map.new(&{&1.conversation_id, &1})
   rescue
     # Defensive: if Repo isn't available (test without full supervision), return empty
     _ -> %{}
@@ -92,7 +96,9 @@ defmodule Cranium.RoomSync.RoomList do
     text = Cranium.Store.extract_text(content)
 
     case text do
-      "" -> nil
+      "" ->
+        nil
+
       t ->
         preview = String.slice(t, 0, @preview_max_length)
         prefix = if role == "user", do: "", else: ""

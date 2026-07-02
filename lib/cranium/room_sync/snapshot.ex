@@ -90,7 +90,8 @@ defmodule Cranium.RoomSync.Snapshot do
         %{
           stream_id: turn_state[:stream_id],
           conversation_id: room_id,
-          started_at: turn_state[:started_at] || DateTime.utc_now(),
+          started_at:
+            Cranium.RoomSync.Timestamp.iso8601(turn_state[:started_at] || DateTime.utc_now()),
           accumulated_text: turn_state[:accumulated_text],
           accumulated_parts: turn_state[:accumulated_parts],
           pending_tool_calls: turn_state[:pending_tool_calls]
