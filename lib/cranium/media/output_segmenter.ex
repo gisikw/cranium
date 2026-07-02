@@ -91,6 +91,7 @@ defmodule Cranium.Media.OutputSegmenter do
         text: "",
         segment_index: 0,
         disposition: disposition,
+        conversation_id: Map.get(metadata, :conversation_id),
         first_emit_at: nil,
         words_emitted: 0,
         flush_ref: nil
@@ -134,7 +135,7 @@ defmodule Cranium.Media.OutputSegmenter do
         # Flush any buffered text before the cue so segment ordering matches stream order
         stream = flush_text_buffer(stream, stream_id)
 
-        Cranium.Events.broadcast(
+        Cranium.Events.broadcast(stream.conversation_id,
           {:segment_ready, stream_id, stream.segment_index,
            %{type: :cue, cue_type: cue_type, data: data}}
         )
@@ -155,7 +156,7 @@ defmodule Cranium.Media.OutputSegmenter do
         remaining = String.trim(stream.text)
 
         if remaining != "" do
-          emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
+          emit_segment(stream.conversation_id, stream_id, stream.segment_index, remaining, stream.disposition)
         end
 
         {:noreply, %{state | streams: Map.delete(state.streams, stream_id)}}
@@ -204,7 +205,7 @@ defmodule Cranium.Media.OutputSegmenter do
     remaining = String.trim(stream.text)
 
     if remaining != "" do
-      emit_segment(stream_id, stream.segment_index, remaining, stream.disposition)
+      emit_segment(stream.conversation_id, stream_id, stream.segment_index, remaining, stream.disposition)
 
       %{stream | text: "", segment_index: stream.segment_index + 1}
       |> track_emission(word_count(remaining))
@@ -322,7 +323,7 @@ defmodule Cranium.Media.OutputSegmenter do
           Enum.reduce(paragraphs, {stream.segment_index, stream}, fn para, {idx, s} ->
             if word_count(para) <= max_words do
               # Paragraph fits within runway — emit whole for better prosody
-              emit_segment(stream_id, idx, para, s.disposition)
+              emit_segment(s.conversation_id, stream_id, idx, para, s.disposition)
 
               Logger.debug(
                 "Aggressive emit (para): segment=#{idx} words=#{word_count(para)} safe=#{max_words} lead_time=#{lead_time_ms(s)}ms",
@@ -355,7 +356,7 @@ defmodule Cranium.Media.OutputSegmenter do
         # No paragraph break yet — try sentence boundary
         case split_at_sentence(stream.text, @sentence_min_words) do
           {emittable, remainder} ->
-            emit_segment(stream_id, stream.segment_index, emittable, stream.disposition)
+            emit_segment(stream.conversation_id, stream_id, stream.segment_index, emittable, stream.disposition)
 
             Logger.debug(
               "Aggressive emit (sentence): segment=#{stream.segment_index} words=#{word_count(emittable)} lead_time=#{lead_time_ms(stream)}ms",
@@ -386,7 +387,7 @@ defmodule Cranium.Media.OutputSegmenter do
   defp sentence_split_and_emit(text, index, stream, stream_id) do
     case split_at_sentence(text, @sentence_min_words) do
       {emittable, remainder} ->
-        emit_segment(stream_id, index, emittable, stream.disposition)
+        emit_segment(stream.conversation_id, stream_id, index, emittable, stream.disposition)
 
         Logger.debug(
           "Aggressive emit (sentence from para): segment=#{index} words=#{word_count(emittable)}",
@@ -402,7 +403,7 @@ defmodule Cranium.Media.OutputSegmenter do
         trimmed = String.trim(text)
 
         if trimmed != "" do
-          emit_segment(stream_id, index, trimmed, stream.disposition)
+          emit_segment(stream.conversation_id, stream_id, index, trimmed, stream.disposition)
           {index + 1, track_emission(stream, word_count(trimmed))}
         else
           {index, stream}
@@ -501,7 +502,7 @@ defmodule Cranium.Media.OutputSegmenter do
         merged = if acc == "", do: para, else: acc <> "\n\n" <> para
 
         if word_count(merged) >= threshold do
-          emit_segment(stream_id, idx, merged, stream.disposition)
+          emit_segment(stream.conversation_id, stream_id, idx, merged, stream.disposition)
           {idx + 1, ""}
         else
           {idx, merged}
@@ -524,7 +525,7 @@ defmodule Cranium.Media.OutputSegmenter do
     text |> String.split(~r/\s+/, trim: true) |> length()
   end
 
-  defp emit_segment(stream_id, index, text, disposition) do
+  defp emit_segment(conversation_id, stream_id, index, text, disposition) do
     if "audio" in disposition do
       warm_tts(stream_id, index, text)
     end
@@ -532,6 +533,7 @@ defmodule Cranium.Media.OutputSegmenter do
     renditions = if "audio" in disposition, do: [:text, :audio], else: [:text]
 
     Cranium.Events.broadcast(
+      conversation_id,
       {:segment_ready, stream_id, index, %{type: :utterance, text: text, renditions: renditions}}
     )
 

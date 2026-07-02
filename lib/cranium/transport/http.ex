@@ -1075,6 +1075,12 @@ defmodule Cranium.Transport.HTTP do
           {:ok, conn} -> multi_stream_sse_loop(conn, streams)
           {:error, _} -> conn
         end
+
+      # Segment events are surfaced to room-sync clients via EventStream, not
+      # this legacy firehose. Drain them so they don't accumulate in the mailbox
+      # now that they're routed to the conversation topic (crn-3c70).
+      {:segment_ready, _stream_id, _index, _payload} ->
+        multi_stream_sse_loop(conn, streams)
     after
       30_000 ->
         case chunk(conn, ": keepalive\n\n") do

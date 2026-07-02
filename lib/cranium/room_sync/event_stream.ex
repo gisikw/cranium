@@ -21,6 +21,9 @@ defmodule Cranium.RoomSync.EventStream do
   - `turn.delta` — text chunk during streaming
   - `turn.tool_use` — tool call started (name, input, id)
   - `turn.tool_result` — tool call completed (result, is_error)
+  - `turn.segment` — a segmented utterance ready for playout (text + advertised
+    renditions); replaces manifest polling for audio cutover (crn-3c70)
+  - `turn.cue` — a positional cue/marker emitted mid-stream (crn-3c70)
 
   These use the same SSE envelope shape but carry `seq: null` to signal
   they are not replayable. Reconnecting clients recover mid-turn state
@@ -138,6 +141,37 @@ defmodule Cranium.RoomSync.EventStream do
         }
 
         case send_ephemeral_event(conn, room_id, "turn.tool_result", payload) do
+          {:ok, conn} -> live_loop(conn, room_id, last_seq)
+          {:error, _} -> conn
+        end
+
+      # --- Audio/utterance segment events (crn-3c70) ---
+      # These let clients cut over from manifest polling. Ephemeral: audio
+      # renditions are served lazily and recovered via the manifest/segment
+      # endpoints on reconnect, so they carry no seq.
+
+      {:segment_ready, stream_id, index, %{type: :utterance} = seg} ->
+        payload = %{
+          stream_id: stream_id,
+          index: index,
+          text: seg[:text],
+          renditions: Enum.map(seg[:renditions] || [:text], &to_string/1)
+        }
+
+        case send_ephemeral_event(conn, room_id, "turn.segment", payload) do
+          {:ok, conn} -> live_loop(conn, room_id, last_seq)
+          {:error, _} -> conn
+        end
+
+      {:segment_ready, stream_id, index, %{type: :cue, cue_type: cue_type, data: data}} ->
+        payload = %{
+          stream_id: stream_id,
+          index: index,
+          cue_type: to_string(cue_type),
+          data: data
+        }
+
+        case send_ephemeral_event(conn, room_id, "turn.cue", payload) do
           {:ok, conn} -> live_loop(conn, room_id, last_seq)
           {:error, _} -> conn
         end

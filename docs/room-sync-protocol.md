@@ -256,6 +256,8 @@ data: {"type":"turn.delta","room_id":"cranium","seq":null,"occurred_at":"...","p
 | `turn.delta` | `content` (string) | Text chunk during streaming |
 | `turn.tool_use` | `id`, `name`, `input` | Tool call started |
 | `turn.tool_result` | `tool_use_id`, `content`, `is_error` | Tool call completed |
+| `turn.segment` | `stream_id`, `index`, `text`, `renditions` | A playout-ready utterance segment. `renditions` lists available formats (`["text"]` or `["text","audio"]`). Audio is served lazily at `/v1/streams/:stream_id/segments/:index/audio`. |
+| `turn.cue` | `stream_id`, `index`, `cue_type`, `data` | A positional marker (e.g. show-image-here) emitted mid-stream. |
 
 #### Client Deduplication
 
@@ -378,6 +380,29 @@ Always returns 200 regardless of whether a turn was active. If a turn was runnin
    - message.created (assistant message)
 ```
 
+### Audio Playout
+
+When the turn's disposition includes `"audio"`, the same event stream also
+carries playout-ready segments. This replaces the old manifest-polling loop:
+
+```
+1. POST /v1/rooms/:room_id/messages (or /audio-takes)  → 202 with stream_id
+2. Wait for events on the SSE stream:
+   - turn.started
+   - turn.segment (index 0)                   (ephemeral — fetch/play audio)
+   - turn.cue                                  (ephemeral — positional marker)
+   - turn.segment (index 1) ...
+   - turn.completed
+3. For each turn.segment, if "audio" in renditions, GET
+   /v1/streams/:stream_id/segments/:index/audio to fetch the rendition.
+   Segments are ordered by index; play in order.
+```
+
+Segments are ephemeral (`seq: null`). On reconnect mid-turn, recover the
+segment list from the manifest endpoint rather than replaying the stream —
+the audio renditions themselves are served lazily and remain fetchable by
+`stream_id`/`index` for the manifest TTL.
+
 ### Reconnect
 
 ```
@@ -413,7 +438,6 @@ These are specced in the allium but not yet implemented:
 | Global activity stream (`GET /v1/activity`) | Deferred | Poll `/v1/rooms` on foreground transitions for now |
 | Read markers (`POST /v1/rooms/:room_id/read-marker`) | Deferred | `unread` is always `false` |
 | Command idempotency (`client_command_id`) | Deferred | Duplicate messages possible on flaky networks |
-| Audio segment events on event stream | Planned | Currently uses manifest polling |
 
 ---
 

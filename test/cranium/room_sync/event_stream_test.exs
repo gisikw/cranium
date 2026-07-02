@@ -105,6 +105,57 @@ defmodule Cranium.RoomSync.EventStreamTest do
       assert event["seq"] == nil
     end
 
+    test "utterance segment_ready events are forwarded as turn.segment", %{
+      room_id: room_id,
+      port: port
+    } do
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(
+            room_id,
+            {:segment_ready, "stream-1", 0,
+             %{type: :utterance, text: "Hello there.", renditions: [:text, :audio]}}
+          )
+
+          Process.sleep(100)
+        end)
+
+      segments = filter_events(events, "turn.segment")
+      assert length(segments) >= 1
+
+      [event | _] = segments
+      assert event["type"] == "turn.segment"
+      assert event["payload"]["stream_id"] == "stream-1"
+      assert event["payload"]["index"] == 0
+      assert event["payload"]["text"] == "Hello there."
+      assert event["payload"]["renditions"] == ["text", "audio"]
+      assert event["seq"] == nil
+    end
+
+    test "cue segment_ready events are forwarded as turn.cue", %{room_id: room_id, port: port} do
+      events =
+        with_sse_client(port, fn ->
+          Cranium.Events.broadcast(
+            room_id,
+            {:segment_ready, "stream-1", 3,
+             %{type: :cue, cue_type: :image, data: %{"url" => "https://example.com/x.png"}}}
+          )
+
+          Process.sleep(100)
+        end)
+
+      cues = filter_events(events, "turn.cue")
+      assert length(cues) >= 1
+
+      [event | _] = cues
+      assert event["type"] == "turn.cue"
+      assert event["payload"]["stream_id"] == "stream-1"
+      assert event["payload"]["index"] == 3
+      assert event["payload"]["cue_type"] == "image"
+      assert event["payload"]["data"] == %{"url" => "https://example.com/x.png"}
+      assert event["seq"] == nil
+    end
+
     test "durable room events are forwarded with seq", %{room_id: room_id, port: port} do
       events = with_sse_client(port, fn ->
         Cranium.RoomEvents.message_created(room_id, %{
