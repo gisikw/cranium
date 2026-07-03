@@ -118,18 +118,46 @@ defmodule Cranium.Muse do
       if depth, do: Keyword.put(opts, :env, [{"MUSE_ROOM_DEPTH", to_string(depth)}]), else: opts
 
     case run([@binary | args], opts) do
-      {:ok, output} -> {:ok, output}
+      {:ok, output} -> {:ok, unwrap_exec_output(output)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Unwrap muse's ExecResult wrapper (`{"output": <value>}`) so tool output
+  lands top-level in the tool_result, per the cross-repo envelope
+  convention (top-level `"type": "content"` discriminant). Without this,
+  content envelopes stored as `{"output": {...}}` never match the
+  discriminant and grotto refs are never resolved.
+
+  String outputs are returned as-is; structured outputs are re-encoded
+  as JSON. Anything that isn't an ExecResult passes through verbatim.
+  """
+  @spec unwrap_exec_output(String.t()) :: String.t()
+  def unwrap_exec_output(output) do
+    case Jason.decode(output) do
+      {:ok, %{"output" => value}} when is_binary(value) -> value
+      {:ok, %{"output" => value}} -> Jason.encode!(value)
+      _ -> output
     end
   end
 
   defp run([cmd | args], opts \\ [stderr_to_stdout: true]) do
     case System.cmd(cmd, args, opts) do
       {output, 0} -> {:ok, output}
-      {output, code} -> {:error, "exit=#{code}: #{String.slice(output, 0..500)}"}
+      {output, code} -> {:error, exec_error(code, output)}
     end
   rescue
     e in ErlangError -> {:error, Exception.message(e)}
+  end
+
+  # On failure muse prints an ExecResult with an "error" field and exits
+  # nonzero; surface that message as plain text rather than the JSON wrapper.
+  defp exec_error(code, output) do
+    case Jason.decode(output) do
+      {:ok, %{"error" => error}} when is_binary(error) and error != "" -> error
+      _ -> "exit=#{code}: #{String.slice(output, 0..500)}"
+    end
   end
 
   defp normalize_tools(raw) do
