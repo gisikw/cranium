@@ -49,6 +49,29 @@ without stalling, per the dispatch:
   approximation — the ceiling is a hard number in the signed design,
   so the enforced quantity is the same one that gets logged.
 
+### e2e verification (2026-07-05, dev instance + fixture ledger)
+
+Fixture ledger (5 beliefs, 2 pinned) via `GEE_BELIEF_STORE`/
+`GEE_BELIEF_LOG` overrides; artifact published with the same
+temp+rename command the timer runs; dev cranium on :4199 with
+`GEE_BRIDGE_PATH` pointed at the fixture artifact; real room sessions
+on the tiamat qwen-local profile.
+
+- Session start (room `belief-e2e`): block injected on the epoch's
+  first pass, `kind=session_start beliefs=3 tokens=105 dropped=0`;
+  persisted in the user message; the model's reply cited the injected
+  ids back.
+- Turn 2, unchanged bridge: no reinjection (1 manifest line, 1 log
+  line).
+- Pinned a belief + republished → turn 3 reinjected
+  `kind=delta beliefs=5 tokens=141`.
+- `context.injection.recorded` room events and manifest JSONL lines
+  match the log counts exactly.
+- Aged artifact to 3h + fresh room: warning logged, no injection, turn
+  completed normally.
+- Zero writes: no gee invocation anywhere in lib/ (grep for System.cmd
+  / gee); cranium touches only the published artifact, read-only.
+
 ### Parked questions
 
 - Should the surfaced band refresh also have a turn-cadence floor
