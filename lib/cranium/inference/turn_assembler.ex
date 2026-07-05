@@ -396,6 +396,8 @@ defmodule Cranium.Inference.TurnAssembler do
       is_fresh: is_fresh
     }
 
+    gee_beliefs_config = Application.get_env(:cranium, :gee_beliefs, [])
+
     injection_ctx = %{
       now: DateTime.utc_now(),
       epoch: %{
@@ -405,10 +407,16 @@ defmodule Cranium.Inference.TurnAssembler do
         saturation: (epoch_ctx.saturation || 0.0) * 100,
         last_reminder_bucket: epoch_ctx.last_reminder_bucket,
         last_landscape_at: epoch_ctx.last_landscape_at,
-        interrupted_context: epoch_ctx.interrupted_context
+        interrupted_context: epoch_ctx.interrupted_context,
+        last_belief_ids: epoch_ctx[:last_belief_ids]
       },
       saturation_warn: saturation_config[:saturation_warn],
-      saturation_critical: saturation_config[:saturation_critical]
+      saturation_critical: saturation_config[:saturation_critical],
+      context_window: saturation_config[:context_window],
+      # Ephemeral passes don't persist, so a belief injection there would
+      # vanish from history while last_belief_ids claims it's in context.
+      gee_bridge_path: unless(ephemeral, do: gee_beliefs_config[:bridge_path]),
+      belief_budget_fraction: gee_beliefs_config[:budget_fraction]
     }
 
     {:ok, injected} =
@@ -429,6 +437,10 @@ defmodule Cranium.Inference.TurnAssembler do
       Cranium.Store.update_epoch(epoch_id, %{
         last_reminder_bucket: injection_flags.saturation_warned_bucket
       })
+    end
+
+    if bi = injected[:belief_injection] do
+      record_belief_injection(header, epoch_id, turn_count, bi, gee_beliefs_config)
     end
 
     # 8. Build history BEFORE persisting current message, so it doesn't
@@ -641,6 +653,37 @@ defmodule Cranium.Inference.TurnAssembler do
 
   defp resolve_tools_prompt(true), do: Cranium.Muse.tools_prompt()
   defp resolve_tools_prompt(_), do: nil
+
+  # Persist which beliefs are now in context (delta detection for later
+  # turns), append the injection manifest (reference-rate/holdout analysis
+  # rail for the nightly accretion pass), and surface the token cost as a
+  # room event tagged source=gee-beliefs.
+  defp record_belief_injection(header, epoch_id, turn_count, bi, gee_beliefs_config) do
+    Cranium.Store.update_epoch(epoch_id, %{last_belief_ids: bi.ids})
+
+    Cranium.Context.BeliefManifest.append(gee_beliefs_config[:manifest_path], %{
+      room: header.conversation_id,
+      epoch_id: epoch_id,
+      turn: turn_count,
+      kind: bi.kind,
+      ids: bi.ids,
+      tokens: bi.tokens,
+      dropped: bi.dropped
+    })
+
+    Cranium.RoomEvents.injection_recorded(header.conversation_id, %{
+      epoch_id: epoch_id,
+      source: "gee-beliefs",
+      tokens: bi.tokens,
+      kind: to_string(bi.kind),
+      count: length(bi.ids)
+    })
+
+    Logger.info(
+      "TurnAssembler: belief block injected source=gee-beliefs kind=#{bi.kind} " <>
+        "beliefs=#{length(bi.ids)} tokens=#{bi.tokens} dropped=#{bi.dropped}"
+    )
+  end
 
   # Priority 25 slots call responses after landscape (20), before
   # saturation warnings (30). A dead/absent Calls exchange must not take

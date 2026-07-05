@@ -10,7 +10,7 @@ defmodule Cranium.Context.TurnInjectorTest do
     test "returns empty list when no injections are needed" do
       message = %{text: "hello"}
       context = %{}
-      assert {[], false, nil} = TurnInjector.build_injections(message, context)
+      assert {[], false, nil, nil} = TurnInjector.build_injections(message, context)
     end
 
     test "injects time-gap reminder after 30+ minutes" do
@@ -20,7 +20,9 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       assert length(injections) >= 1
       assert Enum.any?(injections, &(&1 =~ "45 minutes"))
       assert Enum.any?(injections, &(&1 =~ "<system-reminder>"))
@@ -33,7 +35,9 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello"}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       refute Enum.any?(injections, &(&1 =~ "minutes"))
     end
 
@@ -44,7 +48,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 55.0, last_reminder_bucket: 45}
       }
 
-      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket, _beliefs} = TurnInjector.build_injections(message, context)
       assert Enum.any?(injections, &(&1 =~ "55%"))
       assert Enum.any?(injections, &(&1 =~ "past halfway"))
       assert bucket == 55
@@ -57,7 +61,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 53.0, last_reminder_bucket: 50}
       }
 
-      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket, _beliefs} = TurnInjector.build_injections(message, context)
       refute Enum.any?(injections, &(&1 =~ "%"))
       assert bucket == nil
     end
@@ -75,7 +79,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{saturation: 52.0, last_reminder_bucket: 0}
       }
 
-      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket, _beliefs} = TurnInjector.build_injections(message, context)
       assert Enum.any?(injections, &(&1 =~ "52%"))
       assert bucket == 50
     end
@@ -87,7 +91,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         epoch: %{interrupted_context: "Was working on deploying the new service"}
       }
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       assert Enum.any?(injections, &(&1 =~ "interrupted"))
       assert Enum.any?(injections, &(&1 =~ "deploying the new service"))
     end
@@ -103,7 +109,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         saturation_critical: 70
       }
 
-      {injections, _landscape, bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, bucket, _beliefs} = TurnInjector.build_injections(message, context)
       assert Enum.any?(injections, &(&1 =~ "45%"))
       assert bucket == 45
     end
@@ -118,7 +124,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         saturation_critical: 65
       }
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       assert Enum.any?(injections, &(&1 =~ "getting full"))
     end
 
@@ -127,7 +135,9 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
       context = %{epoch: %{last_invoked_at: nil}, now: now}
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       assert Enum.any?(injections, &(&1 =~ "current time is"))
       assert Enum.any?(injections, &(&1 =~ "Central"))
     end
@@ -138,7 +148,9 @@ defmodule Cranium.Context.TurnInjectorTest do
       message = %{text: "hello", is_fresh: false}
       context = %{epoch: %{last_invoked_at: last}, now: now}
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       refute Enum.any?(injections, &(&1 =~ "current time is"))
     end
 
@@ -157,7 +169,9 @@ defmodule Cranium.Context.TurnInjectorTest do
         now: now
       }
 
-      {injections, _landscape, _bucket} = TurnInjector.build_injections(message, context)
+      {injections, _landscape, _bucket, _beliefs} =
+        TurnInjector.build_injections(message, context)
+
       assert length(injections) >= 2
     end
   end
@@ -249,7 +263,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       context = %{}
       plugin_injections = [%{priority: 25, content: "<test>plugin-content</test>"}]
 
-      {injections, _landscape, _bucket} =
+      {injections, _landscape, _bucket, _beliefs} =
         TurnInjector.build_injections(message, context, plugin_injections)
 
       assert length(injections) == 1
@@ -270,7 +284,7 @@ defmodule Cranium.Context.TurnInjectorTest do
       # Plugin at priority 25 — should appear between time-gap (10) and interrupted (40)
       plugin_injections = [%{priority: 25, content: "<plugin>middle</plugin>"}]
 
-      {injections, _landscape, _bucket} =
+      {injections, _landscape, _bucket, _beliefs} =
         TurnInjector.build_injections(message, context, plugin_injections)
 
       # Find positions
@@ -291,7 +305,7 @@ defmodule Cranium.Context.TurnInjectorTest do
         %{priority: 5, content: "<early>early</early>"}
       ]
 
-      {injections, _landscape, _bucket} =
+      {injections, _landscape, _bucket, _beliefs} =
         TurnInjector.build_injections(message, context, plugin_injections)
 
       assert length(injections) == 2
@@ -317,6 +331,120 @@ defmodule Cranium.Context.TurnInjectorTest do
       {:ok, result_with} = TurnInjector.process(message, context, [])
 
       assert result_without.text == result_with.text
+    end
+  end
+
+  describe "belief injection source" do
+    @bridge_output """
+    <gee mode="task" surfaced="0" active="0" beliefs="2" pinned="1">
+    <beliefs pinned="1" surfaced="1">
+    [B-003] Directness > diplomacy in code review (0.95)
+    ---
+    [B-042] Shipping beats polishing (0.50, contested)
+    </beliefs>
+    </gee>
+    """
+
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "turn_injector_beliefs_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      path = Path.join(dir, "bridge.txt")
+      File.write!(path, @bridge_output)
+      {:ok, bridge_path: path}
+    end
+
+    test "session start injects the belief block and sets metadata", %{bridge_path: path} do
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+      context = %{gee_bridge_path: path, epoch: %{last_invoked_at: nil}}
+
+      {:ok, result} = TurnInjector.process(message, context)
+
+      assert result.text =~ "[B-003]"
+      assert result.text =~ "[B-042]"
+
+      assert %{kind: :session_start, ids: ["B-003", "B-042"], tokens: tokens} =
+               result[:belief_injection]
+
+      assert tokens > 0
+    end
+
+    test "mid-session with unchanged ids injects nothing", %{bridge_path: path} do
+      message = %{text: "hello", is_fresh: false}
+
+      context = %{
+        gee_bridge_path: path,
+        epoch: %{last_invoked_at: nil, last_belief_ids: ["B-003", "B-042"]}
+      }
+
+      {:ok, result} = TurnInjector.process(message, context)
+      refute result.text =~ "[B-003]"
+      refute Map.has_key?(result, :belief_injection)
+    end
+
+    test "mid-session band change reinjects as delta", %{bridge_path: path} do
+      message = %{text: "hello", is_fresh: false}
+
+      context = %{
+        gee_bridge_path: path,
+        epoch: %{last_invoked_at: nil, last_belief_ids: ["B-003"]}
+      }
+
+      {:ok, result} = TurnInjector.process(message, context)
+      assert result.text =~ "[B-042]"
+      assert %{kind: :delta} = result[:belief_injection]
+    end
+
+    test "missing artifact degrades to no injection" do
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+      context = %{gee_bridge_path: "/nonexistent/bridge.txt", epoch: %{last_invoked_at: nil}}
+
+      {:ok, result} = TurnInjector.process(message, context)
+      refute Map.has_key?(result, :belief_injection)
+      assert result.text =~ "hello"
+    end
+
+    test "stale artifact degrades to no injection", %{bridge_path: path} do
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+
+      context = %{
+        gee_bridge_path: path,
+        epoch: %{last_invoked_at: nil},
+        now: DateTime.add(DateTime.utc_now(), 3 * 60 * 60, :second)
+      }
+
+      {:ok, result} = TurnInjector.process(message, context)
+      refute Map.has_key?(result, :belief_injection)
+    end
+
+    test "no bridge path configured skips the source entirely" do
+      message = %{text: "hello", is_fresh: true, conversation_id: "test-room"}
+      {:ok, result} = TurnInjector.process(message, %{epoch: %{last_invoked_at: nil}})
+      refute Map.has_key?(result, :belief_injection)
+    end
+
+    test "beliefs sort before landscape-priority injections", %{bridge_path: path} do
+      message = %{text: "hello", is_fresh: false}
+
+      context = %{
+        gee_bridge_path: path,
+        epoch: %{last_invoked_at: nil, last_belief_ids: []}
+      }
+
+      plugin_injections = [%{priority: 20, content: "<landscape-slot/>"}]
+
+      {injections, _landscape, _bucket, beliefs} =
+        TurnInjector.build_injections(message, context, plugin_injections)
+
+      belief_idx = Enum.find_index(injections, &(&1 =~ "[B-003]"))
+      plugin_idx = Enum.find_index(injections, &(&1 =~ "<landscape-slot/>"))
+      assert belief_idx < plugin_idx
+      assert beliefs.kind == :delta
     end
   end
 end

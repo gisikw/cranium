@@ -22,6 +22,17 @@ unless config_env() == :test do
   if port = System.get_env("PORT") do
     config :cranium, :http_port, String.to_integer(port)
   end
+
+  # Gee belief bridge — the artifact published by the gee-bridge-publisher
+  # timer (single eval writer). Colocated on the same host/user, so the
+  # transport is a plain file read.
+  config :cranium, :gee_beliefs,
+    bridge_path:
+      System.get_env("GEE_BRIDGE_PATH") || Path.expand("~/.local/state/gee/bridge.txt"),
+    manifest_path:
+      System.get_env("GEE_BELIEF_MANIFEST_PATH") ||
+        Path.expand("~/.local/state/cranium/belief-manifest.jsonl"),
+    budget_fraction: 0.05
 end
 
 if config_env() == :prod do

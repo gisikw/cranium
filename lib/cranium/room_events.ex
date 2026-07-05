@@ -149,4 +149,20 @@ defmodule Cranium.RoomEvents do
       saturation: saturation
     })
   end
+
+  @doc """
+  A pre-turn context injection was made.
+
+  `source` tags the injection origin (e.g. "gee-beliefs") so injected
+  tokens are countable per source wherever room events are consumed.
+  """
+  def injection_recorded(room_id, %{epoch_id: epoch_id, source: source, tokens: tokens} = attrs) do
+    emit(room_id, "context.injection.recorded", %{
+      epoch_id: epoch_id,
+      source: source,
+      tokens: tokens,
+      kind: attrs[:kind],
+      count: attrs[:count]
+    })
+  end
 end

@@ -24,6 +24,10 @@
       "FORT_ORIGIN=dev-sandbox"
       "MACROS_PATH=/home/dev/Projects/hoard/macros"
       "MACROS_STATE_PATH=/home/dev/.local/state/cranium/macros_state.json"
+      # Gee belief bridge (docs/gee-belief-injection.md). Published by the
+      # gee-bridge-publisher timer; cranium is read-only on both paths' domain.
+      "GEE_BRIDGE_PATH=/home/dev/.local/state/gee/bridge.txt"
+      "GEE_BELIEF_MANIFEST_PATH=/home/dev/.local/state/cranium/belief-manifest.jsonl"
     ] ++ (if config ? grottoUrl then [ "GROTTO_URL=${config.grottoUrl}" ] else [ ]) ++ [
       "PATH=/run/current-system/sw/bin:/run/overlays/bin:/run/managed-bin:/home/dev/.local/bin"
     ];

@@ -680,7 +680,8 @@ defmodule Cranium.Store do
          interrupted_context: epoch.interrupted_context,
          cc_session_id: epoch.cc_session_id,
          profile: epoch.profile,
-         last_invoked_at: last_invoked_at
+         last_invoked_at: last_invoked_at,
+         last_belief_ids: epoch.last_belief_ids
        }}
 
     {:reply, result, state}

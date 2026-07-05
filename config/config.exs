@@ -29,6 +29,13 @@ config :cranium, :excluded_rooms, []
 # Added to the code server's load path at boot.
 config :cranium, :plugin_beam_path, nil
 
+# Gee belief injection (docs/gee-belief-injection.md). bridge_path nil
+# disables the source; runtime.exs supplies dev/prod defaults.
+config :cranium, :gee_beliefs,
+  bridge_path: nil,
+  manifest_path: nil,
+  budget_fraction: 0.05
+
 # Pipeline tuning
 config :cranium, :pipeline,
   summary_interval: 10,

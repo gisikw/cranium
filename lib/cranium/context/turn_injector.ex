@@ -10,6 +10,9 @@ defmodule Cranium.Context.TurnInjector do
 
   - **Landscape** — cross-conversation awareness. Injected on turn 1
     (full) and on idle return (delta since last injection).
+  - **Belief block** — pinned core-self beliefs + surfaced band from the
+    published gee bridge artifact. Injected at session start; mid-session
+    only when the belief-ID set changes between bridge snapshots.
   - **Time-gap reminder** — if >30 minutes since last invocation, inject
     elapsed time and current time
   - **Saturation warning** — rising-edge detection at 5% bucket boundaries
@@ -25,6 +28,8 @@ defmodule Cranium.Context.TurnInjector do
   The step name should describe the mechanism, not one use case.
   """
 
+  require Logger
+
   @time_gap_threshold_seconds 1800
   @default_saturation_warn 50
   @default_saturation_critical 80
@@ -32,7 +37,7 @@ defmodule Cranium.Context.TurnInjector do
 
   @spec process(map(), map(), [map()]) :: {:ok, map()}
   def process(message, context, plugin_injections \\ []) do
-    {injections, landscape_injected, saturation_bucket} =
+    {injections, landscape_injected, saturation_bucket, belief_injection} =
       build_injections(message, context, plugin_injections)
 
     message =
@@ -56,30 +61,41 @@ defmodule Cranium.Context.TurnInjector do
         do: Map.put(message, :saturation_warned_bucket, saturation_bucket),
         else: message
 
+    message =
+      if belief_injection,
+        do: Map.put(message, :belief_injection, belief_injection),
+        else: message
+
     {:ok, message}
   end
 
   @doc """
   Build the list of injections for this turn.
 
-  Returns `{injections, landscape_injected, saturation_bucket}` where the
-  boolean signals to the Epoch that `last_landscape_at` should be updated.
+  Returns `{injections, landscape_injected, saturation_bucket, belief_injection}`
+  where `landscape_injected` signals to the Epoch that `last_landscape_at`
+  should be updated and `belief_injection` (a metadata map, or nil) signals
+  that `last_belief_ids` should be updated and the injection manifest
+  appended.
 
   Plugin injections (from `Cranium.Plugin.ConversationSupervisor.dispatch_hook/3`)
   are merged with builtin injections by priority, lower numbers first.
 
-  Builtin priorities: time-gap/fresh-time=10, landscape=20, saturation=30, interrupted=40.
+  Builtin priorities: time-gap/fresh-time=10, beliefs=15, landscape=20,
+  saturation=30, interrupted=40.
   """
   @spec build_injections(map(), map(), [map()]) ::
-          {[String.t()], boolean(), non_neg_integer() | nil}
+          {[String.t()], boolean(), non_neg_integer() | nil, map() | nil}
   def build_injections(message, context, plugin_injections \\ []) do
     {landscape_block, landscape_injected} = resolve_landscape(message, context)
+    {belief_block, belief_injection} = resolve_beliefs(message, context)
 
     # Build builtins as {priority, content} tuples
     builtins =
       []
       |> maybe_add_prioritized(10, maybe_time_gap(message, context))
       |> maybe_add_prioritized(10, maybe_fresh_time(message, context))
+      |> maybe_add_prioritized(15, belief_block)
       |> maybe_add_prioritized(20, landscape_block)
       |> maybe_add_prioritized(30, maybe_saturation(message, context))
       |> maybe_add_prioritized(40, maybe_interrupted(context))
@@ -94,7 +110,7 @@ defmodule Cranium.Context.TurnInjector do
 
     saturation_bucket = saturation_fired_bucket(context)
 
-    {injections, landscape_injected, saturation_bucket}
+    {injections, landscape_injected, saturation_bucket, belief_injection}
   end
 
   defp maybe_add_prioritized(acc, _priority, nil), do: acc
@@ -235,6 +251,52 @@ defmodule Cranium.Context.TurnInjector do
 
   defp saturation_advice(_pct, _critical) do
     "Context is past halfway. Be mindful of scope — avoid starting large new tasks."
+  end
+
+  # --- Beliefs ---
+
+  # Resolve the gee belief block for this turn. Returns {block, meta} —
+  # both nil when nothing should be injected. The bridge path is threaded
+  # through context by TurnAssembler (nil disables the source, e.g. in
+  # tests and ephemeral passes). A missing/stale bridge degrades to no
+  # injection: warn at session start, stay quiet mid-session to avoid
+  # per-turn log spam.
+  defp resolve_beliefs(message, context) do
+    case context[:gee_bridge_path] do
+      nil ->
+        {nil, nil}
+
+      path ->
+        case Cranium.Context.BeliefBridge.read_snapshot(path, context_now(context)) do
+          {:ok, snapshot} ->
+            decide_beliefs(snapshot, message, context)
+
+          {:error, reason} ->
+            level = if message[:is_fresh], do: :warning, else: :debug
+
+            Logger.log(
+              level,
+              "TurnInjector: no belief injection — bridge artifact #{reason} (#{path})"
+            )
+
+            {nil, nil}
+        end
+    end
+  end
+
+  defp decide_beliefs(snapshot, message, context) do
+    decision =
+      Cranium.Context.BeliefInjection.decide(snapshot, %{
+        is_fresh: message[:is_fresh] == true,
+        last_belief_ids: get_in(context, [:epoch, :last_belief_ids]),
+        context_window: context[:context_window],
+        budget_fraction: context[:belief_budget_fraction]
+      })
+
+    case decision do
+      {:inject, meta} -> {meta.block, meta}
+      :skip -> {nil, nil}
+    end
   end
 
   # --- Landscape ---

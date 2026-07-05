@@ -3,6 +3,66 @@
 Decisions and open questions, newest first. Per instructions.md: keep
 this current as work proceeds.
 
+## Gee belief injection (Dispatch B — Phase 2 static injection)
+
+Design note: `docs/gee-belief-injection.md`. Judgment calls made
+without stalling, per the dispatch:
+
+- **Transport: colocated file read.** Cranium's overlay runs as user
+  `dev` with `HOME=/home/dev` on ratched — the same host and user that
+  own `~/.config/gee/`. A file read of the published artifact is
+  strictly simpler than HTTP or a fort capability and loses nothing.
+  The read is isolated in `Cranium.Context.BeliefBridge` if the
+  topology ever changes.
+- **Publisher placement.** The fort overlay manager only supports
+  long-running services, not timers, so the publisher lives as a plain
+  systemd timer+oneshot in ratched's host `module` block (fort-nix
+  branch `gee-bridge-publisher`, needs merge + gitops deploy). The gee
+  binary is dev-managed at `~/.local/bin/gee` (precedent: dwim, gloss,
+  etc.); built and installed during this dispatch.
+- **Delta detection compares the full injected ID set** (pinned +
+  surfaced), not just the surfaced band. A pinned belief appearing
+  mid-snapshot is also worth reinjection, and one comparison is
+  simpler than two. Confidence/status drift on an unchanged set does
+  not retrigger (spec: membership change only).
+- **Mid-session first appearance injects.** If `last_belief_ids` is
+  nil mid-epoch (bridge came up after session start, or pre-migration
+  epoch), the block injects as a delta — that's "the band entering
+  from nothing," and it means beliefs reach long-lived rooms without
+  waiting for an epoch clear.
+- **Ephemeral passes skip the source.** The injection wouldn't
+  persist, but `last_belief_ids` would claim it's in context —
+  same reasoning as call-response injections skipping ephemeral.
+- **Stale/missing bridge warns at session start, debug mid-session.**
+  A per-turn warning for a down publisher would spam every turn of
+  every room; session start is the moment the absence matters most.
+  Acceptance criterion 5 reads as "a warning is logged," not "every
+  turn warns."
+- **Token counting rail created, not found.** The primer says
+  injection metadata already counts tokens per source; in reality no
+  per-source injection counter existed. Added a generic
+  `context.injection.recorded` room event (source/tokens/kind/count)
+  plus the JSONL manifest. Other sources (landscape, steering) can
+  ride the same event later.
+- **Budget enforcement is exact against the formatted block** (shrink
+  until the ~4-chars/token estimate fits), not a per-line
+  approximation — the ceiling is a hard number in the signed design,
+  so the enforced quantity is the same one that gets logged.
+
+### Parked questions
+
+- Should the surfaced band refresh also have a turn-cadence floor
+  (e.g. don't reinject more than once per N turns even on delta)?
+  15-min snapshots make thrash unlikely; revisit if the manifest shows
+  churn.
+- `gee eval` also touches the *item* store's access tracking when the
+  publisher runs — pre-existing gee behavior, out of scope here, but
+  worth a look when Phase 3 dynamics land (does a 15-min eval cadence
+  distort item curves?).
+- Landscape/time-gap sources could report into the same
+  `context.injection.recorded` event for a complete per-source budget
+  dashboard (§5.3.1). Deferred — only gee-beliefs was in scope.
+
 ## crn-7762 — call/respond inter-agent communication primitives
 
 ### Architecture

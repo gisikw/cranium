@@ -265,7 +265,9 @@ defmodule Cranium.RoomSync.EventStreamTest do
           fn ->
             Cranium.Store.emit_room_event(room_id, "test.event", %{i: 2})
             Process.sleep(100)
-          end, since: 0)
+          end,
+          since: 0
+        )
 
       expired = filter_events(events, "cursor_expired")
       assert expired == []
