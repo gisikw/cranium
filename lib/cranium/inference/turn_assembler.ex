@@ -528,7 +528,7 @@ defmodule Cranium.Inference.TurnAssembler do
       origin: header.origin,
       pass_id: header.pass_id,
       silent: header.origin == "orientation",
-      tools_disabled: header.origin == "orientation" or profile.tools_disabled == true,
+      tools_disabled: header.origin == "orientation" or profile.tools_disabled,
       tool_posture: profile.tool_posture,
       tool_rw: profile.tool_rw,
       tool_ro: profile.tool_ro,
