@@ -41,6 +41,20 @@ defmodule Cranium.Context.Router do
   end
 
   @doc """
+  Working directory for a remote-exec room: `<projects_dir>/<slug>` on the
+  REMOTE host's filesystem.
+
+  Purely textual — no existence check, no creation. The local checks in
+  `resolve_working_dir/2` are meaningless here (the path lives on another
+  box), and a wrong guess surfaces as a tool error from the remote muse
+  rather than a silent local `/tmp` fallback.
+  """
+  @spec remote_working_dir(String.t(), String.t()) :: String.t()
+  def remote_working_dir(conversation_id, projects_dir) do
+    Path.join(projects_dir, slugify(conversation_id))
+  end
+
+  @doc """
   Convert a conversation ID or name to a filesystem-safe slug.
   """
   @spec slugify(String.t()) :: String.t()

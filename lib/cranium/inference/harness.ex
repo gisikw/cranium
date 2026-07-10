@@ -124,6 +124,7 @@ defmodule Cranium.Inference.Harness do
       tool_posture: turn[:tool_posture] || :sandbox,
       tool_rw: turn[:tool_rw] || [],
       tool_ro: turn[:tool_ro] || [],
+      exec_endpoint: turn[:exec_endpoint],
       epoch_id: turn[:epoch_id]
     }
 

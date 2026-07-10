@@ -126,6 +126,71 @@ defmodule Cranium.ConfigTest do
     end
   end
 
+  describe "exec_endpoint" do
+    test "defaults to nil when not specified" do
+      {:ok, resolved} = Config.resolve_profile("test")
+      assert resolved.exec_endpoint == nil
+    end
+
+    test "parses url, token indirection, projects_dir, and timeout" do
+      {:ok, resolved} = Config.resolve_profile("test-exec-endpoint")
+
+      assert resolved.exec_endpoint == %{
+               url: "http://obrien.test:7777",
+               token_env: "MUSE_EXEC_TOKEN_TEST",
+               token_file: nil,
+               projects_dir: "/Users/kevin/Projects",
+               timeout_ms: 120_000
+             }
+    end
+
+    test "rejects a literal token in config" do
+      assert_raise RuntimeError, ~r/literal token/, fn ->
+        Config.parse_exec_endpoint(
+          %{"url" => "http://x", "token" => "sekrit", "projects_dir" => "/p"},
+          "bad"
+        )
+      end
+    end
+
+    test "requires a url" do
+      assert_raise RuntimeError, ~r/requires a non-empty url/, fn ->
+        Config.parse_exec_endpoint(
+          %{"token_env" => "T", "projects_dir" => "/p"},
+          "bad"
+        )
+      end
+    end
+
+    test "requires token_env or token_file" do
+      assert_raise RuntimeError, ~r/token_env or token_file/, fn ->
+        Config.parse_exec_endpoint(
+          %{"url" => "http://x", "projects_dir" => "/p"},
+          "bad"
+        )
+      end
+    end
+
+    test "requires an absolute projects_dir (remote path, no ~ expansion)" do
+      assert_raise RuntimeError, ~r/absolute/, fn ->
+        Config.parse_exec_endpoint(
+          %{"url" => "http://x", "token_env" => "T", "projects_dir" => "~/Projects"},
+          "bad"
+        )
+      end
+    end
+
+    test "timeout_ms is optional" do
+      endpoint =
+        Config.parse_exec_endpoint(
+          %{"url" => "http://x", "token_env" => "T", "projects_dir" => "/p"},
+          "ok"
+        )
+
+      assert endpoint.timeout_ms == nil
+    end
+  end
+
   describe "room_default_profile/1" do
     test "returns profile for configured room" do
       assert Config.room_default_profile("personal-chat") == "test-with-identity"

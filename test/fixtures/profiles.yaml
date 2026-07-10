@@ -87,5 +87,14 @@ profiles:
     backend: mock
     model: sidecar-test-model
 
+  test-exec-endpoint:
+    backend: mock
+    model: test-model
+    exec_endpoint:
+      url: http://obrien.test:7777
+      token_env: MUSE_EXEC_TOKEN_TEST
+      projects_dir: /Users/kevin/Projects
+      timeout_ms: 120000
+
 room_defaults:
   personal-chat: test-with-identity

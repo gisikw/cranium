@@ -213,6 +213,7 @@ defmodule Cranium.Inference.Agent do
       tool_posture: context[:tool_posture] || :sandbox,
       tool_rw: context[:tool_rw] || [],
       tool_ro: context[:tool_ro] || [],
+      exec_endpoint: context[:exec_endpoint],
       depth: context[:depth]
     ]
 
@@ -1017,6 +1018,7 @@ defmodule Cranium.Inference.Agent do
           posture: Keyword.get(opts, :tool_posture, :sandbox),
           rw: Keyword.get(opts, :tool_rw, []),
           ro: Keyword.get(opts, :tool_ro, []),
+          exec_endpoint: Keyword.get(opts, :exec_endpoint),
           depth: Keyword.get(opts, :depth)
         }
 
@@ -1114,6 +1116,7 @@ defmodule Cranium.Inference.Agent do
           posture: Keyword.get(opts, :tool_posture, :sandbox),
           rw: Keyword.get(opts, :tool_rw, []),
           ro: Keyword.get(opts, :tool_ro, []),
+          exec_endpoint: Keyword.get(opts, :exec_endpoint),
           depth: Keyword.get(opts, :depth)
         }
 

@@ -44,4 +44,21 @@ defmodule Cranium.Context.RouterTest do
       assert result == Path.join(dir, "cranium-v2")
     end
   end
+
+  describe "remote_working_dir/2" do
+    test "joins the remote projects dir and slug without touching the local filesystem" do
+      # A path that exists on no machine — must come back verbatim, uncreated.
+      result = Router.remote_working_dir("Xcode App", "/Users/kevin/Projects")
+
+      assert result == "/Users/kevin/Projects/xcode-app"
+      refute File.exists?(result)
+    end
+
+    test "does not fall back to a local /tmp dir for unmatched rooms" do
+      result = Router.remote_working_dir("some-chat-room", "/remote/projects")
+
+      assert result == "/remote/projects/some-chat-room"
+      refute File.exists?("/tmp/cranium/some-chat-room")
+    end
+  end
 end
