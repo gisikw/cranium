@@ -48,6 +48,8 @@ defmodule Cranium.Inference.Agent do
 
   require Logger
 
+  alias Cranium.Inference.SuppressedThought
+
   @registry Cranium.Inference.ConversationRegistry
 
   use TypedStruct
@@ -72,6 +74,9 @@ defmodule Cranium.Inference.Agent do
     field :usage, map(), default: %{input_tokens: 0, output_tokens: 0}
     # For CC path: tracks pending clear_context call (nil or continuation string)
     field :pending_clear, String.t() | nil, default: nil
+    # Filters <suppressed>...</suppressed> spans at stream ingress, before
+    # any fan-out (chunks, partial_output, turn state, content blocks).
+    field :suppression, SuppressedThought.t() | nil, default: nil
   end
 
   # --- Public API ---
@@ -141,7 +146,8 @@ defmodule Cranium.Inference.Agent do
         intermediate_messages: [],
         async_tasks_outstanding: [],
         async_results_pending: [],
-        usage: %{input_tokens: 0, output_tokens: 0}
+        usage: %{input_tokens: 0, output_tokens: 0},
+        suppression: SuppressedThought.new()
     }
 
     # Signal stream start to all subscribers
@@ -226,6 +232,10 @@ defmodule Cranium.Inference.Agent do
           other
       end
 
+    # End of stream: release any held-back literal tail from the suppression
+    # filter and journal an unclosed span (fail closed — it is never emitted).
+    result = flush_suppression(result, stream_id, state.conversation_id, opts)
+
     # If inference succeeded but produced no output (e.g. model safety refusal
     # returning empty string), emit a visible message so the client isn't left
     # staring at nothing.
@@ -236,13 +246,19 @@ defmodule Cranium.Inference.Agent do
           {:ok, :cleared}
 
         {:ok, final_state} when final_state.partial_output == [] ->
-          Logger.warning("Model returned empty response, emitting placeholder",
-            conversation_id: state.conversation_id
-          )
+          if SuppressedThought.spans(final_state.suppression) == [] do
+            Logger.warning("Model returned empty response, emitting placeholder",
+              conversation_id: state.conversation_id
+            )
 
-          placeholder = "[Model returned empty response]"
-          emit(stream_id, state.conversation_id, {:chunk, stream_id, placeholder})
-          {:ok, %{final_state | partial_output: [placeholder]}}
+            placeholder = "[Model returned empty response]"
+            emit(stream_id, state.conversation_id, {:chunk, stream_id, placeholder})
+            {:ok, %{final_state | partial_output: [placeholder]}}
+          else
+            # Everything the model said was suppressed — deliver silence, not
+            # a placeholder that misreports an empty response.
+            {:ok, final_state}
+          end
 
         other ->
           other
@@ -385,20 +401,42 @@ defmodule Cranium.Inference.Agent do
   defp receive_loop(state, stream_id, llm_pid, ref, opts) do
     receive do
       {:llm_text, text} ->
-        emit(stream_id, state.conversation_id, {:chunk, stream_id, text})
-        state = %{state | partial_output: [text | state.partial_output]}
+        # Suppressed spans are stripped here, at stream ingress — upstream of
+        # every fan-out point (chunk broadcast, partial_output, turn state).
+        {visible, closed_spans, suppression} = SuppressedThought.push(state.suppression, text)
+        journal_spans(state.conversation_id, opts, closed_spans)
+        state = %{state | suppression: suppression}
 
-        update_turn_state(state.conversation_id, fn ts ->
-          %{ts | accumulated_text: ts.accumulated_text <> text}
-        end)
+        state =
+          if visible == "" do
+            state
+          else
+            emit(stream_id, state.conversation_id, {:chunk, stream_id, visible})
+
+            update_turn_state(state.conversation_id, fn ts ->
+              %{ts | accumulated_text: ts.accumulated_text <> visible}
+            end)
+
+            %{state | partial_output: [visible | state.partial_output]}
+          end
 
         receive_loop(state, stream_id, llm_pid, ref, opts)
 
       {:llm_assistant_content, content_blocks} when is_list(content_blocks) ->
+        # Native blocks carry the same text the stream did — strip them too so
+        # final_message_content and interrupted context stay clean. The filter
+        # state dedupes spans the stream already journaled.
+        {blocks, new_spans, suppression} =
+          content_blocks
+          |> normalize_content_blocks()
+          |> SuppressedThought.strip_blocks(state.suppression)
+
+        journal_spans(state.conversation_id, opts, new_spans)
+
         state = %{
           state
-          | assistant_content_blocks:
-              state.assistant_content_blocks ++ normalize_content_blocks(content_blocks)
+          | assistant_content_blocks: state.assistant_content_blocks ++ blocks,
+            suppression: suppression
         }
 
         receive_loop(state, stream_id, llm_pid, ref, opts)
@@ -545,6 +583,10 @@ defmodule Cranium.Inference.Agent do
 
           Cranium.clear_epoch(state.conversation_id, clear_opts)
 
+          # The cleared path discards agent state — journal an open suppressed
+          # span now so the trace survives the clear.
+          journal_suppression_finish(state, opts)
+
           # Emit final message and end stream
           clear_message =
             if continuation do
@@ -635,6 +677,10 @@ defmodule Cranium.Inference.Agent do
           else: clear_opts
 
       Cranium.clear_epoch(state.conversation_id, clear_opts)
+
+      # The cleared path discards agent state — journal an open suppressed
+      # span now so the trace survives the clear.
+      journal_suppression_finish(state, opts)
 
       # Emit final message and end stream
       clear_message =
@@ -1452,6 +1498,42 @@ defmodule Cranium.Inference.Agent do
     Registry.register(@registry, {conversation_id, :turn_state}, turn_state)
   rescue
     ArgumentError -> {:error, :no_registry}
+  end
+
+  # --- Suppressed thought (discretion channel) ---
+
+  defp flush_suppression({tag, %__MODULE__{} = final_state}, stream_id, conversation_id, opts)
+       when tag in [:ok, :cancelled] do
+    {visible, new_spans, suppression} = SuppressedThought.finish(final_state.suppression)
+    journal_spans(conversation_id, opts, new_spans)
+
+    final_state =
+      if visible == "" do
+        %{final_state | suppression: suppression}
+      else
+        emit(stream_id, conversation_id, {:chunk, stream_id, visible})
+
+        %{
+          final_state
+          | suppression: suppression,
+            partial_output: [visible | final_state.partial_output]
+        }
+      end
+
+    {tag, final_state}
+  end
+
+  defp flush_suppression(result, _stream_id, _conversation_id, _opts), do: result
+
+  defp journal_suppression_finish(state, opts) do
+    {_visible, new_spans, _suppression} = SuppressedThought.finish(state.suppression)
+    journal_spans(state.conversation_id, opts, new_spans)
+  end
+
+  defp journal_spans(_conversation_id, _opts, []), do: :ok
+
+  defp journal_spans(conversation_id, opts, spans) do
+    Cranium.Store.SuppressionJournal.append(conversation_id, Keyword.get(opts, :epoch_id), spans)
   end
 
   defp emit(stream_id, conversation_id, event) do

@@ -15,6 +15,8 @@ defmodule Cranium.Effects.PassReactor do
   use GenServer
   require Logger
 
+  alias Cranium.Inference.SuppressedThought
+
   @registry Cranium.Inference.ConversationRegistry
 
   def start_link(opts) do
@@ -41,16 +43,47 @@ defmodule Cranium.Effects.PassReactor do
     cc_session_id = payload[:cc_session_id]
 
     unless payload[:ephemeral] do
-      # Persist intermediate messages (assistant + tool_result pairs from tool loop)
-      for msg <- payload[:intermediate_messages] || [] do
-        Cranium.Store.append_message(cid, epoch_id, %{
-          role: msg[:role] || msg["role"],
-          content: msg[:content] || msg["content"],
-          origin: payload[:origin]
-        })
-      end
+      # Strip suppressed spans before anything is persisted or fanned out.
+      # The Agent already strips at stream ingress, so this is normally a
+      # no-op — it is the guarantee at the Store boundary. Anything caught
+      # here still gets its journal trace.
+      {output, output_spans} = SuppressedThought.strip(output)
 
-      final_message_content = payload[:final_message_content]
+      {final_message_content, content_spans} =
+        case payload[:final_message_content] do
+          nil -> {nil, []}
+          content -> SuppressedThought.strip_content(content)
+        end
+
+      # Persist intermediate messages (assistant + tool_result pairs from tool loop)
+      intermediate_spans =
+        for msg <- payload[:intermediate_messages] || [] do
+          role = msg[:role] || msg["role"]
+
+          {content, spans} =
+            if role in [:assistant, "assistant"] do
+              SuppressedThought.strip_content(msg[:content] || msg["content"])
+            else
+              {msg[:content] || msg["content"], []}
+            end
+
+          Cranium.Store.append_message(cid, epoch_id, %{
+            role: role,
+            content: content,
+            origin: payload[:origin]
+          })
+
+          spans
+        end
+        |> List.flatten()
+
+      # The same span can appear in output, final content blocks, and an
+      # intermediate message — journal it once.
+      Cranium.Store.SuppressionJournal.append(
+        cid,
+        epoch_id,
+        Enum.uniq(intermediate_spans ++ output_spans ++ content_spans)
+      )
 
       if output != "" or final_message_content not in [nil, []] do
         # Persist final assistant message as content blocks
@@ -133,8 +166,18 @@ defmodule Cranium.Effects.PassReactor do
         state
       ) do
     unless payload[:ephemeral] do
-      output = payload[:output] || ""
-      interrupted_source = payload[:interrupted_context] || output
+      # Same Store-boundary guarantee as the :complete path — strip before
+      # persisting, journal anything that slipped through.
+      {output, output_spans} = SuppressedThought.strip(payload[:output] || "")
+
+      {interrupted_source, interrupted_spans} =
+        SuppressedThought.strip(payload[:interrupted_context] || output)
+
+      Cranium.Store.SuppressionJournal.append(
+        cid,
+        payload.epoch_id,
+        Enum.uniq(output_spans ++ interrupted_spans)
+      )
 
       if output != "" do
         Cranium.Store.append_message(cid, payload.epoch_id, %{

@@ -87,6 +87,65 @@ defmodule Cranium.Effects.PassReactorTest do
       assert part_id == "#{persisted.id}:0"
     end
 
+    test "strips suppressed spans before persistence and journals them" do
+      conversation_id = "test-effects-suppress-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      journal =
+        Path.join(
+          System.tmp_dir!(),
+          "cranium-suppression-#{System.unique_integer([:positive])}.jsonl"
+        )
+
+      paths_before = Application.get_env(:cranium, :paths, [])
+
+      Application.put_env(
+        :cranium,
+        :paths,
+        Keyword.put(paths_before, :suppression_journal, journal)
+      )
+
+      on_exit(fn ->
+        Application.put_env(:cranium, :paths, paths_before)
+        File.rm(journal)
+      end)
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-1",
+         %{
+           reason: :complete,
+           epoch_id: ctx.epoch_id,
+           output: "Public.\n\n<suppressed>private note</suppressed>\n\nMore.",
+           saturation: 0.1,
+           turn_count: 1,
+           cc_session_id: nil,
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      # Stored history sees only the stripped text, whitespace collapsed
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+      [stored] = Enum.filter(messages, &(&1.role == :assistant))
+      assert Cranium.Store.extract_text(stored.content) == "Public.\n\nMore."
+
+      # The room event fan-out sees the stripped text too
+      {:ok, events} = Cranium.Store.list_room_events(conversation_id, 0)
+      [event] = Enum.filter(events, &(&1.type == "message.created"))
+      refute inspect(event.payload) =~ "private note"
+
+      # The journal has the span, timestamped and room-labeled
+      [line] = journal |> File.read!() |> String.split("\n", trim: true)
+      entry = Jason.decode!(line)
+      assert entry["room"] == conversation_id
+      assert entry["epoch_id"] == ctx.epoch_id
+      assert entry["content"] == "private note"
+      assert {:ok, _dt, 0} = DateTime.from_iso8601(entry["at"])
+    end
+
     test "skips Store mutations for ephemeral passes" do
       conversation_id = "test-effects-eph-#{System.unique_integer([:positive])}"
 

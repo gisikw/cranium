@@ -11,7 +11,12 @@ unless config_env() == :test do
       skills: System.get_env("SKILLS_PATH"),
       subagent_prompt: System.get_env("SUBAGENT_PROMPT_PATH"),
       macros: System.get_env("MACROS_PATH"),
-      macros_state: System.get_env("MACROS_STATE_PATH")
+      macros_state: System.get_env("MACROS_STATE_PATH"),
+      # Suppressed-thought journal — the private trace of <suppressed> spans
+      # stripped from assistant messages. Always on outside test.
+      suppression_journal:
+        System.get_env("SUPPRESSION_JOURNAL_PATH") ||
+          Path.expand("~/.local/state/cranium/suppressed.jsonl")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
