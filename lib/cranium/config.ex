@@ -47,6 +47,7 @@ defmodule Cranium.Config do
       tool_rw: [],
       tool_ro: [],
       tools_disabled: false,
+      exec_endpoint: nil,
       # Audio config (optional — profiles without these use backend defaults)
       voice: nil,
       speed: nil,
@@ -57,6 +58,14 @@ defmodule Cranium.Config do
     ]
 
     @type plugin_declaration :: %{module: module(), config: map() | nil}
+
+    @type exec_endpoint :: %{
+            url: String.t(),
+            token_env: String.t() | nil,
+            token_file: String.t() | nil,
+            projects_dir: String.t(),
+            timeout_ms: pos_integer() | nil
+          }
 
     @type t :: %__MODULE__{
             name: String.t(),
@@ -77,6 +86,7 @@ defmodule Cranium.Config do
             tool_rw: [String.t()],
             tool_ro: [String.t()],
             tools_disabled: boolean(),
+            exec_endpoint: exec_endpoint() | nil,
             voice: String.t() | nil,
             speed: float() | nil,
             response_format: String.t() | nil,
@@ -116,6 +126,7 @@ defmodule Cranium.Config do
            tool_rw: profile.tool_rw,
            tool_ro: profile.tool_ro,
            tools_disabled: profile.tools_disabled,
+           exec_endpoint: profile.exec_endpoint,
            voice: profile.voice,
            speed: profile.speed,
            response_format: profile.response_format,
@@ -327,6 +338,7 @@ defmodule Cranium.Config do
           tool_rw: config["tool_rw"] || [],
           tool_ro: config["tool_ro"] || [],
           tools_disabled: config["tools_disabled"] == true,
+          exec_endpoint: parse_exec_endpoint(config["exec_endpoint"], name),
           voice: config["voice"],
           speed: speed,
           response_format: config["response_format"],
@@ -384,6 +396,60 @@ defmodule Cranium.Config do
       [] -> nil
       parts -> Enum.join(parts, "\n\n")
     end
+  end
+
+  # Remote muse exec endpoint. The token must come via env/file indirection —
+  # a literal token in profiles.yaml is rejected outright. projects_dir is the
+  # REMOTE projects root and must be absolute: `~` would expand against the
+  # local HOME, and failing at config load beats failing on every tool call.
+  # Public (undocumented) so validation rules are testable without booting a
+  # second Config instance.
+  @doc false
+  def parse_exec_endpoint(nil, _name), do: nil
+
+  def parse_exec_endpoint(config, name) when is_map(config) do
+    if config["token"] do
+      raise "Cranium.Config: profile '#{name}' exec_endpoint has a literal token — " <>
+              "use token_env or token_file indirection"
+    end
+
+    url = config["url"]
+
+    unless is_binary(url) and String.trim(url) != "" do
+      raise "Cranium.Config: profile '#{name}' exec_endpoint requires a non-empty url"
+    end
+
+    token_env = config["token_env"]
+    token_file = config["token_file"]
+
+    unless is_binary(token_env) or is_binary(token_file) do
+      raise "Cranium.Config: profile '#{name}' exec_endpoint requires token_env or token_file"
+    end
+
+    projects_dir = config["projects_dir"]
+
+    unless is_binary(projects_dir) and String.starts_with?(projects_dir, "/") do
+      raise "Cranium.Config: profile '#{name}' exec_endpoint requires an absolute " <>
+              "projects_dir (a path on the REMOTE filesystem; '~' cannot be expanded here)"
+    end
+
+    timeout_ms =
+      case config["timeout_ms"] do
+        v when is_integer(v) and v > 0 -> v
+        _ -> nil
+      end
+
+    %{
+      url: url,
+      token_env: token_env,
+      token_file: token_file,
+      projects_dir: projects_dir,
+      timeout_ms: timeout_ms
+    }
+  end
+
+  def parse_exec_endpoint(other, name) do
+    raise "Cranium.Config: profile '#{name}' exec_endpoint must be a map, got: #{inspect(other)}"
   end
 
   defp parse_plugins(nil), do: []

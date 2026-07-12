@@ -5,8 +5,11 @@ defmodule Cranium.Muse do
   At boot, `load_tools!/0` shells out to `muse --tools` and caches the
   advertised tool definitions (translated into Anthropic-shape so they
   slot into the existing ToolRouter pipeline). At invocation time,
-  `exec/3` shells out to `muse --exec <json>` with the session's
-  working directory.
+  `exec/4` shells out to `muse --exec <json>` with the session's
+  working directory — or, when the profile configures an exec endpoint,
+  POSTs the same fields to a remote `muse serve` daemon
+  (see `Cranium.Muse.HTTP`). Tool definitions are flat and identical
+  across hosts, so they are always loaded from the local binary.
 
   If muse is not on PATH or returns an unexpected payload, this module
   degrades to a no-op: cranium continues to operate without muse tools.
@@ -88,37 +91,65 @@ defmodule Cranium.Muse do
 
   @spec exec(String.t(), map(), String.t() | nil, map()) :: {:ok, String.t()} | {:error, term()}
   def exec(name, input, working_dir, tool_config \\ %{}) do
-    payload = Jason.encode!(%{tool: name, input: input})
-    posture = Map.get(tool_config, :posture, :sandbox)
+    request = build_exec_request(name, input, working_dir, tool_config)
 
-    args =
-      case posture do
+    case Map.get(tool_config, :exec_endpoint) do
+      nil -> exec_local(request)
+      endpoint -> exec_remote(endpoint, request)
+    end
+  end
+
+  @doc false
+  # One request shape for both transports: the local path turns it into argv,
+  # the HTTP path puts the same fields on the wire — so the remote request
+  # mirrors the CLI invocation field for field, by construction.
+  def build_exec_request(name, input, working_dir, tool_config) do
+    payload = Jason.encode!(%{tool: name, input: input})
+
+    {rw_dirs, ro_dirs} =
+      case Map.get(tool_config, :posture, :sandbox) do
         :permissive ->
-          ["--exec", payload]
+          {[], []}
 
         :sandbox ->
           rw_dirs = if working_dir, do: [working_dir], else: []
-          rw_dirs = rw_dirs ++ Map.get(tool_config, :rw, [])
-          ro_dirs = Map.get(tool_config, :ro, [])
-
-          grant_args =
-            Enum.flat_map(rw_dirs, &["--rw", &1]) ++
-              Enum.flat_map(ro_dirs, &["--ro", &1])
-
-          grant_args ++ ["--exec", payload]
+          {rw_dirs ++ Map.get(tool_config, :rw, []), Map.get(tool_config, :ro, [])}
       end
+
+    env =
+      case Map.get(tool_config, :depth) do
+        nil -> []
+        depth -> [{"MUSE_ROOM_DEPTH", to_string(depth)}]
+      end
+
+    %{payload: payload, working_dir: working_dir, rw: rw_dirs, ro: ro_dirs, env: env}
+  end
+
+  defp exec_local(request) do
+    grant_args =
+      Enum.flat_map(request.rw, &["--rw", &1]) ++
+        Enum.flat_map(request.ro, &["--ro", &1])
+
+    args = grant_args ++ ["--exec", request.payload]
 
     # Always cd into working_dir regardless of posture
     opts = [stderr_to_stdout: true]
-    opts = if working_dir, do: Keyword.put(opts, :cd, working_dir), else: opts
-
-    depth = Map.get(tool_config, :depth)
-
-    opts =
-      if depth, do: Keyword.put(opts, :env, [{"MUSE_ROOM_DEPTH", to_string(depth)}]), else: opts
+    opts = if request.working_dir, do: Keyword.put(opts, :cd, request.working_dir), else: opts
+    opts = if request.env == [], do: opts, else: Keyword.put(opts, :env, request.env)
 
     case run([@binary | args], opts) do
       {:ok, output} -> {:ok, unwrap_exec_output(output)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The endpoint's response body is what `--exec` prints on stdout plus an
+  # exit_code field, so success and failure route through the exact same
+  # unwrap/error paths as the local transport.
+  defp exec_remote(endpoint, request) do
+    case Cranium.Muse.HTTP.exec(endpoint, request) do
+      {:ok, body, 0} -> {:ok, unwrap_exec_output(body)}
+      {:ok, body, code} -> {:error, exec_error(code, body)}
       {:error, reason} -> {:error, reason}
     end
   end

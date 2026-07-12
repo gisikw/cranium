@@ -273,9 +273,18 @@ defmodule Cranium.Inference.TurnAssembler do
      tools_prompt_content} =
       resolve_profile(header)
 
-    # 4. Resolve routing context
-    projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
-    working_dir = Cranium.Context.Router.resolve_working_dir(header.conversation_id, projects_dir)
+    # 4. Resolve routing context. Remote-exec rooms get a working dir on the
+    #    REMOTE filesystem — resolved textually from the endpoint's
+    #    projects_dir, never probed or created locally.
+    working_dir =
+      case profile.exec_endpoint do
+        nil ->
+          projects_dir = Application.get_env(:cranium, :projects_dir, "~/Projects")
+          Cranium.Context.Router.resolve_working_dir(header.conversation_id, projects_dir)
+
+        endpoint ->
+          Cranium.Context.Router.remote_working_dir(header.conversation_id, endpoint.projects_dir)
+      end
 
     # 4b. Ensure plugins are running (idempotent — no-ops if already started)
     #     Must happen before after_resolve_profile dispatch.
@@ -532,6 +541,7 @@ defmodule Cranium.Inference.TurnAssembler do
       tool_posture: profile.tool_posture,
       tool_rw: profile.tool_rw,
       tool_ro: profile.tool_ro,
+      exec_endpoint: profile.exec_endpoint,
       depth: header.depth
     }
 
@@ -641,7 +651,8 @@ defmodule Cranium.Inference.TurnAssembler do
       plugins: resolved[:plugins] || [],
       tool_posture: resolved[:tool_posture] || :sandbox,
       tool_rw: resolved[:tool_rw] || [],
-      tool_ro: resolved[:tool_ro] || []
+      tool_ro: resolved[:tool_ro] || [],
+      exec_endpoint: resolved[:exec_endpoint]
     }
 
     # Resolve tools_prompt content if the profile has it enabled
