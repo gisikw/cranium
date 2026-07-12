@@ -100,11 +100,12 @@ defmodule Cranium.Muse do
   end
 
   @doc false
-  # One request shape for both transports: the local path turns it into argv,
-  # the HTTP path puts the same fields on the wire — so the remote request
-  # mirrors the CLI invocation field for field, by construction.
+  # One request shape for both transports, carrying tool/input structurally.
+  # Each transport serializes at its own boundary: the local path encodes the
+  # {tool, input} payload onto `--exec` argv; the HTTP path sends the fields on
+  # the wire for `muse serve` to rebuild. Nothing is pre-serialized into the
+  # shared struct, so the two transports cannot silently drift in payload shape.
   def build_exec_request(name, input, working_dir, tool_config) do
-    payload = Jason.encode!(%{tool: name, input: input})
 
     {rw_dirs, ro_dirs} =
       case Map.get(tool_config, :posture, :sandbox) do
@@ -122,7 +123,7 @@ defmodule Cranium.Muse do
         depth -> [{"MUSE_ROOM_DEPTH", to_string(depth)}]
       end
 
-    %{payload: payload, working_dir: working_dir, rw: rw_dirs, ro: ro_dirs, env: env}
+    %{tool: name, input: input, working_dir: working_dir, rw: rw_dirs, ro: ro_dirs, env: env}
   end
 
   defp exec_local(request) do
@@ -130,7 +131,7 @@ defmodule Cranium.Muse do
       Enum.flat_map(request.rw, &["--rw", &1]) ++
         Enum.flat_map(request.ro, &["--ro", &1])
 
-    args = grant_args ++ ["--exec", request.payload]
+    args = grant_args ++ ["--exec", Jason.encode!(%{tool: request.tool, input: request.input})]
 
     # Always cd into working_dir regardless of posture
     opts = [stderr_to_stdout: true]

@@ -2,11 +2,13 @@ defmodule Cranium.Muse.HTTP do
   @moduledoc """
   HTTP client for a remote `muse serve` daemon.
 
-  The wire contract is the CLI invocation: the request carries exactly what
-  `Cranium.Muse.exec/4` would put on argv — the `--exec` payload JSON (as
-  the string the CLI would receive), the working directory it would `cd`
-  to, the `--rw`/`--ro` grant lists, and env additions (MUSE_ROOM_DEPTH).
-  The response body is exactly what `--exec` prints on stdout (the
+  The wire contract mirrors the `muse serve` handleExec request: structured
+  `tool` and `input` (serve rebuilds the `--exec` payload itself), `cwd`, the
+  `rw`/`ro` grant lists, env additions (MUSE_ROOM_DEPTH), and `timeout_ms`.
+  Field names and shape match serve's decoder, which runs with
+  DisallowUnknownFields — the local and remote transports serialize the same
+  `tool`/`input` at their own boundaries rather than sharing a pre-encoded
+  string. The response body is exactly what `--exec` prints on stdout (the
   ExecResult wrapper) plus an `exit_code` field; `Cranium.Muse` feeds it
   through the same unwrap/error paths as local output.
 
@@ -25,7 +27,8 @@ defmodule Cranium.Muse.HTTP do
   @connect_timeout_ms 5_000
 
   @type exec_request :: %{
-          payload: String.t(),
+          tool: String.t(),
+          input: map(),
           working_dir: String.t() | nil,
           rw: [String.t()],
           ro: [String.t()],
@@ -36,15 +39,21 @@ defmodule Cranium.Muse.HTTP do
           {:ok, body :: String.t(), exit_code :: integer()} | {:error, String.t()}
   def exec(endpoint, request) do
     with {:ok, token} <- resolve_token(endpoint) do
+      timeout_ms = endpoint[:timeout_ms] || @default_timeout_ms
+
+      # Field-for-field the shape `muse serve`'s handleExec decodes with
+      # DisallowUnknownFields: structured tool/input (it rebuilds the --exec
+      # payload itself), cwd, grant lists, env, and the timeout so a client
+      # deadline also bounds the remote subprocess instead of orphaning it.
       body = %{
-        payload: request.payload,
-        working_dir: request.working_dir,
+        tool: request.tool,
+        input: request.input,
+        cwd: request.working_dir,
         rw: request.rw,
         ro: request.ro,
-        env: Map.new(request.env)
+        env: Map.new(request.env),
+        timeout_ms: timeout_ms
       }
-
-      timeout_ms = endpoint[:timeout_ms] || @default_timeout_ms
 
       req_opts =
         [

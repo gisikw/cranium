@@ -77,10 +77,16 @@ defmodule Cranium.Muse.HTTPTest do
 
       assert_received {:request, "POST", "/exec", ["Bearer sekrit"], body}
 
-      # The payload rides as the exact string the CLI would receive on --exec
-      assert Jason.decode!(body["payload"]) == %{"tool" => "bash", "input" => input}
+      # tool/input ride structurally; serve rebuilds the --exec payload itself.
+      # No pre-encoded `payload` string — the fields match serve's handleExec
+      # decoder (DisallowUnknownFields), so a shape drift fails this assertion.
+      assert body["tool"] == "bash"
+      assert body["input"] == input
+      refute Map.has_key?(body, "payload")
 
-      assert body["working_dir"] == @working_dir
+      # The directory serve cd's into rides as `cwd`, matching serveExecRequest.
+      assert body["cwd"] == @working_dir
+      refute Map.has_key?(body, "working_dir")
 
       # Sandbox posture: working_dir is the first rw grant, then profile rw
       assert body["rw"] == [@working_dir, "/Users/kevin/extra-rw"]
@@ -88,6 +94,9 @@ defmodule Cranium.Muse.HTTPTest do
 
       # Depth maps to the same env addition the CLI would set
       assert body["env"] == %{"MUSE_ROOM_DEPTH" => "2"}
+
+      # A client deadline also bounds serve's subprocess (default here).
+      assert body["timeout_ms"] == 600_000
     end
 
     test "permissive posture sends no grants, exactly like the CLI omits them" do
@@ -101,8 +110,8 @@ defmodule Cranium.Muse.HTTPTest do
       assert_received {:request, "POST", "/exec", _auth, body}
       assert body["rw"] == []
       assert body["ro"] == []
-      # cd applies regardless of posture, so working_dir still rides along
-      assert body["working_dir"] == @working_dir
+      # cd applies regardless of posture, so the dir still rides along as cwd
+      assert body["cwd"] == @working_dir
     end
 
     test "no depth means no env additions" do
