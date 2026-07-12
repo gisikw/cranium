@@ -29,7 +29,10 @@ config :cranium, :paths,
   skills: Path.join(File.cwd!(), "skills"),
   subagent_prompt: nil,
   macros: Path.join(File.cwd!(), "test/fixtures/macros"),
-  macros_state: Path.join(System.tmp_dir!(), "cranium_test_macro_state")
+  macros_state: Path.join(System.tmp_dir!(), "cranium_test_macro_state"),
+  # Suppressed-thought journal is off by default; tests that assert on it
+  # point this at a per-test tmp file.
+  suppression_journal: nil
 
 # Profile config — test fixture
 config :cranium, :profiles_path, Path.join(File.cwd!(), "test/fixtures/profiles.yaml")
