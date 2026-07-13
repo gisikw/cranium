@@ -281,7 +281,7 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       assert [tool_result_block] = tool_message["content"]
       assert tool_result_block["type"] == "tool_result"
       assert tool_result_block["tool_result_for"] == "toolu_img"
-      assert tool_result_block["tool_output"] == %{"content" => envelope}
+      assert tool_result_block["tool_output"] == envelope
     end
 
     test "includes tool definitions unless disabled" do

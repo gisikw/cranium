@@ -75,25 +75,21 @@ defmodule Cranium.Inference.NativeHistory do
 
       "tool_result" ->
         tool_output =
-          cond do
-            Map.has_key?(block, "tool_output") or Map.has_key?(block, :tool_output) ->
-              block_value(block, "tool_output")
+          if Map.has_key?(block, "tool_output") or Map.has_key?(block, :tool_output),
+            do: block_value(block, "tool_output"),
+            else: block_value(block, "content") || ""
 
-            true ->
-              output = %{"content" => block_value(block, "content") || ""}
-
-              case block_value(block, "is_error") do
-                nil -> output
-                is_error -> Map.put(output, "is_error", is_error)
-              end
-          end
-
-        %{
+        result = %{
           "type" => "tool_result",
           "tool_result_for" =>
             block_value(block, "tool_result_for") || block_value(block, "tool_use_id"),
           "tool_output" => tool_output
         }
+
+        case block_value(block, "is_error") do
+          nil -> result
+          is_error -> Map.put(result, "is_error", is_error)
+        end
 
       type when is_binary(type) ->
         block

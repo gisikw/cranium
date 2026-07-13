@@ -66,15 +66,16 @@ defmodule Cranium.Inference.NativeHistoryTest do
              ]
     end
 
-    test "normalizes user tool_result messages as native tool role rows" do
+    test "reconstructs persisted ordinary tool output in the live canonical shape" do
       conversation_id = "native-history-result-#{System.unique_integer([:positive])}"
       {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+      output = ~s({"exit_code":0,"stderr":"","stdout":"ok"})
 
       {:ok, _} =
         Cranium.Store.append_message(conversation_id, epoch_id, %{
           role: :user,
           content: [
-            %{type: "tool_result", tool_use_id: "toolu_1", content: "ok", is_error: false}
+            %{type: "tool_result", tool_use_id: "toolu_1", content: output, is_error: false}
           ],
           origin: "cranium"
         })
@@ -87,7 +88,80 @@ defmodule Cranium.Inference.NativeHistoryTest do
                %{
                  "type" => "tool_result",
                  "tool_result_for" => "toolu_1",
-                 "tool_output" => %{"content" => "ok", "is_error" => false}
+                 "tool_output" => output,
+                 "is_error" => false
+               }
+             ]
+    end
+
+    test "keeps persisted multimodal envelopes opaque and canonical" do
+      conversation_id = "native-history-envelope-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      envelope =
+        Jason.encode!(%{
+          "type" => "content",
+          "content" => [
+            %{"type" => "text", "text" => "screenshot.png"},
+            %{
+              "type" => "image",
+              "source" => %{
+                "type" => "base64",
+                "media_type" => "image/png",
+                "data" => Base.encode64("png")
+              }
+            }
+          ]
+        })
+
+      {:ok, _} =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :user,
+          content: [
+            %{
+              type: "tool_result",
+              tool_use_id: "toolu_img",
+              content: envelope,
+              is_error: true
+            }
+          ],
+          origin: "cranium"
+        })
+
+      [message] = NativeHistory.contribute(conversation_id, epoch_id: epoch_id)
+      [result] = message.content
+
+      assert result["tool_output"] == envelope
+      assert result["is_error"] == true
+    end
+
+    test "preserves already-canonical tool output and keeps is_error at block level" do
+      conversation_id = "native-history-canonical-result-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+      output = %{"stdout" => "ok", "exit_code" => 0}
+
+      {:ok, _} =
+        Cranium.Store.append_message(conversation_id, epoch_id, %{
+          role: :tool,
+          content: [
+            %{
+              type: "tool_result",
+              tool_result_for: "toolu_2",
+              tool_output: output,
+              is_error: false
+            }
+          ],
+          origin: "cranium"
+        })
+
+      [message] = NativeHistory.contribute(conversation_id, epoch_id: epoch_id)
+
+      assert message.content == [
+               %{
+                 "type" => "tool_result",
+                 "tool_result_for" => "toolu_2",
+                 "tool_output" => output,
+                 "is_error" => false
                }
              ]
     end
