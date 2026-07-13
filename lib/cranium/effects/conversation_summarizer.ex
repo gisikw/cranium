@@ -137,7 +137,8 @@ defmodule Cranium.Effects.ConversationSummarizer do
                 conversation_id: conversation_id,
                 epoch_id: epoch.id,
                 router_profile: router_profile,
-                tools_disabled: true
+                tools_disabled: true,
+                no_cache: true
               ]
 
               case backend.stream_chat(messages, opts) do

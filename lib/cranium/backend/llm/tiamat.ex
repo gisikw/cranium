@@ -126,7 +126,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
             system_prompt: Keyword.get(opts, :system),
             system_prompt_pre: Keyword.get(opts, :system_prompt_pre),
             system_prompt_post: Keyword.get(opts, :system_prompt_post),
-            tools_disabled: Keyword.get(opts, :tools_disabled, false)
+            tools_disabled: Keyword.get(opts, :tools_disabled, false),
+            no_cache: Keyword.get(opts, :no_cache, false)
           )
           |> append_in_memory_messages(messages)
 

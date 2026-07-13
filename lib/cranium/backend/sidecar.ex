@@ -42,7 +42,8 @@ defmodule Cranium.Backend.Sidecar do
           ephemeral: true,
           router_profile: resolved.router_profile,
           conversation_id: "sidecar-#{System.unique_integer([:positive])}",
-          epoch_id: Ecto.UUID.generate()
+          epoch_id: Ecto.UUID.generate(),
+          no_cache: true
         ]
 
         case resolved.backend_module.stream_chat(messages, backend_opts) do

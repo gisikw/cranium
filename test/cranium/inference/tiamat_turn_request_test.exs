@@ -299,5 +299,36 @@ defmodule Cranium.Inference.TiamatTurnRequestTest do
       clear_context = Enum.find(request["tools"], &(&1["name"] == "clear_context"))
       assert clear_context["input_schema"]["type"] == "object"
     end
+
+    test "includes no_cache when set" do
+      conversation_id = "tiamat-request-nocache-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      request =
+        TiamatTurnRequest.assemble(
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          router_profile: "exo",
+          tools_disabled: true,
+          no_cache: true
+        )
+
+      assert request["no_cache"] == true
+    end
+
+    test "omits no_cache when not set" do
+      conversation_id = "tiamat-request-nocache-off-#{System.unique_integer([:positive])}"
+      {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+      request =
+        TiamatTurnRequest.assemble(
+          conversation_id: conversation_id,
+          epoch_id: epoch_id,
+          router_profile: "exo",
+          tools_disabled: true
+        )
+
+      refute Map.has_key?(request, "no_cache")
+    end
   end
 end

@@ -41,7 +41,7 @@ defmodule Cranium.Inference.TiamatTurnRequest do
 
     maybe_append_current_user(conversation_id, epoch_id, opts)
 
-    %{
+    request = %{
       "schema" => @schema,
       "request_id" => Map.get(opts, :request_id) || Ecto.UUID.generate(),
       "session_key" => Map.get(opts, :session_key) || session_key(conversation_id, epoch_id),
@@ -50,6 +50,10 @@ defmodule Cranium.Inference.TiamatTurnRequest do
       "messages" => native_messages(conversation_id, epoch_id),
       "tools" => tools(conversation_id, opts)
     }
+
+    if Map.get(opts, :no_cache, false),
+      do: Map.put(request, "no_cache", true),
+      else: request
   end
 
   @spec session_key(String.t(), String.t()) :: String.t()
