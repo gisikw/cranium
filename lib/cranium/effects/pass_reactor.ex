@@ -170,13 +170,41 @@ defmodule Cranium.Effects.PassReactor do
       # persisting, journal anything that slipped through.
       {output, output_spans} = SuppressedThought.strip(payload[:output] || "")
 
+      # Persist intermediate messages (assistant + tool_result pairs from
+      # completed tool rounds). Drop any trailing assistant message without
+      # a following tool_result — on the CC path, cancel can land between
+      # tool_use dispatch and result arrival.
+      intermediate_messages =
+        trim_trailing_assistant(payload[:intermediate_messages] || [])
+
+      intermediate_spans =
+        for msg <- intermediate_messages do
+          role = msg[:role] || msg["role"]
+
+          {content, spans} =
+            if role in [:assistant, "assistant"] do
+              SuppressedThought.strip_content(msg[:content] || msg["content"])
+            else
+              {msg[:content] || msg["content"], []}
+            end
+
+          Cranium.Store.append_message(cid, payload.epoch_id, %{
+            role: role,
+            content: content,
+            origin: payload[:origin]
+          })
+
+          spans
+        end
+        |> List.flatten()
+
       {interrupted_source, interrupted_spans} =
         SuppressedThought.strip(payload[:interrupted_context] || output)
 
       Cranium.Store.SuppressionJournal.append(
         cid,
         payload.epoch_id,
-        Enum.uniq(output_spans ++ interrupted_spans)
+        Enum.uniq(intermediate_spans ++ output_spans ++ interrupted_spans)
       )
 
       if output != "" do
@@ -243,6 +271,25 @@ defmodule Cranium.Effects.PassReactor do
   end
 
   # --- Helpers ---
+
+  # Drop a trailing assistant message that has no following tool_result.
+  # On the CC path, cancel can land between tool_use dispatch and result
+  # arrival, leaving an orphaned assistant turn that would cause the API
+  # to reject the next history payload.
+  defp trim_trailing_assistant([]), do: []
+
+  defp trim_trailing_assistant(messages) do
+    case List.last(messages) do
+      %{role: role} when role in [:assistant, "assistant"] ->
+        List.delete_at(messages, -1)
+
+      %{"role" => role} when role in ["assistant", :assistant] ->
+        List.delete_at(messages, -1)
+
+      _ ->
+        messages
+    end
+  end
 
   defp signal_pass_done(conversation_id, stream_id) do
     case Registry.lookup(@registry, {conversation_id, :turn_assembler}) do

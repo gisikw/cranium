@@ -309,6 +309,7 @@ defmodule Cranium.Inference.Agent do
         partial = %{
           stream_id: stream_id,
           output: output,
+          intermediate_messages: final_state.intermediate_messages,
           interrupted_context: interrupted_context,
           usage: final_state.usage,
           cc_session_id: final_state.cc_session_id
@@ -1283,7 +1284,6 @@ defmodule Cranium.Inference.Agent do
     sections =
       []
       |> append_content_block_sections(build_assistant_content(state))
-      |> append_message_sections(state.intermediate_messages)
       |> append_pending_tool_sections(state.tool_calls_pending)
       |> append_async_task_sections(state.async_tasks_outstanding)
       |> append_async_result_sections(state.async_results_pending)
@@ -1296,18 +1296,6 @@ defmodule Cranium.Inference.Agent do
     sections ++ Enum.flat_map(blocks, &content_block_sections/1)
   end
 
-  defp append_message_sections(sections, messages) when is_list(messages) do
-    sections ++
-      Enum.flat_map(messages, fn message ->
-        role = map_value(message, "role") || "message"
-        content = map_value(message, "content") || []
-
-        content_block_sections(content)
-        |> Enum.map(fn section -> "#{role}: #{section}" end)
-      end)
-  end
-
-  defp append_message_sections(sections, _), do: sections
 
   defp append_pending_tool_sections(sections, tool_calls) when is_list(tool_calls) do
     sections ++

@@ -385,9 +385,10 @@ defmodule Cranium.Inference.AgentTest do
 
       result = Task.await(task, 5000)
       assert {:error, :cancelled, partial} = result
-      assert partial.interrupted_context =~ "assistant: > **bash**"
-      assert partial.interrupted_context =~ "user: > **toolu_1 result**"
-      assert partial.interrupted_context =~ "/tmp"
+      assert length(partial.intermediate_messages) == 2
+      [assistant_msg, user_msg] = partial.intermediate_messages
+      assert assistant_msg["role"] || assistant_msg[:role] == "assistant"
+      assert user_msg["role"] || user_msg[:role] == "user"
     end
 
     test "keeps last usage snapshot across tool use rounds" do

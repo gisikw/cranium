@@ -218,6 +218,7 @@ defmodule Cranium.Inference.Harness do
          reason: :cancelled,
          epoch_id: turn.epoch_id,
          output: output,
+         intermediate_messages: partial[:intermediate_messages] || [],
          interrupted_context: interrupted_context,
          cc_session_id: cc_session_id,
          profile: turn[:profile],
