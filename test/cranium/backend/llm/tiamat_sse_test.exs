@@ -416,6 +416,46 @@ defmodule Cranium.Backend.LLM.TiamatSSETest do
     refute_receive {:tiamat_request, _}, 50
   end
 
+  test "drops effectively-empty in-memory assistant messages to prevent trailing-assistant rejection",
+       %{endpoint: endpoint} do
+    # Reproduces the bug where Cranium's "Model returned empty response" placeholder
+    # creates an assistant message with [{"text": "", "type": "text"}]. The persisted
+    # path strips this via native_content_block/1, but the in-memory path preserved
+    # it, causing it to survive dedup and land as the final message — which backends
+    # reject ("final message role must be user or tool").
+    conversation_id = "tiamat-empty-assistant-#{System.unique_integer([:positive])}"
+    {:ok, epoch_id} = Cranium.Store.create_epoch(conversation_id)
+
+    user_content = [%{"type" => "text", "text" => "hello"}]
+
+    {:ok, _} =
+      Cranium.Store.append_message(conversation_id, epoch_id, %{
+        role: :user,
+        content: user_content,
+        origin: "test"
+      })
+
+    in_memory_messages = [
+      %{role: :user, content: user_content},
+      # Empty assistant placeholder — should be dropped
+      %{role: :assistant, content: [%{"type" => "text", "text" => ""}]}
+    ]
+
+    assert {:ok, _pid} =
+             Tiamat.stream_chat(in_memory_messages,
+               conversation_id: conversation_id,
+               epoch_id: epoch_id,
+               router_profile: "exo",
+               tools_disabled: true,
+               backend_config: %{"endpoint" => endpoint, "timeout" => 5_000}
+             )
+
+    assert_receive {:tiamat_request, request}
+    # The empty assistant must not appear — only the user message
+    assert [%{"role" => "user"}] = request["messages"]
+    refute Enum.any?(request["messages"], &(&1["role"] == "assistant"))
+  end
+
   test "consumes native Tiamat turn stream events incrementally", %{endpoint: endpoint} do
     :persistent_term.put({TestRouter, :mode}, :native)
 

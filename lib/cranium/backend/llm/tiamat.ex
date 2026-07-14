@@ -174,7 +174,9 @@ defmodule Cranium.Backend.LLM.Tiamat do
         end
       end)
 
-    final_messages = existing_messages ++ Enum.reverse(additions)
+    final_messages =
+      (existing_messages ++ Enum.reverse(additions))
+      |> Enum.reject(&effectively_empty_content?/1)
 
     Logger.warning(
       "Tiamat in-memory append final " <>
@@ -292,6 +294,22 @@ defmodule Cranium.Backend.LLM.Tiamat do
   end
 
   defp tool_result_content?(_), do: false
+
+  # A message is effectively empty if all its content blocks are blank text.
+  # Matches the rejection in TiamatTurnRequest.native_messages/2 which strips
+  # empty-text blocks via native_content_block/1 and then drops messages whose
+  # content list becomes []. Without this, in-memory messages that were empty
+  # placeholders (e.g. "Model returned empty response") survive the dedup
+  # phase and can land as a trailing assistant, which backends reject.
+  defp effectively_empty_content?(message) do
+    content = message["content"] || []
+
+    content == [] or
+      Enum.all?(content, fn block ->
+        block_value(block, "type") == "text" and
+          (is_nil(block_value(block, "text")) or String.trim(to_string(block_value(block, "text"))) == "")
+      end)
+  end
 
   defp stringify_content_blocks(content) when is_list(content) do
     Enum.map(content, &stringify_content_block/1)
