@@ -102,7 +102,7 @@ defmodule Cranium.Inference.Agent do
 
   Returns when inference is complete (including any tool call loops).
   """
-  @spec infer(pid(), map()) :: {:ok, map()} | {:error, :cancelled, map()} | {:error, term()}
+  @spec infer(pid(), map()) :: {:ok, map()} | {:error, term(), map()}
   def infer(pid, context) do
     GenServer.call(pid, {:infer, context}, :infinity)
   end
@@ -317,9 +317,21 @@ defmodule Cranium.Inference.Agent do
 
         {:reply, {:error, :cancelled, partial}, %{final_state | status: :idle, stream_id: nil}}
 
-      {:error, reason} = error ->
+      {:error, reason, final_state} ->
         Logger.error("Inference failed", error: inspect(reason))
-        {:reply, error, %{state | status: :idle, stream_id: nil}}
+
+        # Same partial shape as the cancelled path — a failed turn must not
+        # drop completed tool rounds or streamed output from history.
+        partial = %{
+          stream_id: stream_id,
+          output: final_state.partial_output |> Enum.reverse() |> Enum.join(),
+          intermediate_messages: final_state.intermediate_messages,
+          interrupted_context: build_interrupted_context(final_state),
+          usage: final_state.usage,
+          cc_session_id: final_state.cc_session_id
+        }
+
+        {:reply, {:error, reason, partial}, %{final_state | status: :idle, stream_id: nil}}
     end
   end
 
@@ -368,7 +380,7 @@ defmodule Cranium.Inference.Agent do
         result
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, reason, state}
     end
   end
 
@@ -610,10 +622,10 @@ defmodule Cranium.Inference.Agent do
         execute_tools_and_continue(state, stream_id, opts)
 
       {:llm_stop, {:error, _status, _body} = error} ->
-        {:error, error}
+        {:error, error, cancel_async_tasks(state)}
 
       {:llm_stop, {:error, _reason} = error} ->
-        {:error, error}
+        {:error, error, cancel_async_tasks(state)}
 
       {:llm_stop, other} ->
         Logger.warning("Unexpected stop reason", reason: inspect(other))
@@ -632,7 +644,7 @@ defmodule Cranium.Inference.Agent do
         {:ok, state}
 
       {:DOWN, ^ref, :process, _pid, reason} ->
-        {:error, {:llm_crash, reason}}
+        {:error, {:llm_crash, reason}, cancel_async_tasks(state)}
     end
   end
 
@@ -1296,7 +1308,6 @@ defmodule Cranium.Inference.Agent do
     sections ++ Enum.flat_map(blocks, &content_block_sections/1)
   end
 
-
   defp append_pending_tool_sections(sections, tool_calls) when is_list(tool_calls) do
     sections ++
       (tool_calls
@@ -1495,26 +1506,36 @@ defmodule Cranium.Inference.Agent do
 
   defp flush_suppression({tag, %__MODULE__{} = final_state}, stream_id, conversation_id, opts)
        when tag in [:ok, :cancelled] do
-    {visible, new_spans, suppression} = SuppressedThought.finish(final_state.suppression)
-    journal_spans(conversation_id, opts, new_spans)
+    {tag, flush_suppression_state(final_state, stream_id, conversation_id, opts)}
+  end
 
-    final_state =
-      if visible == "" do
-        %{final_state | suppression: suppression}
-      else
-        emit(stream_id, conversation_id, {:chunk, stream_id, visible})
-
-        %{
-          final_state
-          | suppression: suppression,
-            partial_output: [visible | final_state.partial_output]
-        }
-      end
-
-    {tag, final_state}
+  defp flush_suppression(
+         {:error, reason, %__MODULE__{} = final_state},
+         stream_id,
+         conversation_id,
+         opts
+       ) do
+    {:error, reason, flush_suppression_state(final_state, stream_id, conversation_id, opts)}
   end
 
   defp flush_suppression(result, _stream_id, _conversation_id, _opts), do: result
+
+  defp flush_suppression_state(final_state, stream_id, conversation_id, opts) do
+    {visible, new_spans, suppression} = SuppressedThought.finish(final_state.suppression)
+    journal_spans(conversation_id, opts, new_spans)
+
+    if visible == "" do
+      %{final_state | suppression: suppression}
+    else
+      emit(stream_id, conversation_id, {:chunk, stream_id, visible})
+
+      %{
+        final_state
+        | suppression: suppression,
+          partial_output: [visible | final_state.partial_output]
+      }
+    end
+  end
 
   defp journal_suppression_finish(state, opts) do
     {_visible, new_spans, _suppression} = SuppressedThought.finish(state.suppression)

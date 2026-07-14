@@ -57,25 +57,12 @@ defmodule Cranium.Effects.PassReactor do
 
       # Persist intermediate messages (assistant + tool_result pairs from tool loop)
       intermediate_spans =
-        for msg <- payload[:intermediate_messages] || [] do
-          role = msg[:role] || msg["role"]
-
-          {content, spans} =
-            if role in [:assistant, "assistant"] do
-              SuppressedThought.strip_content(msg[:content] || msg["content"])
-            else
-              {msg[:content] || msg["content"], []}
-            end
-
-          Cranium.Store.append_message(cid, epoch_id, %{
-            role: role,
-            content: content,
-            origin: payload[:origin]
-          })
-
-          spans
-        end
-        |> List.flatten()
+        persist_intermediate_messages(
+          cid,
+          epoch_id,
+          payload[:intermediate_messages] || [],
+          payload[:origin]
+        )
 
       # The same span can appear in output, final content blocks, and an
       # intermediate message — journal it once.
@@ -174,29 +161,13 @@ defmodule Cranium.Effects.PassReactor do
       # completed tool rounds). Drop any trailing assistant message without
       # a following tool_result — on the CC path, cancel can land between
       # tool_use dispatch and result arrival.
-      intermediate_messages =
-        trim_trailing_assistant(payload[:intermediate_messages] || [])
-
       intermediate_spans =
-        for msg <- intermediate_messages do
-          role = msg[:role] || msg["role"]
-
-          {content, spans} =
-            if role in [:assistant, "assistant"] do
-              SuppressedThought.strip_content(msg[:content] || msg["content"])
-            else
-              {msg[:content] || msg["content"], []}
-            end
-
-          Cranium.Store.append_message(cid, payload.epoch_id, %{
-            role: role,
-            content: content,
-            origin: payload[:origin]
-          })
-
-          spans
-        end
-        |> List.flatten()
+        persist_intermediate_messages(
+          cid,
+          payload.epoch_id,
+          trim_trailing_assistant(payload[:intermediate_messages] || []),
+          payload[:origin]
+        )
 
       {interrupted_source, interrupted_spans} =
         SuppressedThought.strip(payload[:interrupted_context] || output)
@@ -214,12 +185,7 @@ defmodule Cranium.Effects.PassReactor do
         })
       end
 
-      interrupted =
-        if interrupted_source != "" do
-          if String.length(interrupted_source) > 2000,
-            do: String.slice(interrupted_source, 0, 2000) <> "\n\n[...output truncated...]",
-            else: interrupted_source
-        end
+      interrupted = truncate_interrupted(interrupted_source)
 
       Cranium.Store.update_epoch(payload.epoch_id, %{
         status: "active",
@@ -246,7 +212,44 @@ defmodule Cranium.Effects.PassReactor do
         state
       ) do
     unless payload[:ephemeral] do
-      Cranium.Store.update_epoch(payload[:epoch_id], %{status: "active"})
+      # A failed turn persists exactly like a cancelled one — completed tool
+      # rounds and streamed output must survive into the next turn's history.
+      {output, output_spans} = SuppressedThought.strip(payload[:output] || "")
+
+      intermediate_spans =
+        persist_intermediate_messages(
+          cid,
+          payload[:epoch_id],
+          trim_trailing_assistant(payload[:intermediate_messages] || []),
+          payload[:origin]
+        )
+
+      {interrupted_source, interrupted_spans} =
+        SuppressedThought.strip(payload[:interrupted_context] || output)
+
+      Cranium.Store.SuppressionJournal.append(
+        cid,
+        payload[:epoch_id],
+        Enum.uniq(intermediate_spans ++ output_spans ++ interrupted_spans)
+      )
+
+      if output != "" do
+        Cranium.Store.append_message(cid, payload[:epoch_id], %{
+          role: :assistant,
+          content: [%{"type" => "text", "text" => output}]
+        })
+      end
+
+      # Unlike cancel, an error only overwrites interrupted_context /
+      # cc_session_id when the failed turn actually produced them — an
+      # early failure (e.g. transport timeout before first token) must not
+      # clobber state left by a previous turn.
+      epoch_attrs =
+        %{status: "active"}
+        |> maybe_put(:interrupted_context, truncate_interrupted(interrupted_source))
+        |> maybe_put(:cc_session_id, payload[:cc_session_id])
+
+      Cranium.Store.update_epoch(payload[:epoch_id], epoch_attrs)
 
       # Emit turn.errored room event
       Cranium.RoomEvents.turn_errored(cid, %{
@@ -271,6 +274,42 @@ defmodule Cranium.Effects.PassReactor do
   end
 
   # --- Helpers ---
+
+  # Persist intermediate messages (assistant tool_use + tool_result pairs
+  # from completed tool rounds), stripping suppressed spans from assistant
+  # content at the Store boundary. Returns the stripped spans for journaling.
+  defp persist_intermediate_messages(cid, epoch_id, messages, origin) do
+    for msg <- messages do
+      role = msg[:role] || msg["role"]
+
+      {content, spans} =
+        if role in [:assistant, "assistant"] do
+          SuppressedThought.strip_content(msg[:content] || msg["content"])
+        else
+          {msg[:content] || msg["content"], []}
+        end
+
+      Cranium.Store.append_message(cid, epoch_id, %{
+        role: role,
+        content: content,
+        origin: origin
+      })
+
+      spans
+    end
+    |> List.flatten()
+  end
+
+  defp truncate_interrupted(""), do: nil
+
+  defp truncate_interrupted(source) when is_binary(source) do
+    if String.length(source) > 2000,
+      do: String.slice(source, 0, 2000) <> "\n\n[...output truncated...]",
+      else: source
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # Drop a trailing assistant message that has no following tool_result.
   # On the CC path, cancel can land between tool_use dispatch and result

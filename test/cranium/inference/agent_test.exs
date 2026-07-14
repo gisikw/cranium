@@ -391,6 +391,74 @@ defmodule Cranium.Inference.AgentTest do
       assert user_msg["role"] || user_msg[:role] == "user"
     end
 
+    test "stream error after completed tool rounds returns partial with intermediates" do
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(
+              caller,
+              {:cc_tool_use, %{id: "toolu_1", name: "bash", input: %{"command" => "pwd"}}}
+            )
+
+            send(caller, {:cc_tool_result, %{tool_use_id: "toolu_1", content: "/tmp"}})
+            send(caller, {:llm_text, "partial answer"})
+            send(caller, {:llm_stop, {:error, :timeout}})
+          end)
+
+        {:ok, pid}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-error-tool"}
+      subscribe_stream("s-error-tool")
+
+      result = Cranium.Inference.Agent.infer(agent, context)
+
+      assert {:error, {:error, :timeout}, partial} = result
+      assert partial.output == "partial answer"
+      assert length(partial.intermediate_messages) == 2
+      [assistant_msg, user_msg] = partial.intermediate_messages
+      assert (assistant_msg["role"] || assistant_msg[:role]) == "assistant"
+      assert (user_msg["role"] || user_msg[:role]) == "user"
+    end
+
+    test "backend start error on tool-loop re-entry returns partial with intermediates" do
+      tools_before = Application.get_env(:cranium, :tools, [])
+      on_exit(fn -> Application.put_env(:cranium, :tools, tools_before) end)
+      Cranium.Inference.Agent.ToolRouter.register("echo", Cranium.Inference.AgentTest.EchoTool)
+
+      Cranium.Backend.LLM.Mock
+      |> expect(:stream_chat, fn _messages, _opts ->
+        caller = self()
+
+        pid =
+          spawn(fn ->
+            send(caller, {:llm_tool_use, %{id: "tc_1", name: "echo", input: %{"msg" => "hi"}}})
+            send(caller, {:llm_stop, "tool_use"})
+          end)
+
+        {:ok, pid}
+      end)
+      |> expect(:stream_chat, fn _messages, _opts ->
+        {:error, :timeout}
+      end)
+
+      agent = start_agent()
+      context = %{messages: [%{role: "user", content: "test"}], stream_id: "s-error-reentry"}
+      subscribe_stream("s-error-reentry")
+
+      result = Cranium.Inference.Agent.infer(agent, context)
+
+      assert {:error, :timeout, partial} = result
+      assert length(partial.intermediate_messages) == 2
+      [assistant_msg, tool_result_msg] = partial.intermediate_messages
+      assert (assistant_msg["role"] || assistant_msg[:role]) == "assistant"
+      assert (tool_result_msg["role"] || tool_result_msg[:role]) == "user"
+    end
+
     test "keeps last usage snapshot across tool use rounds" do
       Cranium.Backend.LLM.Mock
       |> expect(:stream_chat, fn _messages, _opts ->

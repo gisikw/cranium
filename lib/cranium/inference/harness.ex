@@ -222,17 +222,24 @@ defmodule Cranium.Inference.Harness do
          interrupted_context: interrupted_context,
          cc_session_id: cc_session_id,
          profile: turn[:profile],
+         origin: turn[:origin],
          ephemeral: ephemeral
        }}
     )
   end
 
-  defp handle_inference_result({:error, reason}, turn, _state) do
+  defp handle_inference_result({:error, reason, partial}, turn, _state) do
     cid = turn.conversation_id
     stream_id = turn.stream_id
     ephemeral = turn[:ephemeral] == true
+    output = partial[:output] || ""
+    cc_session_id = partial[:cc_session_id] || turn[:cc_session_id]
 
-    # Emit pass_complete (error) — Persistence.Effects handles Store mutations + pass_done
+    interrupted_context = partial[:interrupted_context] || output
+
+    # Emit pass_complete (error) — Persistence.Effects handles Store mutations + pass_done.
+    # Carries the same partial fields as the cancelled path so a failed turn
+    # doesn't drop completed tool rounds or streamed output from history.
     Cranium.Events.broadcast(
       stream_id,
       cid,
@@ -241,6 +248,12 @@ defmodule Cranium.Inference.Harness do
          reason: :error,
          epoch_id: turn.epoch_id,
          error: format_error(reason),
+         output: output,
+         intermediate_messages: partial[:intermediate_messages] || [],
+         interrupted_context: interrupted_context,
+         cc_session_id: cc_session_id,
+         profile: turn[:profile],
+         origin: turn[:origin],
          ephemeral: ephemeral
        }}
     )

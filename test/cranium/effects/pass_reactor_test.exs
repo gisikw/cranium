@@ -345,6 +345,124 @@ defmodule Cranium.Effects.PassReactorTest do
       assert epoch.status == "active"
     end
 
+    test "persists intermediate messages, partial output, and interrupted context" do
+      conversation_id = "test-effects-error-partial-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      intermediate_messages = [
+        %{
+          role: "assistant",
+          content: [%{"type" => "tool_use", "id" => "toolu_1", "name" => "bash", "input" => %{}}]
+        },
+        %{
+          role: "user",
+          content: [%{"type" => "tool_result", "tool_use_id" => "toolu_1", "content" => "/tmp"}]
+        }
+      ]
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-err-partial",
+         %{
+           reason: :error,
+           epoch_id: ctx.epoch_id,
+           error: "{:error, %Req.TransportError{reason: :timeout}}",
+           output: "partial text before failure",
+           intermediate_messages: intermediate_messages,
+           cc_session_id: "cc-err-1",
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+
+      # Intermediates persisted in order
+      assert Enum.any?(messages, fn m ->
+               m.role == :assistant and
+                 Enum.any?(m.content, &(&1["type"] == "tool_use" and &1["id"] == "toolu_1"))
+             end)
+
+      assert Enum.any?(messages, fn m ->
+               m.role == :user and
+                 Enum.any?(m.content, &(&1["type"] == "tool_result"))
+             end)
+
+      # Partial output persisted as assistant message
+      assert Enum.any?(messages, fn m ->
+               m.role == :assistant and
+                 Cranium.Store.extract_text(m.content) == "partial text before failure"
+             end)
+
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.status == "active"
+      assert epoch.interrupted_context == "partial text before failure"
+      assert epoch.cc_session_id == "cc-err-1"
+    end
+
+    test "drops trailing assistant intermediate without a tool_result" do
+      conversation_id = "test-effects-error-orphan-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      intermediate_messages = [
+        %{
+          role: "assistant",
+          content: [%{"type" => "tool_use", "id" => "toolu_9", "name" => "bash", "input" => %{}}]
+        }
+      ]
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-err-orphan",
+         %{
+           reason: :error,
+           epoch_id: ctx.epoch_id,
+           error: "timeout",
+           output: "",
+           intermediate_messages: intermediate_messages,
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      {:ok, messages} = Cranium.Store.get_messages(conversation_id)
+      refute Enum.any?(messages, fn m -> m.role == :assistant end)
+    end
+
+    test "preserves prior interrupted_context and cc_session_id when error carries none" do
+      conversation_id = "test-effects-error-preserve-#{System.unique_integer([:positive])}"
+
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(conversation_id)
+
+      Cranium.Store.update_epoch(ctx.epoch_id, %{
+        status: "inferring",
+        interrupted_context: "breadcrumb from earlier cancel",
+        cc_session_id: "cc-existing"
+      })
+
+      send(
+        PassReactor,
+        {:pass_complete, conversation_id, "stream-err-preserve",
+         %{
+           reason: :error,
+           epoch_id: ctx.epoch_id,
+           error: "timeout before first token",
+           ephemeral: false
+         }}
+      )
+
+      flush_effects()
+
+      {:ok, epoch} = Cranium.Store.get_epoch(conversation_id)
+      assert epoch.status == "active"
+      assert epoch.interrupted_context == "breadcrumb from earlier cancel"
+      assert epoch.cc_session_id == "cc-existing"
+    end
+
     test "emits turn.errored room event with error detail" do
       conversation_id = "test-effects-error-detail-#{System.unique_integer([:positive])}"
 
