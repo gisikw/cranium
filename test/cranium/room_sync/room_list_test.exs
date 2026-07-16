@@ -125,4 +125,92 @@ defmodule Cranium.RoomSync.RoomListTest do
       assert RoomList.enrich([]) == []
     end
   end
+
+  describe "unread derivation" do
+    defp room_map(room_id) do
+      %{id: room_id, name: room_id, description: nil, last_activity_at: nil}
+    end
+
+    defp append_text(room_id, role, text) do
+      {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(room_id)
+
+      Cranium.Store.append_message(room_id, epoch_ctx.epoch_id, %{
+        role: role,
+        content: [%{"type" => "text", "text" => text}]
+      })
+    end
+
+    test "room with no messages and no marker is not unread", %{room_id: room_id} do
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert enriched.unread == false
+      assert enriched.last_read_seq == nil
+    end
+
+    test "room with messages but no marker is unread", %{room_id: room_id} do
+      append_text(room_id, "user", "Hello")
+
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert enriched.unread == true
+      assert enriched.last_read_seq == nil
+    end
+
+    test "marking read clears unread and exposes last_read_seq", %{room_id: room_id} do
+      append_text(room_id, "user", "Hello")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+
+      {:ok, marker} = Cranium.Store.mark_room_read(room_id)
+
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert enriched.unread == false
+      assert enriched.last_read_seq == marker.last_read_seq
+    end
+
+    test "a message after the marker makes the room unread again", %{room_id: room_id} do
+      append_text(room_id, "user", "Hello")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+      {:ok, _} = Cranium.Store.mark_room_read(room_id)
+
+      append_text(room_id, "assistant", "New reply after read")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert enriched.unread == true
+      assert enriched.last_read_seq == 1
+    end
+
+    test "marking read at an older seq leaves newer messages unread", %{room_id: room_id} do
+      append_text(room_id, "user", "First")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+      append_text(room_id, "assistant", "Second")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+
+      {:ok, marker} = Cranium.Store.mark_room_read(room_id, 1)
+
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert marker.last_read_seq == 1
+      assert enriched.unread == true
+    end
+
+    test "unread survives event age-out because it derives from messages", %{room_id: room_id} do
+      append_text(room_id, "user", "Old but never read")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+      {:ok, _} = Cranium.Store.mark_room_read(room_id)
+
+      append_text(room_id, "assistant", "Arrived while away")
+      {:ok, _} = Cranium.Store.emit_room_event(room_id, "message.created", %{})
+
+      # Simulate the retention sweep purging all events for the room
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+      {:ok, _count} = Cranium.Store.purge_room_events_before(future)
+
+      [enriched] = RoomList.enrich([room_map(room_id)])
+
+      assert enriched.unread == true
+    end
+  end
 end

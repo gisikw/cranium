@@ -13,6 +13,7 @@ defmodule Cranium.Transport.HTTP do
   - `POST /v1/rooms/:room_id/messages` — send a text message to a room
   - `POST /v1/rooms/:room_id/audio-takes` — open a chunked audio take in a room
   - `POST /v1/rooms/:room_id/cancel` — cancel the active turn in a room
+  - `POST /v1/rooms/:room_id/read-marker` — advance the room's read marker
   - `GET /v1/conversations/:id` — conversation metadata (status, saturation, handoff lifecycle)
   - `GET /v1/conversations/:id/events` — conversation-level SSE (all passes)
   - `GET /v1/events` — global SSE firehose (all conversations)
@@ -70,6 +71,10 @@ defmodule Cranium.Transport.HTTP do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, Jason.encode!(%{"command" => "cancel"}))
+  end
+
+  post "/v1/rooms/:room_id/read-marker" do
+    do_room_read_marker(conn, room_id)
   end
 
   # Extracted so drain guard can use early return
@@ -274,6 +279,42 @@ defmodule Cranium.Transport.HTTP do
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{"error" => "missing text"}))
+    end
+  end
+
+  # Advance the room's read marker. Body carries an optional "seq" —
+  # the event seq the client has read through; omitted means "through
+  # the latest". Store clamps and never regresses, so this is idempotent.
+  defp do_room_read_marker(conn, room_id) do
+    case conn.body_params["seq"] do
+      seq when is_nil(seq) or (is_integer(seq) and seq >= 0) ->
+        case Cranium.Store.mark_room_read(room_id, seq) do
+          {:ok, marker} ->
+            Logger.info("Room read marker: room=#{room_id} seq=#{marker.last_read_seq}",
+              room_id: room_id,
+              transport: :http
+            )
+
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(
+              200,
+              Jason.encode!(%{
+                "room_id" => marker.room_id,
+                "last_read_seq" => marker.last_read_seq
+              })
+            )
+
+          {:error, _reason} ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(500, Jason.encode!(%{"error" => "failed to update read marker"}))
+        end
+
+      _invalid ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "seq must be a non-negative integer"}))
     end
   end
 

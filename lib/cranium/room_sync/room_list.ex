@@ -1,16 +1,25 @@
 defmodule Cranium.RoomSync.RoomList do
   @moduledoc """
   Enriches the Landscape room list with sync-relevant fields:
-  latest_message_preview, latest_message_at, and has_active_turn.
+  latest_message_preview, latest_message_at, has_active_turn, unread,
+  and last_read_seq.
 
-  Queries the messages table for latest non-orientation messages
-  and checks the ConversationRegistry for active inference.
+  Queries the messages table for latest non-orientation messages,
+  checks the ConversationRegistry for active inference, and derives
+  unread from read markers.
+
+  Unread derivation: a room is unread when its latest non-orientation
+  message is newer than the room's read marker (`last_read_at`), or when
+  messages exist but the room has never been marked read. Comparing
+  against the permanent messages table (rather than room_events) keeps
+  the signal correct even after events age out of the retention window.
   """
 
   import Ecto.Query
 
   alias Cranium.Store.Message
   alias Cranium.Store.Repo
+  alias Cranium.Store.RoomReadMarker
 
   @preview_max_length 120
 
@@ -27,11 +36,15 @@ defmodule Cranium.RoomSync.RoomList do
     # Batch fetch latest message per room
     latest_messages = fetch_latest_messages(room_ids)
 
+    # Batch fetch read markers per room
+    read_markers = fetch_read_markers(room_ids)
+
     # Check active turns via Registry
     active_turns = detect_active_turns(room_ids)
 
     Enum.map(rooms, fn room ->
       latest = Map.get(latest_messages, room.id)
+      marker = Map.get(read_markers, room.id)
 
       %{
         id: room.id,
@@ -41,7 +54,8 @@ defmodule Cranium.RoomSync.RoomList do
         latest_message_preview: preview_from_message(latest),
         latest_message_at: if(latest, do: Cranium.RoomSync.Timestamp.iso8601(latest.inserted_at)),
         has_active_turn: room.id in active_turns,
-        unread: false
+        unread: unread?(latest, marker),
+        last_read_seq: marker && marker.last_read_seq
       }
     end)
   end
@@ -74,6 +88,26 @@ defmodule Cranium.RoomSync.RoomList do
   rescue
     # Defensive: if Repo isn't available (test without full supervision), return empty
     _ -> %{}
+  end
+
+  defp fetch_read_markers(room_ids) when room_ids == [], do: %{}
+
+  defp fetch_read_markers(room_ids) do
+    from(m in RoomReadMarker, where: m.room_id in ^room_ids)
+    |> Repo.all()
+    |> Map.new(&{&1.room_id, &1})
+  rescue
+    # Defensive: if Repo isn't available (test without full supervision), return empty
+    _ -> %{}
+  end
+
+  # No messages: nothing to read. No marker: never marked read, so any
+  # message counts as unread (ported from maw's read-cursor semantics).
+  defp unread?(nil, _marker), do: false
+  defp unread?(_latest, nil), do: true
+
+  defp unread?(%{inserted_at: inserted_at}, %RoomReadMarker{last_read_at: last_read_at}) do
+    DateTime.compare(inserted_at, last_read_at) == :gt
   end
 
   defp detect_active_turns(room_ids) do

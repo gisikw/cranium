@@ -28,7 +28,15 @@ defmodule Cranium.Store do
 
   import Ecto.Query
 
-  alias Cranium.Store.{Repo, Epoch, Message, Summary, EnsembleSelection, RoomEvent}
+  alias Cranium.Store.{
+    Repo,
+    Epoch,
+    Message,
+    Summary,
+    EnsembleSelection,
+    RoomEvent,
+    RoomReadMarker
+  }
 
   defstruct locks: %{}
 
@@ -311,6 +319,32 @@ defmodule Cranium.Store do
   @spec purge_room_events_before(DateTime.t()) :: {:ok, integer()} | {:error, :db_error}
   def purge_room_events_before(before) do
     GenServer.call(__MODULE__, {:purge_room_events_before, before}, 30_000)
+  end
+
+  # Read marker operations
+
+  @doc """
+  Advance the read marker for a room.
+
+  `seq` is the room event seq the client has read through. When nil, the
+  marker advances to the room's latest event seq ("mark everything read").
+  The seq is clamped to the latest known seq and the marker never moves
+  backwards, so stale or duplicate marks are safe no-ops.
+
+  Returns the resulting marker (which may be the unchanged existing one).
+  """
+  @spec mark_room_read(String.t(), integer() | nil) :: {:ok, map()} | {:error, :db_error}
+  def mark_room_read(room_id, seq \\ nil) do
+    GenServer.call(__MODULE__, {:mark_room_read, room_id, seq})
+  end
+
+  @doc """
+  Get the read marker for a room. Returns `{:ok, nil}` if the room has
+  never been marked read.
+  """
+  @spec get_room_read_marker(String.t()) :: {:ok, map() | nil} | {:error, :db_error}
+  def get_room_read_marker(room_id) do
+    GenServer.call(__MODULE__, {:get_room_read_marker, room_id})
   end
 
   # --- GenServer Implementation ---
@@ -938,6 +972,64 @@ defmodule Cranium.Store do
     {:reply, {:ok, count}, state}
   end
 
+  # --- Read Marker Handlers ---
+
+  defp do_handle_call({:mark_room_read, room_id, seq}, _from, state) do
+    latest =
+      from(e in RoomEvent,
+        where: e.room_id == ^room_id,
+        select: max(e.seq)
+      )
+      |> Repo.one()
+      |> Kernel.||(0)
+
+    # Clamp to the latest known seq — a client can't have read the future
+    target_seq = if is_nil(seq) or seq > latest, do: latest, else: seq
+
+    existing = Repo.get(RoomReadMarker, room_id)
+
+    if existing && existing.last_read_seq >= target_seq do
+      {:reply, {:ok, room_read_marker_to_map(existing)}, state}
+    else
+      marker =
+        (existing || %RoomReadMarker{})
+        |> RoomReadMarker.changeset(%{
+          room_id: room_id,
+          last_read_seq: target_seq,
+          last_read_at: read_position_at(room_id, target_seq)
+        })
+        |> Repo.insert_or_update!()
+
+      {:reply, {:ok, room_read_marker_to_map(marker)}, state}
+    end
+  end
+
+  defp do_handle_call({:get_room_read_marker, room_id}, _from, state) do
+    marker =
+      case Repo.get(RoomReadMarker, room_id) do
+        nil -> nil
+        m -> room_read_marker_to_map(m)
+      end
+
+    {:reply, {:ok, marker}, state}
+  end
+
+  # The timestamp anchor for a read position: the occurred_at of the event
+  # at that seq. Falls back to now() when the event is gone (seq 0, or the
+  # event aged out of the retention window) — the marker then covers
+  # everything up to the present, which is what "mark read" means for a
+  # position we can no longer place in time.
+  defp read_position_at(room_id, seq) do
+    event_at =
+      from(e in RoomEvent,
+        where: e.room_id == ^room_id and e.seq == ^seq,
+        select: e.occurred_at
+      )
+      |> Repo.one()
+
+    event_at || DateTime.truncate(DateTime.utc_now(), :microsecond)
+  end
+
   # --- Private ---
 
   defp do_apply_tiamat_normalization_delta(_conversation_id, _epoch_id, _request_messages, nil),
@@ -1323,6 +1415,14 @@ defmodule Cranium.Store do
       occurred_at: e.occurred_at,
       correlation_id: e.correlation_id,
       payload: e.payload
+    }
+  end
+
+  defp room_read_marker_to_map(%RoomReadMarker{} = m) do
+    %{
+      room_id: m.room_id,
+      last_read_seq: m.last_read_seq,
+      last_read_at: m.last_read_at
     }
   end
 end

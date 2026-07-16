@@ -156,13 +156,17 @@ value RoomSummary {
     latest_message_at: Timestamp?
     has_active_turn: Boolean
     unread: Boolean
+    last_read_seq: Integer?
 
     @guidance
         -- Lightweight projection for the room list. Clients should be
         -- able to render the full room list from a list of RoomSummary
         -- values without subscribing to detailed events for every room.
-        -- `unread` is derived from read markers if Cranium owns them,
-        -- or always false until read markers are implemented.
+        -- `unread` is true when the room's latest non-orientation message
+        -- is newer than its ReadMarker, or when messages exist and the
+        -- room has never been marked read.
+        -- `last_read_seq` echoes the ReadMarker position (null when the
+        -- room has never been marked read).
 }
 
 value Cursor {
@@ -214,15 +218,21 @@ entity RoomEvent {
 
 entity ReadMarker {
     room_id: String
-    last_read_event_seq: Integer
-    updated_at: Timestamp
+    last_read_seq: Integer
+    last_read_at: Timestamp
 
     @guidance
         -- Server-owned read position per room. Updated when client
         -- explicitly marks a room as read. Used to derive `unread`
         -- in RoomSummary.
         -- Single-tenant: one marker per room, no user dimension.
-        -- Deferred: can ship without read markers and add later.
+        --
+        -- last_read_seq is the RoomEvent seq the client has read
+        -- through (the sync cursor currency). last_read_at anchors
+        -- that position in time — the occurred_at of the event at
+        -- that seq — so unread can be derived against the permanent
+        -- messages table even after room events age out.
+        -- One table in Postgres (room_read_markers).
 }
 
 ------------------------------------------------------------
@@ -502,13 +512,21 @@ rule CancelTurn {
 
 rule MarkRead {
     when: POST /v1/rooms/:room_id/read-marker
-        with { cursor: Cursor }
+        with { seq: Integer? }
 
-    ensures: ReadMarker for room_id is updated to cursor.seq
+    ensures: ReadMarker for room_id is advanced to seq (or to the
+        room's latest event seq when seq is omitted)
+    ensures: response contains { room_id, last_read_seq }
 
     @guidance
-        -- Deferred: not required for v0. When implemented, drives
-        -- the `unread` field in RoomSummary.
+        -- Drives the `unread` field in RoomSummary.
+        -- seq is clamped to the room's latest event seq, and the
+        -- marker never moves backwards — stale or duplicate marks
+        -- are idempotent no-ops that return the existing marker.
+        -- A seq older than the event retention window is treated
+        -- as marking read through the present.
+        -- No durable event is emitted; clients pick up marker moves
+        -- by re-fetching the room list.
 }
 
 -- == Room List ==
@@ -751,12 +769,15 @@ open question "Audio segment event shape" {
 }
 
 open question "Read marker ownership" {
-    -- Should Cranium own read markers (server-canonical) or should
-    -- Hearth track read state locally?
-    -- Server-canonical enables cross-device unread sync.
-    -- Local is simpler and sufficient for single-device use.
-    -- Recommendation: server-canonical but deferred. Ship without
-    -- read markers in v0; add when multi-device matters.
+    -- RESOLVED: server-canonical, implemented in Cranium.
+    --
+    -- With both Hearth (iOS) and Lair (web) consuming Room Sync,
+    -- multi-device is the baseline — read state must live where
+    -- both clients can see it. Semantics ported from maw's
+    -- read_cursors table (per-room cursor, unread derived from
+    -- cursor vs latest activity), minus the per-user dimension
+    -- (single-tenant until a second user is real).
+    -- See rule MarkRead and entity ReadMarker.
 }
 
 open question "Global cursor semantics" {

@@ -246,6 +246,117 @@ defmodule Cranium.Transport.HTTPTest do
     end
   end
 
+  describe "POST /v1/rooms/:room_id/read-marker" do
+    test "marks a room read through the latest event" do
+      cid = "readmarker-latest-#{System.unique_integer([:positive])}"
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "turn.completed", %{})
+
+      conn =
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", %{})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["room_id"] == cid
+      assert body["last_read_seq"] == 2
+    end
+
+    test "marks a room read through an explicit seq" do
+      cid = "readmarker-seq-#{System.unique_integer([:positive])}"
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+
+      conn =
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", %{"seq" => 1})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["last_read_seq"] == 1
+    end
+
+    test "does not move the marker backwards" do
+      cid = "readmarker-mono-#{System.unique_integer([:positive])}"
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+
+      post_marker = fn params ->
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", params)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+      end
+
+      assert Jason.decode!(post_marker.(%{}).resp_body)["last_read_seq"] == 2
+      assert Jason.decode!(post_marker.(%{"seq" => 1}).resp_body)["last_read_seq"] == 2
+    end
+
+    test "rejects a non-integer seq" do
+      cid = "readmarker-invalid-#{System.unique_integer([:positive])}"
+
+      conn =
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", %{"seq" => "nope"})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"] =~ "seq"
+    end
+
+    test "rejects a negative seq" do
+      cid = "readmarker-negative-#{System.unique_integer([:positive])}"
+
+      conn =
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", %{"seq" => -1})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 400
+    end
+
+    test "clears unread in the room list", %{} do
+      cid = "readmarker-unread-#{System.unique_integer([:positive])}"
+
+      GenServer.cast(
+        Cranium.Inference.Landscape,
+        {:summary_updated, cid, "Read marker room", ~U[2026-03-18 12:00:00Z]}
+      )
+
+      :sys.get_state(Cranium.Inference.Landscape)
+
+      {:ok, epoch_ctx} = Cranium.Store.get_or_create_epoch(cid)
+
+      Cranium.Store.append_message(cid, epoch_ctx.epoch_id, %{
+        role: "user",
+        content: [%{"type" => "text", "text" => "Anyone there?"}]
+      })
+
+      {:ok, _} = Cranium.Store.emit_room_event(cid, "message.created", %{})
+
+      fetch_room = fn ->
+        conn =
+          Plug.Test.conn(:get, "/v1/rooms")
+          |> HTTP.call(HTTP.init([]))
+
+        conn.resp_body |> Jason.decode!() |> Enum.find(&(&1["id"] == cid))
+      end
+
+      assert fetch_room.()["unread"] == true
+      assert fetch_room.()["last_read_seq"] == nil
+
+      conn =
+        Plug.Test.conn(:post, "/v1/rooms/#{cid}/read-marker", %{})
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> HTTP.call(HTTP.init([]))
+
+      assert conn.status == 200
+
+      assert fetch_room.()["unread"] == false
+      assert fetch_room.()["last_read_seq"] == 1
+    end
+  end
+
   describe "!clear command" do
     test "bare !clear returns command response" do
       cid = "clear-bare-#{System.unique_integer([:positive])}"

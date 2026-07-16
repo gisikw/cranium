@@ -49,7 +49,8 @@ Returns all rooms sorted by latest activity (most recent first).
     "latest_message_preview": "Hi there, how can I help?",
     "latest_message_at": "2026-06-29T04:30:00Z",
     "has_active_turn": false,
-    "unread": false
+    "unread": true,
+    "last_read_seq": 138
   }
 ]
 ```
@@ -63,7 +64,8 @@ Returns all rooms sorted by latest activity (most recent first).
 | `latest_message_preview` | string? | Truncated text of most recent non-orientation message (≤120 chars) |
 | `latest_message_at` | ISO 8601? | Timestamp of that message |
 | `has_active_turn` | boolean | Whether inference is currently running |
-| `unread` | boolean | Always `false` until read markers are implemented |
+| `unread` | boolean | `true` when the room has non-orientation messages newer than its read marker — or any messages at all if the room has never been marked read. See Read Marker. |
+| `last_read_seq` | integer? | Event seq the read marker points at; `null` if the room has never been marked read |
 
 **Polling**: Hearth should poll this on foreground transitions. A global activity SSE stream is planned but deferred.
 
@@ -364,6 +366,49 @@ Always returns 200 regardless of whether a turn was active. If a turn was runnin
 
 ---
 
+### Read Marker
+
+```
+POST /v1/rooms/:room_id/read-marker
+Content-Type: application/json
+```
+
+Advances the room's read marker — the client tells the server "I've seen through this point." Single-tenant: one marker per room, shared across all clients (marking read on Hearth clears the badge on Lair).
+
+```json
+{
+  "seq": 142
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `seq` | integer | No | The event seq the client has read through — the `cursor.seq` from the snapshot, or the seq of the last durable event received on the SSE stream. Omit (or send `{}`) to mark read through the room's latest event. |
+
+**Response** `200 OK`
+```json
+{
+  "room_id": "cranium",
+  "last_read_seq": 142
+}
+```
+
+The response is the resulting marker, which is not always the requested position:
+
+- **Clamping**: `seq` beyond the room's latest event seq is clamped to the latest.
+- **Monotonic**: the marker never moves backwards. Marking read at a seq at or below the current marker is a no-op that returns the existing marker. Stale or duplicate marks are safe.
+- A `seq` older than the event retention window (the event has been purged) is treated as marking the room read through the present.
+
+**Response** `400 Bad Request` — if `seq` is present but not a non-negative integer.
+
+**Unread derivation**: a room's `unread` flag in the room list is `true` when its latest non-orientation message is newer than the read marker's position. A room that has never been marked read is `unread` as soon as it has any non-orientation message. Derivation is anchored to the permanent message history, so `unread` stays correct even after room events age out of the retention window.
+
+No durable event is emitted when the marker moves; other clients pick up the new marker by re-fetching `GET /v1/rooms` (the same foreground-transition polling used for the rest of the room list).
+
+**When to mark read**: mark read when the user views the room's transcript — on room entry, and as new messages arrive while the room is visibly focused. Send the cursor seq you actually hold; don't invent one.
+
+---
+
 ## Client Lifecycle
 
 ### Boot
@@ -372,6 +417,7 @@ Always returns 200 regardless of whether a turn was active. If a turn was runnin
 1. GET /v1/rooms                              → room list for sidebar
 2. GET /v1/rooms/:room_id/snapshot            → state + transcript + cursor
 3. GET /v1/rooms/:room_id/events?since=cursor → SSE subscription
+4. POST /v1/rooms/:room_id/read-marker        → {"seq": cursor.seq} once the transcript is on screen
 ```
 
 ### Send a Message
@@ -444,8 +490,9 @@ These are specced in the allium but not yet implemented:
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Global activity stream (`GET /v1/activity`) | Deferred | Poll `/v1/rooms` on foreground transitions for now |
-| Read markers (`POST /v1/rooms/:room_id/read-marker`) | Deferred | `unread` is always `false` |
 | Command idempotency (`client_command_id`) | Deferred | Duplicate messages possible on flaky networks |
+
+Read markers, formerly listed here, are specified above (see Read Marker).
 
 ---
 
