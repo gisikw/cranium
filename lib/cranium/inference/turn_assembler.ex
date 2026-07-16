@@ -42,7 +42,7 @@ defmodule Cranium.Inference.TurnAssembler do
   @sweep_interval_ms :timer.minutes(1)
   @registry Cranium.Inference.ConversationRegistry
 
-  @orientation_prompt "This is your private orientation time before the conversation begins. Read your handoff and cross-room context. Reflect on where things stand — what's in progress, what matters, what you want to bring to this session. This is journaling, not performance. The user will not see this output. Think out loud.\n\nDo not address the user. Do not say hello. Do not summarize what you'll help with. This output is filtered from history and never shown — it exists purely for you to orient internally before the first real message arrives."
+  @orientation_prompt "This is your private orientation time before the conversation begins. Reflect on your handoff and cross-room context. Reflect on where things stand — what's in progress, what matters, what you want to bring to this session. This is journaling, not performance. The user will not see this output. Think out loud.\n\nDo not address the user. Do not say hello. Do not summarize what you'll help with. Tools are not available during orientation — do not attempt tool calls. This output is filtered from history and never shown — it exists purely for you to orient internally before the first real message arrives."
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
