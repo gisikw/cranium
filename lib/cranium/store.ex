@@ -518,7 +518,9 @@ defmodule Cranium.Store do
       |> Repo.all()
 
     has_more = length(rows) > limit
-    messages = Enum.take(rows, limit)
+    # rows are in chronological order, so the limit+1 overflow row is the
+    # OLDEST one — trim from the head, keeping the newest `limit` messages.
+    messages = Enum.take(rows, -limit)
 
     {:reply, {:ok, %{messages: messages, has_more: has_more}}, state}
   end

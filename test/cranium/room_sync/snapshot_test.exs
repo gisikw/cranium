@@ -99,6 +99,36 @@ defmodule Cranium.RoomSync.SnapshotTest do
       assert hd(snapshot.recent_transcript).text == "real message"
     end
 
+    test "includes the newest message when the room exceeds the transcript window", %{
+      room_id: room_id
+    } do
+      {:ok, ctx} = Cranium.Store.get_or_create_epoch(room_id)
+      epoch_id = ctx.epoch_id
+
+      # One more message than the snapshot's 50-message window, so the
+      # window must trim exactly one message — and it must be the OLDEST.
+      for i <- 1..51 do
+        Cranium.Store.append_message(room_id, epoch_id, %{
+          role: if(rem(i, 2) == 1, do: "user", else: "assistant"),
+          content: [%{"type" => "text", "text" => "Message #{i}"}],
+          origin: nil
+        })
+      end
+
+      assert {:ok, snapshot} = Snapshot.build(room_id)
+
+      texts = Enum.map(snapshot.recent_transcript, & &1.text)
+
+      # The newest persisted message must be in the snapshot tail —
+      # the cursor is taken after assembly, so a message missing here
+      # would never be delivered by events after the cursor either.
+      assert List.last(texts) == "Message 51"
+      assert length(snapshot.recent_transcript) == 50
+      assert snapshot.has_more == true
+      # The trimmed message is the oldest, recoverable via scrollback.
+      refute "Message 1" in texts
+    end
+
     test "cursor seq is non-negative", %{room_id: room_id} do
       assert {:ok, snapshot} = Snapshot.build(room_id)
       assert snapshot.cursor.seq >= 0
