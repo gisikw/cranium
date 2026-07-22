@@ -1,163 +1,113 @@
-# DONE: cranium exec-endpoint — remote muse execution
+# DONE: Echo take_id as correlation_id on transcribed messages
 
-Branch `burn/exec-host` (based on `main` @ 81afa71). Main untouched.
+Branch: `take-correlation`
+Commit: `7385278d34ae06c3e3b3cd759db321ddf1bc5fc2`
+(code + tests only — nothing deployed, no service restart, no migrations;
+the dev/test DB used by `mix test` is the only DB touched)
 
-## What was built
+## What changed
 
-`Cranium.Muse.exec/4` now routes on a per-profile `exec_endpoint`: set → HTTP
-POST to a remote `muse serve` daemon; unset → the existing shell-out path,
-byte-identical. Tool definitions stay boot-loaded from the local binary
-(`load_tools!`/`load_tools_prompt!` untouched, per Kevin's flat-tools ruling).
+One production-code change, one doc line, three new tests:
 
-Files:
+- `lib/cranium/inference/turn_assembler.ex` — in `do_assemble_and_dispatch/4`
+  (step 9, where the persisted user message becomes a room event),
+  `Cranium.RoomEvents.message_created/3` now receives `header.take_id` as
+  its `correlation_id` argument. For text passes `take_id` is nil, so the
+  existing default (`correlation_id: nil`) is preserved — additive only.
+- `docs/room-sync-protocol.md` — the `message.created` row in the durable
+  event table now documents the take echo.
+- `test/cranium/inference/turn_assembler_correlation_test.exs` (new) — two
+  integration tests, see Verification.
+- `test/cranium/room_sync/event_stream_test.exs` — one new wire-level test.
 
-- `lib/cranium/config.ex` — `exec_endpoint` profile parsing + validation
-- `lib/cranium/muse.ex` — shared exec-request construction, local/remote routing
-- `lib/cranium/muse/http.ex` — **new**, all HTTP protocol knowledge lives here
-- `lib/cranium/context/router.ex` — `remote_working_dir/2`
-- `lib/cranium/inference/turn_assembler.ex`, `harness.ex`, `agent.ex` — threading
+No serializer fixes were needed: `correlation_id` was already carried
+end-to-end once the emit site supplied it (verified, see trace below).
+The assistant-side `message.created` (PassReactor) uses the 2-arity call
+and stays nil, so only the take-committed user message is tagged.
 
-## Config shape chosen (and why)
+## Where the take id travels (module path trace)
 
-```yaml
-profiles:
-  obrien-xcode:
-    backend: tiamat
-    router_profile: exo
-    exec_endpoint:
-      url: http://obrien:7777
-      token_env: MUSE_EXEC_TOKEN        # or token_file: /run/secrets/muse-token
-      projects_dir: /Users/kevin/Projects
-      timeout_ms: 600000                # optional; default 600_000
+1. **`Cranium.Transport.HTTP`** — `POST /v1/rooms/:room_id/audio-takes`
+   (`do_room_audio_take/2`, and equivalently the legacy audio submit in
+   `do_submit_pass/1`) mints `take_id`, returns it to the client in the
+   response body, and broadcasts a `PassHeader{take_id: take_id}`
+   (pass_id == take_id by convention).
+2. **`Cranium.Media.Transcoder`** → broadcasts
+   `{:transcription_complete, %Transcription{take_id, seq, text}}` per
+   segment.
+3. **`Cranium.Media.TakeCollector`** — assembles single/multi-segment
+   transcriptions and broadcasts
+   `{:take_complete, %TakeComplete{take_id, text}}`.
+4. **`Cranium.Inference.TurnAssembler`** — its `take_index` maps take_id →
+   pass_id (built from the PassHeader), pairs the TakeComplete with the
+   header, and in `do_assemble_and_dispatch/4` persists the user message
+   and calls `RoomEvents.message_created(room_id, attrs, header.take_id)`
+   ← **the change**.
+5. **`Cranium.RoomEvents.message_created/3` → `emit/4`** →
+   `Cranium.Store.emit_room_event/4` persists the row
+   (`room_events.correlation_id`, already in the schema/changeset) and
+   returns the event map (`Store.room_event_to_map/1` includes
+   `correlation_id`), which is broadcast as `{:room_event, event}`.
+6. **`Cranium.RoomSync.EventStream`** — `send_durable_event/2`
+   JSON-encodes the *entire* event map, so `correlation_id` reaches the
+   SSE wire on both the live path and the catch-up path
+   (`Store.list_room_events/3` uses the same projection). Nothing was
+   dropped in a view/serializer.
+
+`specs/room-sync.allium` already specified this intent ("correlation_id
+ties events back to the command that caused them"; `SubmitAudioTake`
+returns take_id as "a correlation ID for the client to track") — the
+emit site was just never wired.
+
+## Verification
+
+Baseline before changes (inside `nix develop`; host Elixir 1.18 is too
+old for the project's ~> 1.19 requirement):
+
+- `mix test`: **918 tests, 0 failures**
+
+After changes:
+
+- `mix compile --warnings-as-errors`: clean
+- `mix test`: **921 tests, 0 failures** (918 + 3 new)
+
+New tests:
+
+1. `turn_assembler_correlation_test.exs` — "take transcription commits
+   with take_id as correlation_id": drives the real chain
+   (`transcription_complete` → live TakeCollector → `take_complete` →
+   TurnAssembler → mocked LLM turn) and asserts both the live
+   `{:room_event, ...}` broadcast and the durable
+   `Store.list_room_events/2` row carry `correlation_id == take_id` on
+   the user `message.created` event.
+2. Same file — "text pass commits with nil correlation_id": the non-take
+   path is unchanged (broadcast + durable row both nil).
+3. `event_stream_test.exs` — "message.created correlation_id reaches the
+   wire": a real SSE client over Bandit receives the event and the
+   decoded JSON contains `"correlation_id": "<take_id>"`.
+
+## Note for the Hearth client lane
+
+The field is `correlation_id` on the **event envelope** (top level, not
+inside `payload`) of the `message.created` room event, on both the SSE
+live stream and catch-up replay. When you open a take
+(`POST /v1/rooms/:room_id/audio-takes` → `{"take_id": "...", "stream_id":
+"..."}`), the user message committed from that take's transcription
+arrives as:
+
+```
+id: 143
+event: message.created
+data: {"event_id":"evt_...","room_id":"cranium","seq":143,
+       "type":"message.created","occurred_at":"2026-07-22T...Z",
+       "correlation_id":"<the take_id you were given>",
+       "payload":{"message_id":"...","role":"user","origin":"hearth",
+                  "epoch_id":"...","preview":"[Transcribed from audio]\n...",
+                  "message":{ /* TranscriptMessage */ }}}
 ```
 
-- **Why a profile field:** all existing per-room tool behavior (`tool_posture`,
-  `tool_rw`, `tool_ro`, `tools_disabled`) is profile-shaped and reaches
-  `Muse.exec` via profiles.yaml → `Cranium.Config.Profile` → turn assembler →
-  harness context → agent opts → `tool_config`. `exec_endpoint` follows the
-  identical path; rooms opt in via the existing `room_defaults` mapping.
-- **Token indirection enforced:** a literal `token:` key raises at config
-  load. `token_env`/`token_file` are resolved per call (rotation without
-  restart); missing/empty token degrades to a tool error without attempting
-  a request.
-- **`projects_dir` is required and must be absolute.** It names the REMOTE
-  projects root, which cannot be inferred locally, and `~` would expand
-  against the local HOME (`/home/dev` on ratched vs `/Users/kevin` on
-  obrien). Failing at config load beats failing on every tool call.
-- **`timeout_ms` optional**, defaults to 600s (bash can run minutes). A
-  timed-out call returns a tool error to the agent, same as local failures.
-
-## Wire mapping as implemented
-
-One request shape (`Muse.build_exec_request/4`) feeds **both** transports —
-the local path turns it into argv, the HTTP path puts the same fields on the
-wire, so the mirror is by construction, not by parallel maintenance:
-
-| CLI invocation                  | HTTP request (`POST {url}/exec`)        |
-|---------------------------------|-----------------------------------------|
-| `--exec '<payload json>'`       | `"payload"`: the exact same JSON string  |
-| `cd: working_dir`               | `"working_dir"`                          |
-| `--rw` args (working_dir first, then profile `tool_rw`; empty when permissive) | `"rw"` list, same order |
-| `--ro` args                     | `"ro"` list                              |
-| `env: MUSE_ROOM_DEPTH=<depth>`  | `"env": {"MUSE_ROOM_DEPTH": "<depth>"}`  |
-| (implicit)                      | `Authorization: Bearer <token>`          |
-
-Response: body is what `--exec` prints on stdout (the ExecResult wrapper)
-plus an `exit_code` field. `exit_code == 0` → body goes through the **same**
-`unwrap_exec_output/1`; nonzero → the same `exec_error/2` (pulls `"error"`,
-falls back to `exit=N: <slice>`). No second protocol was invented.
-
-Judgment calls where the parallel muse-serve branch could land differently
-(each is a one-line fix inside `Cranium.Muse.HTTP`):
-- payload sent as the raw JSON *string* the CLI would receive (serve's brief
-  says it marshals into the existing `--exec` entrypoint, which takes a string);
-- exec failures expected as HTTP 200 + nonzero `exit_code` (non-200 is
-  treated as a transport/daemon error);
-- endpoint path assumed `/exec`.
-
-Degradation posture is symmetric with a missing muse binary: unreachable
-endpoint, timeout, 401, or missing token → `Logger.warning` +
-`{:error, message}` → tool error to the agent. The session never crashes.
-
-## Working-dir audit findings
-
-What cranium does with working dirs locally:
-
-- `Context.Router.resolve_working_dir/2` (used by `turn_assembler` each turn)
-  probes the LOCAL filesystem: `File.dir?(projects_dir/<slug>)` for the
-  room-matching logic, and on no match **creates** `/tmp/cranium/<slug>`
-  locally. For a remote-exec room both are wrong: the room's project may
-  exist only on the remote host (the primary use case — Xcode projects on
-  obrien), and the /tmp fallback would create a junk local dir while sending
-  the remote a path that means nothing.
-- `Muse.exec` local path passes `cd: working_dir` to `System.cmd` (requires
-  local existence). The remote path never touches the local filesystem — the
-  dir rides the wire as a string.
-- `Inference.NixEnv.env_for/1` stats a local `flake.nix` — but it has **no
-  callers** on the muse exec path (supervision-tree only, for the old
-  ClaudeCode backend); no change needed.
-- `effects/handoff_writer.ex` and `effects/conversation_summarizer.ex`
-  resolve working dirs for their own local shell-outs — part of the
-  subagent/`claude`-binary problem, explicitly out of scope.
-- `transport/openai.ex` uses an ephemeral local working dir — separate
-  entrance, no profile exec routing today, left alone.
-
-Smallest honest change: when the profile has `exec_endpoint`,
-`turn_assembler` resolves the working dir as
-`Router.remote_working_dir(room, endpoint.projects_dir)` —
-`<remote projects_dir>/<slug>`, purely textual, no existence check, no
-creation, no /tmp fallback. A wrong guess (e.g. a non-project chat room on a
-remote-exec profile) surfaces as an honest tool error from the remote muse
-rather than a silent local fallback.
-
-**Observation (pre-existing, not fixed here):** `turn_assembler`'s
-`resolve_profile/1` builds a lightweight `%Profile{}` for the turn but never
-copies `tools_disabled` into it, so line ~531's `profile.tools_disabled`
-always reads the struct default `false` — the `tools_disabled` YAML option
-(commit 81b37ce) appears not to reach the turn. I threaded `exec_endpoint`
-through that struct explicitly to avoid the same trap. Worth a look.
-
-## Out of scope (known follow-ups, not built)
-
-- **Subagent/delegate** (`lib/cranium/inference/agent/tools/subagent.ex`):
-  shells out to the `claude` binary locally, bypassing Muse — on a
-  remote-exec room subagents silently run on the wrong host and on a binary
-  we thought we'd decoupled from. Untouched here (`git diff main -- …/subagent.ex`
-  is empty); tracked separately.
-- **Macros** — invoked as tools but executed by cranium; needs its own design.
-- **Streaming exec** — v1 follow-up on the muse side too.
-- **Worker discovery/registration** — endpoints are pinned config, not a fleet.
-- Remote equivalent of the `/tmp/cranium/<slug>` fallback for non-project
-  rooms (needs remote knowledge or serve-side mkdir semantics).
-
-## Verification record
-
-All run inside `nix develop` (Elixir 1.19.5 / OTP 28):
-
-- `MIX_ENV=test mix test` — **857 tests, 0 failures.** No existing test was
-  modified; changes to `config_test.exs` / `router_test.exs` /
-  `fixtures/profiles.yaml` are purely additive (new describe blocks, one new
-  fixture profile).
-- `mix dialyzer` — **Total errors: 0** (passed).
-- `mix compile --warnings-as-errors` — clean.
-- New stub-server coverage (`test/cranium/muse/http_test.exs`, Req.Test plug —
-  the repo's existing Req stubbing convention; Bypass is not in deps):
-  happy path; grants/env/payload/working-dir fields asserted in the request
-  body; bearer auth asserted; permissive-posture grant omission; response
-  unwrap asserted byte-identical to `unwrap_exec_output` on the CLI path;
-  nonzero exit → same error extraction as CLI; 401; timeout (names the
-  configured ceiling); unreachable endpoint degrades to `{:error, _}`;
-  token-from-env, token-from-file (trimmed), missing/unreadable token
-  degrades without any HTTP attempt.
-- Local path pinned (`test/cranium/muse_exec_local_test.exs`): a fake `muse`
-  script prepended to PATH records argv/cwd/env — asserts the exact argv
-  (`--rw`/`--ro` order, `--exec` payload), cwd, and `MUSE_ROOM_DEPTH` for
-  sandbox, permissive, and default configs with **no** endpoint configured.
-- Config validation (`config_test.exs`): fixture profile parses; literal
-  token / missing url / missing token indirection / non-absolute
-  projects_dir all raise at load.
-- `subagent.ex` untouched: `git diff main -- lib/cranium/inference/agent/tools/subagent.ex` → empty.
-- End-to-end against a scratch `muse serve` from the sibling branch: **not
-  possible yet** — `burn/muse-serve` does not exist in `~/Projects/muse` at
-  time of writing; the client was built to the brief's mapping with protocol
-  knowledge isolated in `Cranium.Muse.HTTP` for the one-file fix.
+Match `event.correlation_id == take_id` (and `payload.role == "user"`) to
+confirm your take committed — no more inferring via the reply stream id,
+and it survives room re-attach because the durable event replays with the
+same `correlation_id`. All non-take messages (typed text, assistant
+replies) carry `correlation_id: null`, and old events are unaffected.
