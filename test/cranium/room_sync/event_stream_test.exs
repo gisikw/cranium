@@ -180,6 +180,30 @@ defmodule Cranium.RoomSync.EventStreamTest do
       assert event["type"] == "message.created"
     end
 
+    test "message.created correlation_id reaches the wire", %{room_id: room_id, port: port} do
+      take_id = "take-#{System.unique_integer([:positive])}"
+
+      events =
+        with_sse_client(port, fn ->
+          Cranium.RoomEvents.message_created(
+            room_id,
+            %{
+              role: "user",
+              text: "transcribed take",
+              origin: "hearth",
+              epoch_id: "epoch-1"
+            },
+            take_id
+          )
+
+          Process.sleep(100)
+        end)
+
+      [event | _] = filter_events(events, "message.created")
+      assert event["correlation_id"] == take_id
+      assert event["payload"]["preview"] == "transcribed take"
+    end
+
     test "ephemeral events do not interfere with durable seq tracking", %{
       room_id: room_id,
       port: port

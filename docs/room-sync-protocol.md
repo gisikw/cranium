@@ -244,7 +244,7 @@ data: {"event_id":"...","room_id":"cranium","seq":143,"type":"message.created","
 | `turn.completed` | `stream_id`, `epoch_id`, `turn_count`, `saturation` | Inference finishes. `saturation` is a 0..1 fraction |
 | `turn.cancelled` | `stream_id` | Turn cancelled |
 | `turn.errored` | `stream_id`, `epoch_id`, `error` | Turn failed. `error` is a human-readable string (≤500 chars), `null` when no detail is available |
-| `message.created` | `message_id`, `message`, `role`, `origin`, `epoch_id`, `preview` | Message persisted. `message` is the full TranscriptMessage projection (see above); `preview` is the first 200 chars of the message text, omitted when empty |
+| `message.created` | `message_id`, `message`, `role`, `origin`, `epoch_id`, `preview` | Message persisted. `message` is the full TranscriptMessage projection (see above); `preview` is the first 200 chars of the message text, omitted when empty. For a user message committed from an audio take, the envelope's `correlation_id` echoes the `take_id` returned when the take was opened, so clients can match a locally-held take to the committed message; all other messages carry `correlation_id: null` |
 | `room.state.updated` | Varies | Room state changed |
 | `room.epoch.cleared` | `old_epoch_id` | Epoch cleared |
 | `room.epoch.created` | `epoch_id` | New epoch started |

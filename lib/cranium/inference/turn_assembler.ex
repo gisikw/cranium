@@ -481,15 +481,21 @@ defmodule Cranium.Inference.TurnAssembler do
           origin: header.origin
         })
 
-      # Emit room event for user message
+      # Emit room event for user message. Audio passes echo the take_id as
+      # correlation_id so the client can match its locally-held take to the
+      # committed message; text passes have no take_id and stay nil.
       unless header.origin == "orientation" do
-        Cranium.RoomEvents.message_created(header.conversation_id, %{
-          role: :user,
-          text: text,
-          epoch_id: epoch_id,
-          origin: header.origin,
-          message: message
-        })
+        Cranium.RoomEvents.message_created(
+          header.conversation_id,
+          %{
+            role: :user,
+            text: text,
+            epoch_id: epoch_id,
+            origin: header.origin,
+            message: message
+          },
+          header.take_id
+        )
       end
     end
 
