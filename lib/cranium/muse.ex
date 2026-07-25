@@ -19,6 +19,11 @@ defmodule Cranium.Muse do
 
   @binary "muse"
 
+  # Muse tools advertised by the binary but suppressed in cranium. `delegate`
+  # requires a Cranium-side model registry that doesn't exist yet; advertising
+  # it just invites agents to call a tool that cannot succeed.
+  @suppressed_tools ["delegate"]
+
   @spec load_tools!() :: :ok
   def load_tools! do
     tools =
@@ -196,6 +201,7 @@ defmodule Cranium.Muse do
     raw
     |> Enum.map(&normalize_tool/1)
     |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1.name in @suppressed_tools))
   end
 
   defp normalize_tool(%{"name" => name, "description" => desc, "inputSchema" => schema}) do
