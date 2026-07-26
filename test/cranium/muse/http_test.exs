@@ -118,7 +118,8 @@ defmodule Cranium.Muse.HTTPTest do
       var = put_token_env("sekrit")
       capture_request()
 
-      assert {:ok, "done"} = Muse.exec("read", %{"path" => "x"}, @working_dir, tool_config(%{token_env: var}))
+      assert {:ok, "done"} =
+               Muse.exec("read", %{"path" => "x"}, @working_dir, tool_config(%{token_env: var}))
 
       assert_received {:request, _, _, _, body}
       assert body["env"] == %{}
@@ -138,7 +139,8 @@ defmodule Cranium.Muse.HTTPTest do
         Plug.Conn.send_resp(conn, 200, Jason.encode!(%{"output" => envelope, "exit_code" => 0}))
       end)
 
-      assert {:ok, unwrapped} = Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
+      assert {:ok, unwrapped} =
+               Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
 
       # Byte-for-byte the same treatment the local path applies to stdout
       assert unwrapped == Muse.unwrap_exec_output(Jason.encode!(%{"output" => envelope}))
@@ -160,7 +162,11 @@ defmodule Cranium.Muse.HTTPTest do
       var = put_token_env("sekrit")
 
       Req.Test.stub(@plug_name, fn conn ->
-        Plug.Conn.send_resp(conn, 200, Jason.encode!(%{"error" => "sandbox denied", "exit_code" => 1}))
+        Plug.Conn.send_resp(
+          conn,
+          200,
+          Jason.encode!(%{"error" => "sandbox denied", "exit_code" => 1})
+        )
       end)
 
       assert {:error, "sandbox denied"} =
@@ -187,7 +193,9 @@ defmodule Cranium.Muse.HTTPTest do
         Plug.Conn.send_resp(conn, 401, "unauthorized")
       end)
 
-      assert {:error, message} = Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
+      assert {:error, message} =
+               Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
+
       assert message =~ "401"
     end
 
@@ -199,7 +207,12 @@ defmodule Cranium.Muse.HTTPTest do
       end)
 
       assert {:error, message} =
-               Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var, timeout_ms: 120_000}))
+               Muse.exec(
+                 "bash",
+                 %{},
+                 @working_dir,
+                 tool_config(%{token_env: var, timeout_ms: 120_000})
+               )
 
       assert message =~ "timed out after 120000ms"
     end
@@ -211,7 +224,9 @@ defmodule Cranium.Muse.HTTPTest do
         Req.Test.transport_error(conn, :econnrefused)
       end)
 
-      assert {:error, message} = Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
+      assert {:error, message} =
+               Muse.exec("bash", %{}, @working_dir, tool_config(%{token_env: var}))
+
       assert message =~ "unreachable"
     end
 

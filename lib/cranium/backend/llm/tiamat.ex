@@ -307,7 +307,8 @@ defmodule Cranium.Backend.LLM.Tiamat do
     content == [] or
       Enum.all?(content, fn block ->
         block_value(block, "type") == "text" and
-          (is_nil(block_value(block, "text")) or String.trim(to_string(block_value(block, "text"))) == "")
+          (is_nil(block_value(block, "text")) or
+             String.trim(to_string(block_value(block, "text"))) == "")
       end)
   end
 
