@@ -65,6 +65,8 @@
             erlang
             elixir
             postgresql
+            inotify-tools
+            procps
             just
           ];
 
