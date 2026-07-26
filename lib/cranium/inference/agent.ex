@@ -353,6 +353,10 @@ defmodule Cranium.Inference.Agent do
   def handle_info({:async_tool_complete, _task_id, _status, _result}, state),
     do: {:noreply, state}
 
+  # Stray muse exec result — the exec was killed and its terminal message
+  # already consumed, or raced its own kill. Nothing left to do with it.
+  def handle_info({:muse_exec_result, _ref, _result}, state), do: {:noreply, state}
+
   def handle_info({ref, _value}, state) when is_reference(ref), do: {:noreply, state}
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) when is_reference(ref),
@@ -1188,7 +1192,7 @@ defmodule Cranium.Inference.Agent do
         emit_tool_use(stream_id, conversation_id, tool_call, name, input)
 
         result =
-          case Cranium.Muse.exec(name, input, working_dir, tool_config) do
+          case muse_exec_cancellable(name, input, working_dir, tool_config) do
             {:ok, text} -> ToolExecutor.truncate_result(text)
             {:error, reason} -> ~s({"error": "#{inspect(reason)}"})
           end
@@ -1279,6 +1283,59 @@ defmodule Cranium.Inference.Agent do
 
       {:unknown, name} ->
         ~s({"error": "unknown tool: #{name}"})
+    end
+  end
+
+  # Sync-path muse exec that stays responsive to cancel. A blocking
+  # Cranium.Muse.exec/4 here would hold the agent process shut for the
+  # duration of the exec — a hung muse wedges the turn until a restart,
+  # and a :cancel cast sits unseen in the mailbox. Instead, await the
+  # started exec in a receive that also matches the cancel cast: on
+  # cancel, kill the muse process group promptly and re-queue the cast so
+  # the main receive loop still runs the normal cancelled-turn path
+  # (partial output preserved). Any muse execs later in the same batch
+  # match the re-queued cast immediately and are killed without starting
+  # to wait.
+  defp muse_exec_cancellable(name, input, working_dir, tool_config) do
+    if cancel_pending?() do
+      # A cancel is already queued (an earlier exec in this batch was
+      # killed) — don't start a muse process just to kill it.
+      {:error, "muse exec killed: cancelled"}
+    else
+      case Cranium.Muse.exec_start(name, input, working_dir, tool_config) do
+        {:error, _} = error ->
+          error
+
+        {:ok, pending} ->
+          %{ref: ref, monitor: monitor} = pending
+
+          receive do
+            {:muse_exec_result, ^ref, _raw} = result_msg ->
+              # Hand the message back so exec_await's own receive finds it.
+              send(self(), result_msg)
+              Cranium.Muse.exec_await(pending)
+
+            {:DOWN, ^monitor, :process, _pid, _reason} = down_msg ->
+              send(self(), down_msg)
+              Cranium.Muse.exec_await(pending)
+
+            {:"$gen_cast", :cancel} = cancel ->
+              Logger.info("Agent cancelled, killing in-flight muse exec", tool: name)
+              result = Cranium.Muse.exec_kill(pending, :cancelled)
+              send(self(), cancel)
+              result
+          end
+      end
+    end
+  end
+
+  defp cancel_pending? do
+    receive do
+      {:"$gen_cast", :cancel} = cancel ->
+        send(self(), cancel)
+        true
+    after
+      0 -> false
     end
   end
 
