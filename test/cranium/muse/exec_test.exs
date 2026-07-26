@@ -113,6 +113,34 @@ defmodule Cranium.Muse.ExecTest do
     assert output == "#{Path.expand(tmp_dir)}\npresent"
   end
 
+  test "await finds a result re-queued behind the runner's DOWN (agent cancellable pattern)" do
+    # Regression: the agent's cancellable receive consumes the result and
+    # re-queues it before calling await, putting it BEHIND the runner's
+    # DOWN in the mailbox. await must drain for the result on DOWN instead
+    # of trusting mailbox order. Live failure Sun Jul 26: every sync tool
+    # call returned "muse exec runner exited: :normal".
+    {:ok, exec} = Exec.start(["/bin/sh", "-c", "echo hello"])
+    %{ref: ref, monitor: monitor} = exec
+
+    result_msg =
+      receive do
+        {:muse_exec_result, ^ref, _} = msg -> msg
+      after
+        5_000 -> flunk("runner never sent its result")
+      end
+
+    # Wait for the DOWN, put it back, THEN re-queue the result behind it.
+    receive do
+      {:DOWN, ^monitor, :process, _, _} = down -> send(self(), down)
+    after
+      5_000 -> flunk("runner never went down")
+    end
+
+    send(self(), result_msg)
+
+    assert {:ok, "hello\n", 0} = Exec.await(exec)
+  end
+
   # --- deadline ---
 
   test "timeout kills the whole process group, grandchild included", %{tmp_dir: tmp_dir} do

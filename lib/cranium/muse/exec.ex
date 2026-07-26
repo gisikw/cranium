@@ -119,7 +119,19 @@ defmodule Cranium.Muse.Exec do
         result
 
       {:DOWN, ^monitor, :process, _pid, reason} ->
-        {:error, "muse exec runner exited: #{inspect(reason)}"}
+        # The runner always sends its result before exiting, so same-sender
+        # signal ordering puts the result ahead of this DOWN — unless a
+        # caller consumed and re-queued the result (the agent's cancellable
+        # receive does exactly that), reordering it BEHIND the DOWN. The
+        # runner is dead, so if the result isn't in the mailbox right now it
+        # never will be: a zero-timeout drain is exact, not a race.
+        receive do
+          {:muse_exec_result, ^ref, result} ->
+            maybe_unlink(exec)
+            result
+        after
+          0 -> {:error, "muse exec runner exited: #{inspect(reason)}"}
+        end
     end
   end
 
