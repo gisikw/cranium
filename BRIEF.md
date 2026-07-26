@@ -1,95 +1,70 @@
-# Brief: cranium exec-endpoint — remote muse execution (cranium repo)
+# burn-cranium — muse exec kill on cancel/timeout (branch only, NO deploy)
 
-## Diagnosis
+Dispatched Sat Jul 25 night. Host: ratched (local). Project ~/Projects/cranium.
 
-Cranium runs Muse tool calls by shelling out locally:
-`Cranium.Muse.exec/4` (`lib/cranium/muse.ex`) builds argv
-(`--rw`/`--ro` grants + `--exec <payload>`), sets `cd: working_dir`, and runs
-the `muse` binary. This pins every session's tool execution to the box
-cranium runs on (ratched).
+## HARD BOUNDARIES — read twice
 
-We are giving muse an HTTP daemon (`muse serve`, being built in parallel in
-the muse repo) so tool execution can happen on another host (obrien, a mac
-mini) while cranium stays on ratched. From the agent's perspective a session
-should simply *feel like* it runs on the remote box.
+- Branch `muse-kill` ONLY. NEVER commit to main. NEVER push main.
+  Push the branch to forgejo as backup — that's fine.
+- NEVER restart, redeploy, or touch the running cranium service. It is
+  serving LIVE conversations right now (including the one that dispatched
+  you). Merge + restart is Kevin's daylight call, deliberately timed.
+- No migrations, no config changes to the running system.
+- NOTE: lib/cranium/muse.ex has a fresh commit on main (@suppressed_tools,
+  9017b01) — branch from current main, don't fight it.
 
-**The wire contract is: the HTTP request carries exactly what the CLI
-invocation would.** `muse serve` is a thin transport over the existing
-CLI: request = exec payload JSON + working dir + rw/ro grant lists + env
-additions (e.g. MUSE_ROOM_DEPTH); response body = exactly what `--exec`
-prints on stdout (same ExecResult wrapper) plus an exit-code field;
-`GET /tools` = byte-identical `muse --tools` output. Auth = static bearer
-token on every request. Build cranium's client side to THAT mapping — mirror
-how `exec/4` builds argv today, field for field. Do not invent additional
-protocol.
+## The bug
 
-## Requirements
+`Cranium.Muse.exec/4` → `exec_local/1` → `run/2` → `System.cmd(muse, ...)`.
+`System.cmd` is synchronous and unbounded: no timeout, no kill path. When an
+agent turn is cancelled, `Agent`'s cancel path kills the LLM streaming process
+and reaps async tasks — but a muse exec already in flight just keeps running,
+and because the executing process is blocked in `System.cmd`, the turn is held
+open indefinitely. A muse bash tool call that hangs (network, interactive
+prompt, runaway child) wedges the room until someone SSHes in and restarts
+cranium. This has happened repeatedly; it is the problem to solve.
 
-1. **Config:** an exec-endpoint setting on the room/session profile (follow
-   however per-room/profile config is currently shaped — read the profile
-   plumbing first): endpoint URL + token (token via env/file indirection,
-   never a literal in config). Unset = today's behavior, byte-identical.
+## Required behavior
 
-2. **`Cranium.Muse.exec/4` routes on it:** endpoint set → HTTP POST with the
-   same fields it would have put on argv; unset → existing shell-out path,
-   untouched. Keep the graceful-degradation posture symmetric: unreachable
-   endpoint should degrade/log the way a missing muse binary does today, not
-   crash the session.
+1. **Deadline:** every local muse exec gets a timeout (config:
+   `:muse_exec_timeout_ms`, sensible default — muse's own bash default is
+   600_000; the outer bound should exceed it slightly, e.g. 660_000, so muse's
+   own timeout fires first in the normal case and ours is the backstop).
+2. **Kill semantics on timeout or cancel:** the muse process AND its entire
+   process group/tree must die (muse spawns children — bash spawns more).
+   Spawn via a port with `setsid` (own process group), kill with
+   SIGTERM → short grace → SIGKILL to the group (`kill -- -PGID`).
+3. **Cancel wiring:** when the Agent is cancelled (`:cancel` cast paths in
+   lib/cranium/inference/agent.ex — both the sync tool-execution wait and the
+   async task machinery in the same file + cancel_async_tasks), any in-flight
+   muse exec must be killed promptly, not awaited. Study how async tool tasks
+   are already cancelled (async_kill_grace_ms pattern) and match the house
+   style.
+4. **Result shape:** a killed exec returns an error tuple that lands in the
+   tool_result as a clear message ("muse exec killed: cancelled" /
+   "muse exec killed: timeout after Nms") — same envelope conventions as
+   existing exec_error output. Never crash the agent; never lose the turn's
+   partial output (cancelled-turn persistence semantics must be preserved).
+5. **Remote path (`exec_remote` / Muse.HTTP):** out of scope for kill-the-
+   process (the process is on another host), but the HTTP call should respect
+   the same deadline and abandon cleanly on cancel. Document in DONE.md what
+   remote-side cleanup would need (likely a muse serve concern) — don't build it.
 
-3. **Timeouts:** generous, configurable per-call ceiling (bash can run
-   minutes). A timed-out call returns a tool error to the agent, same as
-   local failures do.
+## Verification
 
-4. **Remote working dirs:** the session working directory for a remote-exec
-   room refers to the REMOTE filesystem. Audit what cranium does with
-   working dirs locally (existence checks, creation, the projects-dir
-   room-matching logic) and make remote-exec rooms not assume the path
-   exists locally. Smallest honest change wins; document what you found.
+- Unit tests around the new runner: exits-normally, timeout-kill (spawn
+  `sleep 300` via a fake/real muse invocation or a test binary standing in),
+  cancel-kill mid-exec, process-GROUP death (child of child dies too — assert
+  no orphan via ps/pgid check), result-shape assertions.
+- Full existing suite stays green: `MIX_ENV=test mix test` (baseline ~921+
+  tests, 0 failures expected).
+- `mix format` + compile with no new warnings.
+- Do NOT test against the live service.
 
-5. **Tools stay boot-loaded locally.** Tool definitions are flat and
-   identical across hosts (Kevin's ruling). Do NOT build per-endpoint tool
-   caching. `load_tools!` stays as is.
+## Deliverable
 
-## Explicitly OUT of scope (list in DONE.md as known follow-ups; do not build)
-
-- **Subagent/delegate:** `lib/cranium/inference/agent/tools/subagent.ex`
-  shells out to the `claude` binary locally and bypasses Muse entirely —
-  on a remote-exec room, subagents would silently run on the wrong host
-  AND on a binary we thought we'd decoupled from. Known problem, tracked
-  separately. Do not fix it here; do not route it through the endpoint.
-- Macros (invoked as tools but executed by cranium; needs its own design).
-- Streaming exec (v1).
-- Worker discovery/registration — endpoints are pinned config, not a fleet.
-
-## Hard constraints
-
-- Branch `burn/exec-host`. NEVER commit to main.
-- The muse repo is read-only reference (`~/Projects/muse`); the serve
-  implementation may not exist yet — build to the mapping above, with the
-  HTTP client isolated behind a small module so any late delta in the serve
-  implementation is a one-file fix.
-- Local behavior with no endpoint configured must be byte-identical —
-  existing tests must pass unmodified (if a test must change, justify it in
-  DONE.md).
-- `MIX_ENV=test mix test` green; dialyzer clean (`mix dialyzer`).
-- Tests: use a stub HTTP server (Bypass or equivalent already in deps —
-  check first) to cover: happy path, 401, timeout, unreachable-endpoint
-  degradation, grants/env fields present in the request, response unwrap
-  identical to the CLI path.
-
-## Acceptance criteria
-
-- Room profile with exec-endpoint set → `Muse.exec` POSTs (asserted via stub
-  server); without → shells out exactly as before.
-- Request fields mirror today's argv construction one-for-one (grants, cwd,
-  env additions, payload).
-- Response unwrapping shares the existing `unwrap_exec_output` path.
-- Full suite green, dialyzer clean, main untouched.
-- DONE.md: config shape chosen (and why), working-dir audit findings, wire
-  mapping as implemented, out-of-scope list restated, verification record.
-
-## Verification independent of self-report
-
-Reviewer will run the suite, read the stub-server tests, grep that
-`subagent.ex` is untouched, and later point a real room at a scratch
-`muse serve` from the sibling branch for the end-to-end check.
+DONE.md on the branch: what changed, how verified, remote-path notes, and —
+Kevin's ask — a rough accounting of your own effort (wall time, approximate
+token usage if visible to you) since this task is a candidate for a future
+harness-comparison eval corpus. NEEDS-KEVIN.md instead if genuinely blocked.
+Merge/deploy timing stays with Kevin.
