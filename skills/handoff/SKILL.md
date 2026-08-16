@@ -35,6 +35,20 @@ is accurate.
    If it's finished and retrievable from an artifact, it does not need
    bullets here. Never enumerate changed files; git already knows.
 
+## Weather
+
+A short section (`## Weather`) of standing lines that ride across epochs by
+copy, not by re-summarization. If the incoming handoff has a Weather section,
+carry each line forward VERBATIM into this handoff unless it has clearly
+resolved or gone stale — dropping is at the writer's discretion and needs no
+one's sign-off. Add a new line only for medium-weight live context that would
+otherwise starve out of a work-heavy epoch: an open emotional thread, ambient
+life context, something to handle gently if it comes up. A few beats at most,
+each one line. These are standing context, not agenda items: carrying a line
+forward does NOT mean the next session should raise it — it means the next
+session won't be blindsided by it. Omit the section entirely when there is
+no live weather.
+
 ## What to leave out
 
 - Identity, persona, or system prompt content — the next session already has
